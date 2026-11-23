@@ -279,8 +279,11 @@ pub struct Config {
     /// ChatGPT (OpenAI API)
     pub openai_key: String,
     pub openai_model: String,
-    /// Claude only: msa | egyptian | gulf | levantine
+    /// Claude and ChatGPT only: msa | egyptian | gulf | levantine | saudi
     pub dialect: String,
+    /// Claude and ChatGPT only: the player's own notes added to the prompt (names, terms, tone).
+    /// Empty: the prompt is unchanged.
+    pub llm_notes: String,
     pub interval_ms: u64,
     pub stable_ms: u64,
     pub clear_after_ms: u64,
@@ -733,6 +736,7 @@ impl Default for Config {
             openai_key: String::new(),
             openai_model: "gpt-6-luna".into(),
             dialect: "msa".into(),
+            llm_notes: String::new(),
             interval_ms: DEFAULT_TIMING.interval_ms,
             stable_ms: DEFAULT_TIMING.stable_ms,
             clear_after_ms: DEFAULT_TIMING.clear_after_ms,
