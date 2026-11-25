@@ -39,8 +39,23 @@ jobs:
           rustup default stable
           rustup target add ${{ matrix.target }}
 
+      # Real GTA VI frames (CouchSubs' regression set, AGPL-3.0 project; gameplay screenshots, not kept
+      # in this repository): fetched at a pinned commit for the phone and screen tests.
+      - name: Real frames (CouchSubs testdata, pinned)
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/yorulmazsinan/couchsubs "$RUNNER_TEMP/couchsubs"
+          cd "$RUNNER_TEMP/couchsubs"
+          git sparse-checkout set testdata/frames
+          git checkout bc54ff70256812747189421ee9bde3aea33ba5bf
+          echo "VIT_FRAMES=$RUNNER_TEMP/couchsubs/testdata/frames" >> "$GITHUB_ENV"
+          ls testdata/frames | wc -l
+
       - name: Test
-        run: cargo test --target ${{ matrix.target }}
+        run: |
+          cargo test --target ${{ matrix.target }}
+          # (the real-frame test must have run, not skipped)
+          cargo test --release --target ${{ matrix.target }} -p vi-translator-core --test phone_frames -- --nocapture 2>&1 | tee phone-frames.txt
+          grep -q "test result: ok" phone-frames.txt && ! grep -q "skipped" phone-frames.txt
 
       - name: Build (Windows)
         if: matrix.os == 'windows'

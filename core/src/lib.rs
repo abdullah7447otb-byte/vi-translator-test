@@ -23,6 +23,7 @@ pub mod ocr;
 pub mod pagescript;
 pub mod perf;
 pub mod phone;
+pub mod phone_pose;
 pub mod chat;
 pub mod phrasebook;
 pub mod screens;

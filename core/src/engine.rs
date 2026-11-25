@@ -1393,9 +1393,30 @@ impl Reader {
             // shown when it comes); the contacts' names written as the speakers' are.
             if let (Some(f), Some(ocr)) = (frame, ocr_now) {
                 let found = if c.phone_text() {
-                    crate::phone::find_screen(&f.rgba, f.w, f.h)
-                        // (a short light part, a Snapmatic post's caption: a phone only with its buttons up)
-                        .or_else(|| crate::phone::find_screen_unsure(&f.rgba, f.w, f.h).filter(|_| crate::phone::phone_buttons(&crate::phone::read_buttons(ocr, &f.rgba, f.w, f.h))))
+                    // (the phone held in the hand, by its earpiece, camera and home bar — tilted too: see phone_pose;
+                    // opened after two readings agree, closed after three readings' time without it. Before, only a
+                    // bright upright box was looked for: a tilted phone was never found, and the translation came and
+                    // went as the hand turned; a lit window in a scene was taken for a phone)
+                    let shown = {
+                        let mut tr = PHONE_TRACKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        tr.miss_grace = crate::phone_pose::miss_grace_for(interval_ms, phone_hold(interval_ms));
+                        let (shown, change) = tr.sample(crate::phone_pose::locate(&f.rgba, f.w, f.h), f.w, f.h);
+                        match change {
+                            crate::phone_pose::Change::Opened => crate::vlog!("[phone] opened: {:?}, tilt {:.1}°", shown.map(|p| p.bounds().px(f.w, f.h)), shown.map(|p| p.tilt(f.w, f.h)).unwrap_or(0.0)),
+                            crate::phone_pose::Change::Closed => crate::vlog!("[phone] closed"),
+                            crate::phone_pose::Change::Moving => crate::vlog!("[phone] found twice but moved too far to open"),
+                            crate::phone_pose::Change::None => {}
+                        }
+                        shown
+                    };
+                    match shown {
+                        Some(p) => Some(crate::phone::screen_in_pose(crate::phone::find_screen(&f.rgba, f.w, f.h), p.bounds().px(f.w, f.h))),
+                        // (no phone by its shape: a bright box only with the phone's own buttons up — a frame whose phone's
+                        // edges are hidden; a lit window has no "SELECT"/"EXIT" beside it)
+                        None => crate::phone::find_screen(&f.rgba, f.w, f.h)
+                            .or_else(|| crate::phone::find_screen_unsure(&f.rgba, f.w, f.h))
+                            .filter(|_| crate::phone::phone_buttons(&crate::phone::read_buttons(ocr, &f.rgba, f.w, f.h))),
+                    }
                         // (where the screen is, steady: a frame finding less of it is the last place — the reading
                         // turned upright round the same middle, the rows in the same places)
                         .map(|scr| {
@@ -2212,6 +2233,8 @@ static PHONE_QUAD: Mutex<Option<([(f64, f64); 4], [(f64, f64); 4], Instant)>> = 
 /// The phone screen's place as last read, and when (phone::steady_screen).
 /// When a chat's header was last read on the phone (a chat's overlay only: see the phone block).
 static PHONE_CHAT_AT: Mutex<Option<Instant>> = Mutex::new(None);
+/// The phone held in the hand over time (phone_pose::Tracker).
+static PHONE_TRACKER: Mutex<crate::phone_pose::Tracker> = Mutex::new(crate::phone_pose::Tracker::new());
 /// The chat's messages as last shown (their words, lower case): a reading that misses the header but shows
 /// the same messages is the same chat, still up (`same_chat`).
 static PHONE_CHAT_TEXT: Mutex<Vec<String>> = Mutex::new(Vec::new());

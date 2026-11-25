@@ -272,6 +272,22 @@ pub fn steady_screen(last: &mut Option<((u32, u32, u32, u32), std::time::Instant
     found
 }
 
+/// The phone's screen inside a pose's box (see phone_pose): the box found by brightness when it lies in the
+/// pose's box (it is exact to the pixel), else the box less the phone's earpiece above and home bar below.
+pub fn screen_in_pose(found: Option<(u32, u32, u32, u32)>, pose_box: (u32, u32, u32, u32)) -> (u32, u32, u32, u32) {
+    let (bx, by, bw, bh) = pose_box;
+    if let Some(f) = found {
+        let (x0, y0) = (f.0.max(bx), f.1.max(by));
+        let (x1, y1) = ((f.0 + f.2).min(bx + bw), (f.1 + f.3).min(by + bh));
+        let common = if x1 > x0 && y1 > y0 { (x1 - x0) as u64 * (y1 - y0) as u64 } else { 0 };
+        // (most of it inside the pose's box, and most of the pose's box's height: the screen, not a bubble)
+        if common * 10 >= f.2 as u64 * f.3 as u64 * 6 && f.3 * 10 >= bh * 6 {
+            return f;
+        }
+    }
+    (bx, by + bh * 3 / 100, bw, bh - bh * 9 / 100)
+}
+
 /// A light part of a screen too short to be sure of by its shape alone: a Snapmatic post's caption
 /// under its photo (the photo fills the screen's top). Only a phone when its buttons are up too
 /// (see `phone_buttons`).
@@ -283,7 +299,8 @@ pub fn find_screen_unsure(rgba: &[u8], fw: u32, fh: u32) -> Option<(u32, u32, u3
 /// "SELECT" with "BACK"), read: what tells a phone's short light part from a light wall.
 pub fn phone_buttons(buttons: &[((u32, u32, u32, u32), String)]) -> bool {
     let has = |w: &str| buttons.iter().any(|(_, t)| t == w);
-    ["VIEW COMMENTS", "OPTIONS", "SCROLL", "SEND"].iter().any(|w| has(w)) || (has("SELECT") && has("BACK"))
+    // (GTA VI's home screen: "REMINDERS", "SELECT", "EXIT"; a chat: "SCROLL", "EXIT")
+    ["VIEW COMMENTS", "OPTIONS", "SCROLL", "SEND", "REMINDERS"].iter().any(|w| has(w)) || (has("SELECT") && (has("BACK") || has("EXIT")))
 }
 
 fn find_screen_at(rgba: &[u8], fw: u32, fh: u32, light_from: i32, sure: bool) -> Option<(u32, u32, u32, u32)> {
