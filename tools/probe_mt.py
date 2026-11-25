@@ -155,6 +155,47 @@ def main():
             out.append(token)
         return out
 
+    # 3: the first step through decoder_model_quantized (the app's model, which gives every
+    # present), the next ones through decoder_with_past_model_quantized
+    wp = ort.InferenceSession(get("onnx/decoder_with_past_model_quantized.onnx"), opts)
+    print("IO with_past", json.dumps(io(wp)))
+    wp_in = [i.name for i in wp.get_inputs()]
+    wp_out = [o.name for o in wp.get_outputs()]
+    dec_out = [o.name for o in dec.get_outputs()]
+
+    def greedy_two(text):
+        ids, mask, hidden = encode(text)
+        n = ids.shape[1]
+        outs = dec.run(None, {"input_ids": np.array([[pad]], dtype=np.int64), "encoder_hidden_states": hidden, "encoder_attention_mask": mask})
+        past = {name.replace("present", "past_key_values"): v for name, v in zip(dec_out, outs) if name.startswith("present")}
+        token = best(outs[dec_out.index("logits")][0, -1])
+        out = []
+        for _ in range(min(max(n * 3, 32), 200)):
+            if token == eos:
+                break
+            out.append(token)
+            feed = {"input_ids": np.array([[token]], dtype=np.int64), "encoder_attention_mask": mask}
+            if "encoder_hidden_states" in wp_in:
+                feed["encoder_hidden_states"] = hidden
+            for name in wp_in:
+                if name.startswith("past_key_values"):
+                    feed[name] = past[name]
+            o = wp.run(None, feed)
+            for name, v in zip(wp_out, o):
+                if name.startswith("present"):
+                    past[name.replace("present", "past_key_values")] = v
+            token = best(o[wp_out.index("logits")][0, -1])
+        return out
+
+    same2, t_two = 0, 0.0
+    for line in LINES:
+        a = greedy_full(line)
+        t = time.perf_counter(); b = greedy_two(line); t_two += time.perf_counter() - t
+        same2 += a == b
+        if a != b:
+            print("DIFF2", json.dumps({"en": line, "full": tok.decode(a), "two": tok.decode(b)}, ensure_ascii=False))
+    print("RESULT2", json.dumps({"same": same2, "two_s": round(t_two, 3)}))
+
     same, t_full, t_cached = 0, 0.0, 0.0
     for line in LINES:
         t = time.perf_counter(); a = greedy_full(line); t_full += time.perf_counter() - t
