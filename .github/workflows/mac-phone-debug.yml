@@ -1,0 +1,57 @@
+# A quick look at the phone renders on a Mac runner (Vision OCR) without the whole test build:
+# pushed to a branch named mac-phone-debug only.
+name: Mac phone debug
+
+on:
+  push:
+    branches: [mac-phone-debug]
+
+jobs:
+  phone:
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      VIT_TEST_BUILD: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Real frames (CouchSubs testdata, pinned)
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/yorulmazsinan/couchsubs "$RUNNER_TEMP/couchsubs"
+          cd "$RUNNER_TEMP/couchsubs"
+          git sparse-checkout set testdata/frames
+          git checkout bc54ff70256812747189421ee9bde3aea33ba5bf
+          echo "VIT_FRAMES=$RUNNER_TEMP/couchsubs/testdata/frames" >> "$GITHUB_ENV"
+      - name: Build
+        run: |
+          mkdir -p src-tauri/apple/build && cp src-tauri/apple/stub.sh src-tauri/apple/build/vit-apple-translate
+          cargo build --release -p vi-translator
+      - name: Probe and render
+        run: |
+          APP=target/release/vi-translator
+          F="$VIT_FRAMES"
+          export VIT_MOCK_LOG="$PWD/mock.log"
+          nohup python3 tools/mock_translator.py 5000 > mock.out 2>&1 &
+          sleep 1
+          export VIT_PROBE_ENGINE=libre VIT_PROBE_LIBRE=http://127.0.0.1:5000
+          mkdir -p phone-renders
+          "$APP" --probe-phone phone-renders/probe.json "$F/gta6-telefon-sohbet-1.jpg" "$F/gta6-telefon-sohbet-2.jpg" "$F/gta6-telefon-ana-1.jpg" "$F/gta6-telefon-ana-2.jpg" 2>&1 | tail -40
+          echo "== asked of the translator"; cat mock.log || true; cat mock.out || true
+          python3 - <<'PY'
+          import json
+          d = json.load(open("phone-renders/probe.json"))
+          for k, v in d.items():
+              print("==", k)
+              for p in (v.get("phone") or {}).get("pieces", []):
+                  print("  ", {x: p.get(x) for x in ("title", "pending", "role", "en", "ar", "rect")})
+          PY
+          python3 -m pip install --quiet --break-system-packages playwright==1.63.0 || true
+          python3 tools/phone_render.py phone-renders/probe.json ui phone-renders --app "$APP" || true

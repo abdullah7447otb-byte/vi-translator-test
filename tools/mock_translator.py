@@ -47,6 +47,10 @@ class H(http.server.BaseHTTPRequestHandler):
         except Exception:
             d = {k: v[0] for k, v in urllib.parse.parse_qs(body.decode()).items()}
         q = d.get("q", "")
+        # (what was asked, for the test's log)
+        if os.environ.get("VIT_MOCK_LOG"):
+            with open(os.environ["VIT_MOCK_LOG"], "a", encoding="utf-8") as f:
+                f.write(json.dumps(q, ensure_ascii=False) + "\n")
         out = {"translatedText": [tr(x) for x in q] if isinstance(q, list) else tr(q)}
         b = json.dumps(out, ensure_ascii=False).encode()
         self.send_response(200)
