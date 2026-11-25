@@ -1998,6 +1998,8 @@ window.AS = (() => {
       // own smaller size: no Arabic ever runs out of its bubble
       const base = 0.045 * INPLACE_W;
       const fits = (d) => d.scrollHeight <= d.clientHeight + 1 && d.scrollWidth <= d.clientWidth + 1;
+      const fit = () => {
+      for (const d of boxes) { d.style.fontSize = ""; d.style.padding = `${0.012 * INPLACE_W}px ${0.025 * INPLACE_W}px`; }
       let fs = base;
       for (; fs >= base * 0.75; fs *= 0.95) {
         el.style.fontSize = `${fs}px`;
@@ -2020,6 +2022,11 @@ window.AS = (() => {
         }
       }
       el.dataset.fs = fs.toFixed(2);
+      };
+      fit();
+      // (measured again once the Arabic font has loaded: measured with the stand-in font first, the
+      // letters came out bigger and ran out of a small box)
+      if (document.fonts && document.fonts.status !== "loaded") document.fonts.ready.then(() => { if (el.isConnected) fit(); });
       INPLACE.last = { key, el, W, H };
     }
     for (const o of [...INPLACE.layers]) if (o.el === el || !o.el.isConnected) INPLACE.layers.delete(o);
