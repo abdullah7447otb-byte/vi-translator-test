@@ -75,6 +75,9 @@ pub struct Saved {
     pub sound_off: bool,
     #[serde(default)]
     pub volume: Option<u32>,
+    /// the picture decoded by OpenH264 on the CPU even where the computer has its own decoder
+    #[serde(default)]
+    pub software_decode: bool,
 }
 
 struct Global {
@@ -96,6 +99,9 @@ struct Global {
 
 /// PS5 frames dropped in the last second because this computer decoded them too late (for the
 /// performance mode, load.rs; it takes the number and leaves 0).
+/// What decodes the playing stream's picture (empty: no stream).
+static DECODER: Mutex<String> = Mutex::new(String::new());
+
 pub static LATE_LAST_SECOND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Smooth play: the frames read for text while the PS5 plays at most this often (20 a second), so
@@ -152,6 +158,8 @@ pub fn status() -> serde_json::Value {
         "smooth": s.smooth != Some(false),
         "sound": !s.sound_off,
         "volume": s.volume.unwrap_or(100),
+        "software_decode": s.software_decode,
+        "decoder": DECODER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
         "console": s.console.as_ref().map(|c| serde_json::json!({ "name": c.nickname, "host": c.host })),
         "pin_wanted": *g.pin_wanted.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
         "error": g.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
@@ -311,6 +319,15 @@ pub fn set_resolution(r: u32, high_bitrate: bool) {
     let mut s = saved();
     s.resolution = if r == 720 { 720 } else { 1080 };
     s.high_bitrate = high_bitrate && s.resolution == 1080;
+    save(&s);
+    g().restart.store(true, Ordering::Relaxed);
+}
+
+/// The picture decoded by the computer's own decoder (Automatic) or on the CPU (Software); the
+/// stream starts again.
+pub fn set_decode(software: bool) {
+    let mut s = saved();
+    s.software_decode = software;
     save(&s);
     g().restart.store(true, Ordering::Relaxed);
 }
@@ -654,7 +671,8 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
             (_, true) => ps::Video::p1080_high(60),
             _ => ps::Video::p1080(60),
         };
-        let player = match ps::play::Player::start(&host, &rk, &rp, video, g().sound.clone(), screen.clone()) {
+        let decode = if s.software_decode { ps::hwdec::Decode::Software } else { ps::hwdec::Decode::Auto };
+        let player = match ps::play::Player::start(&host, &rk, &rp, video, decode, g().sound.clone(), screen.clone()) {
             Ok(p) => p,
             Err(e) => {
                 set(format!("PS5: {e}"));
@@ -682,7 +700,10 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
                 last_status = Instant::now();
                 let st = &player.stats;
                 let frames = st.frames.load(Ordering::Relaxed);
-                let now = (frames, st.net_lost.load(Ordering::Relaxed), st.late.load(Ordering::Relaxed));
+                // (too late: frames the full queue couldn't take, and those dropped from a long backlog)
+                let late = st.late.load(Ordering::Relaxed) + st.backlog_dropped.load(Ordering::Relaxed);
+                let now = (frames, st.net_lost.load(Ordering::Relaxed), late);
+                *DECODER.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = st.decoder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
                 window.push_back((now.0 - before.0, now.1 - before.1, now.2 - before.2));
                 LATE_LAST_SECOND.fetch_add(now.2 - before.2, Ordering::Relaxed);
                 before = now;
@@ -699,6 +720,7 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
             std::thread::sleep(Duration::from_millis(50));
         }
         drop(player);
+        DECODER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
     });
     Ps5Capture { stop, handle: Some(handle) }
 }

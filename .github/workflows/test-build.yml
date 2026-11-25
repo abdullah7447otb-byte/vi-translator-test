@@ -59,6 +59,10 @@ jobs:
           # (the anchor on a shaken, turning 30 s clip made from the real phone frames)
           cargo test --release --target ${{ matrix.target }} -p vi-translator-core --test phone_stress -- --nocapture 2>&1 | tee phone-stress.txt
           grep -q "frames tracked" phone-stress.txt
+          # (the computer's own video decoder against OpenH264 on a 1080p clip made in the test)
+          mkdir -p video-bench
+          VIT_BENCH_OUT="$PWD/video-bench/video-bench-${{ matrix.os }}.md" cargo test --release --target ${{ matrix.target }} -p vi-translator-ps --test video_decode -- --nocapture 2>&1 | tee video-bench/video-decode-${{ matrix.os }}.txt
+          grep -q "test result: ok" video-bench/video-decode-${{ matrix.os }}.txt
 
       - name: Build (Windows)
         if: matrix.os == 'windows'
@@ -118,6 +122,13 @@ jobs:
         with:
           name: phone-renders
           path: phone-renders/*
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: video-bench-${{ matrix.os }}
+          path: video-bench/*
           if-no-files-found: warn
 
       - uses: actions/upload-artifact@v4

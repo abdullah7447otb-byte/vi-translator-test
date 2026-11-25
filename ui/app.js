@@ -629,6 +629,21 @@ function ps5SmoothRow(s) {
     el("p", { class: "muted small" }, t("Reads the text at most 20 times a second while the PS5 plays, so a slower computer keeps up with the picture. Subtitles still show at once.")));
 }
 
+// the picture decoded by the computer's own video decoder (Automatic) or by the app on the CPU
+function ps5DecodeRow(s) {
+  const sel = el("select", { id: "ps5-decode" },
+    el("option", { value: "auto" }, t("Automatic (the computer's video decoder)")),
+    el("option", { value: "software" }, t("Software (on the CPU)")));
+  sel.value = s.software_decode ? "software" : "auto";
+  sel.addEventListener("change", () => {
+    ps5 = { ...ps5, software_decode: sel.value === "software" };
+    invoke("ps5_set_decode", { software: sel.value === "software" });
+  });
+  return el("div", { class: "field" }, el("label", { for: "ps5-decode" }, t("Video decoding")), sel,
+    el("p", { class: "muted small" }, t("Automatic uses the Mac's media engine or the PC's graphics card, so the CPU is left for reading text; if it fails, the app decodes on the CPU by itself.")),
+    s.decoder ? el("p", { class: "muted small" }, t("Decoding now: {name}", { name: s.decoder })) : null);
+}
+
 function ps5Linked(s) {
   const name = s.console.name || "PS5";
   const note = el("p", { class: "small muted" });
@@ -661,7 +676,8 @@ function ps5Linked(s) {
       ps5SoundRow(s),
       el("div", { class: "field" }, el("label", { for: "ps5-quality" }, t("Stream quality")), quality,
         el("p", { class: "muted small" }, t("1080p reads small text best; 720p for a slower home network."))),
-      ps5SmoothRow(s)),
+      ps5SmoothRow(s),
+      ps5DecodeRow(s)),
     el("p", { class: "muted small ps5-foot" }, t("Controllers connected to this PC play on the PS5. Use Play to play full screen.")),
   );
 }

@@ -86,6 +86,14 @@ pub struct Stats {
     /// frames dropped because this computer decoded slower than they came
     pub late: AtomicU64,
     pub controllers: AtomicU64,
+    /// encoded frames waiting for the decoder thread right now
+    pub queued: std::sync::atomic::AtomicUsize,
+    /// frames dropped because too many waited too long (the picture jumps to the next key frame)
+    pub backlog_dropped: AtomicU64,
+    /// key frames asked of the PS5 after such a drop
+    pub idr_requests: AtomicU64,
+    /// what decodes the picture (VideoToolbox, Media Foundation or OpenH264)
+    pub decoder: Mutex<String>,
 }
 
 /// A stream from the PS5 with its sound and controllers, while it lives.
@@ -134,7 +142,9 @@ impl Handler for Inner {
             self.stats.net_lost.fetch_add(frames_lost as u64, Ordering::Relaxed);
         }
         match self.to_decoder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).try_send((frame.to_vec(), frame_index)) {
-            Ok(()) => {}
+            Ok(()) => {
+                self.stats.queued.fetch_add(1, Ordering::Relaxed);
+            }
             Err(TrySendError::Full(_)) => {
                 self.stats.late.fetch_add(1, Ordering::Relaxed);
                 self.resync.store(true, Ordering::Relaxed);
@@ -176,8 +186,10 @@ impl Handler for Inner {
 impl Player {
     /// Connects to the registered PS5 at `host` and plays: picture to `screen`, sound to the
     /// speakers (as `sound` says, while it plays), controllers to the PS5.
-    pub fn start(host: &str, regist_key: &[u8; 16], rp_key: &[u8; 16], video: Video, sound: Arc<Sound>, screen: Arc<dyn Screen>) -> Result<Self, Error> {
-        let decoder = openh264::decoder::Decoder::new().map_err(|e| Error(format!("video decoder: {e}")))?;
+    pub fn start(host: &str, regist_key: &[u8; 16], rp_key: &[u8; 16], video: Video, decode: crate::hwdec::Decode, sound: Arc<Sound>, screen: Arc<dyn Screen>) -> Result<Self, Error> {
+        // (made here so a failure is told before connecting; the system decoder is made on the
+        // decoder thread itself)
+        drop(crate::hwdec::VideoDecoder::software().map_err(Error)?);
         let (tx, rx) = channel();
         let (to_dec, from_net) = sync_channel(DECODE_QUEUE);
         let resync = Arc::new(AtomicBool::new(false));
@@ -196,7 +208,7 @@ impl Player {
             let (session, stop, screen, stats) = (session.clone(), stop.clone(), screen.clone(), stats.clone());
             std::thread::Builder::new()
                 .name("ps5-video".into())
-                .spawn(move || decode_thread(from_net, decoder, resync, session, stop, screen, stats))
+                .spawn(move || decode_thread(from_net, decode, resync, session, stop, screen, stats))
                 .ok()
         };
         let sdl = {
@@ -235,14 +247,20 @@ impl Drop for Player {
 /// The picture decoded on its own thread, frame by frame in the order they came.
 fn decode_thread(
     rx: Receiver<(Vec<u8>, i32)>,
-    mut dec: openh264::decoder::Decoder,
+    decode: crate::hwdec::Decode,
     resync: Arc<AtomicBool>,
     session: Arc<Mutex<Option<Session>>>,
     stop: Arc<AtomicBool>,
     screen: Arc<dyn Screen>,
     stats: Arc<Stats>,
 ) {
-    use openh264::formats::YUVSource;
+    let mut dec = match crate::hwdec::VideoDecoder::new(decode) {
+        Ok(d) => d,
+        Err(e) => return screen.log(1, &e),
+    };
+    screen.log(3, &format!("[video] decoder: {}", dec.name()));
+    let named = |d: &crate::hwdec::VideoDecoder| *stats.decoder.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = d.name().to_string();
+    named(&dec);
     // (asked at most twice a second: a burst of bad frames is one loss, not twenty)
     let mut last_ask = Instant::now() - Duration::from_secs(1);
     let mut key_frame = |why: &str| {
@@ -254,39 +272,91 @@ fn decode_thread(
             }
         }
     };
+    let mut backlog = Backlog::new(Instant::now());
+    let mut waiting_key: Option<Instant> = None;
     while !stop.load(Ordering::Relaxed) {
-        let (frame, index) = match rx.recv_timeout(Duration::from_millis(100)) {
+        let got = rx.recv_timeout(Duration::from_millis(100));
+        let now = Instant::now();
+        if let Some(line) = backlog.log_due(now) {
+            screen.log(3, &line);
+        }
+        let (mut frame, mut index) = match got {
             Ok(f) => f,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
+        dequeued(&stats);
         if resync.swap(false, Ordering::Relaxed) {
             // (frames were dropped: what waits is decoded from a picture that isn't there)
-            while rx.try_recv().is_ok() {}
+            while rx.try_recv().is_ok() {
+                dequeued(&stats);
+            }
             key_frame("decoding fell behind");
+            waiting_key = Some(now);
             continue;
         }
-        match dec.decode(&frame) {
-            Ok(Some(yuv)) => {
-                stats.frames.fetch_add(1, Ordering::Relaxed);
-                if !screen.wants_frame() {
-                    continue;
+        // (frames waited too long: the newest key frame waiting is decoded and what's before it
+        // dropped; with none waiting, the PS5 is asked for one and frames skipped until it comes)
+        if backlog.note(stats.queued.load(Ordering::Relaxed) + 1, now) {
+            let mut dropped = 0u64;
+            let mut key: Option<(Vec<u8>, i32)> = is_key_frame(&frame).then(|| (std::mem::take(&mut frame), index));
+            while let Ok(f) = rx.try_recv() {
+                dequeued(&stats);
+                if is_key_frame(&f.0) {
+                    dropped += key.is_some() as u64;
+                    key = Some(f);
+                } else {
+                    dropped += 1;
                 }
-                let (w, h) = yuv.dimensions();
-                let (ys, us, _) = yuv.strides();
-                let f = I420 {
-                    w: w as u32,
-                    h: h as u32,
-                    y: yuv.y()[..ys * h].to_vec(),
-                    u: yuv.u()[..us * h.div_ceil(2)].to_vec(),
-                    v: yuv.v()[..us * h.div_ceil(2)].to_vec(),
-                    y_stride: ys,
-                    uv_stride: us,
-                };
-                screen.frame(f);
+            }
+            match key {
+                Some((f, i)) => {
+                    frame = f;
+                    index = i;
+                    waiting_key = None;
+                }
+                None => {
+                    dropped += 1;
+                    stats.idr_requests.fetch_add(1, Ordering::Relaxed);
+                    if let Some(s) = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+                        s.request_key_frame();
+                    }
+                    waiting_key = Some(now);
+                }
+            }
+            stats.backlog_dropped.fetch_add(dropped, Ordering::Relaxed);
+            backlog.dropped(dropped);
+            if waiting_key.is_some() {
+                continue;
+            }
+        }
+        if let Some(since) = waiting_key {
+            // (a frame after the missing ones only breaks the picture: wait for the key frame, but
+            // not for ever if the PS5 doesn't send one)
+            if !is_key_frame(&frame) && since.elapsed() < Duration::from_secs(2) {
+                stats.backlog_dropped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            waiting_key = None;
+        }
+        match dec.decode(&frame) {
+            Ok(Some(f)) => {
+                stats.frames.fetch_add(1, Ordering::Relaxed);
+                if screen.wants_frame() {
+                    screen.frame(f);
+                }
             }
             // (no picture yet: the decoder waits for more)
             Ok(None) => {}
+            Err(e) if dec.is_hardware() && e.ends_with("fall back") => {
+                stats.bad_frames.fetch_add(1, Ordering::Relaxed);
+                screen.log(2, &format!("[video] {} failed three times in a row ({e}): OpenH264 from now on", dec.name()));
+                if let Err(e) = dec.fall_back() {
+                    return screen.log(1, &e);
+                }
+                named(&dec);
+                key_frame("the decoder changed");
+            }
             Err(e) => {
                 stats.bad_frames.fetch_add(1, Ordering::Relaxed);
                 screen.log(2, &format!("video: {e}"));
@@ -301,6 +371,132 @@ fn decode_thread(
                 }
             }
         }
+    }
+}
+
+fn dequeued(stats: &Stats) {
+    let _ = stats.queued.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| Some(n.saturating_sub(1)));
+}
+
+/// Whether an H.264 frame (Annex B) starts a new picture on its own: an IDR slice, or the
+/// sequence parameters the PS5 sends just before one.
+pub(crate) fn is_key_frame(frame: &[u8]) -> bool {
+    let mut i = 0;
+    while i + 3 < frame.len() {
+        if frame[i] == 0 && frame[i + 1] == 0 && frame[i + 2] == 1 {
+            let t = frame[i + 3] & 0x1f;
+            if t == 5 || t == 7 {
+                return true;
+            }
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// How many frames wait for the decoder: more than [`Backlog::DEPTH`] for
+/// [`Backlog::FOR`] means this computer fell behind, and the waiting frames are dropped rather
+/// than shown late. Also what's logged every ten seconds.
+pub(crate) struct Backlog {
+    over_since: Option<Instant>,
+    max: usize,
+    sum: u64,
+    samples: u64,
+    dropped: u64,
+    drops: u64,
+    last_log: Instant,
+}
+
+impl Backlog {
+    pub(crate) const DEPTH: usize = 6;
+    pub(crate) const FOR: Duration = Duration::from_millis(500);
+    const LOG_EVERY: Duration = Duration::from_secs(10);
+
+    pub(crate) fn new(now: Instant) -> Self {
+        Backlog { over_since: None, max: 0, sum: 0, samples: 0, dropped: 0, drops: 0, last_log: now }
+    }
+
+    /// One frame taken with `depth` waiting (itself included); true: drop what waits now.
+    pub(crate) fn note(&mut self, depth: usize, now: Instant) -> bool {
+        self.max = self.max.max(depth);
+        self.sum += depth as u64;
+        self.samples += 1;
+        if depth <= Self::DEPTH {
+            self.over_since = None;
+            return false;
+        }
+        let since = *self.over_since.get_or_insert(now);
+        if now.duration_since(since) >= Self::FOR {
+            self.over_since = None;
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn dropped(&mut self, n: u64) {
+        self.dropped += n;
+        self.drops += 1;
+    }
+
+    /// The ten-second line, once it's due (counts start again after it).
+    pub(crate) fn log_due(&mut self, now: Instant) -> Option<String> {
+        if now.duration_since(self.last_log) < Self::LOG_EVERY {
+            return None;
+        }
+        self.last_log = now;
+        let avg = if self.samples > 0 { self.sum as f64 / self.samples as f64 } else { 0.0 };
+        let line = format!("[video] queue max {} avg {avg:.1}, dropped {}, idr requests {}", self.max, self.dropped, self.drops);
+        *self = Backlog { last_log: now, ..Backlog::new(now) };
+        Some(line)
+    }
+}
+
+#[cfg(test)]
+mod backlog_tests {
+    use super::*;
+
+    #[test]
+    fn key_frames_are_found() {
+        assert!(is_key_frame(&[0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x68, 0, 0, 1, 0x65]));
+        assert!(is_key_frame(&[0, 0, 1, 0x65, 9]));
+        assert!(!is_key_frame(&[0, 0, 0, 1, 0x41, 1, 2, 3]));
+        assert!(!is_key_frame(&[]));
+    }
+
+    #[test]
+    fn a_short_burst_is_kept_a_long_one_dropped() {
+        let t0 = Instant::now();
+        let mut b = Backlog::new(t0);
+        // (a burst under half a second: nothing dropped)
+        for ms in (0..400).step_by(16) {
+            assert!(!b.note(12, t0 + Duration::from_millis(ms)));
+        }
+        assert!(!b.note(2, t0 + Duration::from_millis(416)));
+        // (more than six waiting for half a second: dropped once, then the count starts again)
+        let mut drops = 0;
+        for ms in (500..1100).step_by(16) {
+            drops += b.note(9, t0 + Duration::from_millis(ms)) as u32;
+        }
+        assert_eq!(drops, 1);
+        // (at six or fewer, never)
+        for ms in (1100..5000).step_by(16) {
+            assert!(!b.note(6, t0 + Duration::from_millis(ms)));
+        }
+    }
+
+    #[test]
+    fn the_log_line_comes_every_ten_seconds() {
+        let t0 = Instant::now();
+        let mut b = Backlog::new(t0);
+        b.note(3, t0);
+        b.note(9, t0);
+        b.dropped(5);
+        assert!(b.log_due(t0 + Duration::from_secs(9)).is_none());
+        let line = b.log_due(t0 + Duration::from_secs(10)).unwrap_or_default();
+        assert_eq!(line, "[video] queue max 9 avg 6.0, dropped 5, idr requests 1");
+        assert!(b.log_due(t0 + Duration::from_secs(11)).is_none());
     }
 }
 

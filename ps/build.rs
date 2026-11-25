@@ -96,8 +96,24 @@ fn main() {
             println!("cargo:rustc-link-lib={l}");
         }
     }
-    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "macos" {
-        println!("cargo:rustc-link-lib=framework=CoreServices");
+    // the computer's own video decoder: VideoToolbox on a Mac, Media Foundation on Windows
+    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    if os == "macos" || windows {
+        let mut b = cc::Build::new();
+        base(&mut b);
+        b.file(root.join(if windows { "native/vit_mf.c" } else { "native/vit_vt.c" }));
+        b.cargo_metadata(false).compile("vit_hwdec");
+        println!("cargo:rustc-link-lib=static=vit_hwdec");
+    }
+    if windows {
+        for l in ["mfplat", "mfuuid", "d3d11", "dxguid", "ole32"] {
+            println!("cargo:rustc-link-lib={l}");
+        }
+    }
+    if os == "macos" {
+        for f in ["CoreServices", "VideoToolbox", "CoreMedia", "CoreVideo", "CoreFoundation"] {
+            println!("cargo:rustc-link-lib=framework={f}");
+        }
     }
     println!("cargo:rerun-if-changed=native");
     println!("cargo:rerun-if-changed=generated");
