@@ -218,20 +218,27 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: Cargo.toml
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v5
         with:
           path: out
           merge-multiple: true
-      - name: Pre-release with the two files
+      - name: Release with the two files
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -l out
-          TAG="test-$(date -u +%Y%m%d)-${{ github.run_number }}"
+          V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          # (a release of its own, not the developer's update channel: the build doesn't update itself,
+          # so an update from the original app never replaces Barqawi; the tag isn't vX.Y.Z, so the
+          # signed-release workflow doesn't start)
+          TAG="barqawi-$V-${{ github.run_number }}"
           # (the test reports and the renders, for whoever checks the build)
           (cd out && zip -q -r ../test-reports.zip . -x 'vi-translator-windows-x64.exe' 'VI-Translator-macos.dmg')
           gh release create "$TAG" out/vi-translator-windows-x64.exe out/VI-Translator-macos.dmg test-reports.zip \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
-            --title "VI Translator test build $TAG" \
-            --notes "Test build of ${GITHUB_REF_NAME} (${GITHUB_SHA::7}). Not signed; it doesn't update itself."
-
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+            --title "Barqawi $V" \
+            --notes "Barqawi $V from ${GITHUB_REF_NAME} (${GITHUB_SHA::7}): every test passed on macOS and Windows (reports in test-reports.zip). Not signed with the original app's update key; it doesn't update itself."
