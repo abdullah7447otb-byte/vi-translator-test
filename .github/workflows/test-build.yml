@@ -18,8 +18,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # (macOS on Intel: Apple silicon runners are often not to be had; the app is built universal
+          # either way, and its tests run on this runner's own architecture)
           - { os: windows, runner: windows-latest, target: x86_64-pc-windows-msvc }
-          - { os: macos,   runner: macos-15,       target: aarch64-apple-darwin }
+          - { os: macos,   runner: macos-15-intel, target: x86_64-apple-darwin }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
     defaults:
@@ -98,7 +100,7 @@ jobs:
         if: matrix.os == 'macos'
         working-directory: src-tauri
         run: |
-          rustup target add x86_64-apple-darwin
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
           npx --yes @tauri-apps/cli@2.12.5 build --target universal-apple-darwin
           mkdir -p ../out
           cp ../target/universal-apple-darwin/release/bundle/dmg/*.dmg ../out/VI-Translator-macos.dmg
