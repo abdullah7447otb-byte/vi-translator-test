@@ -198,6 +198,9 @@ struct Job {
     text_box: Option<[f64; 4]>,
     /// The game's box around it (see TranslationEvent::game_box)
     game_box: Option<[f64; 4]>,
+    /// What is round it on the same screen, for the language models (the phone's chat); see
+    /// translate::LineContext
+    context: Option<String>,
     /// Two speakers' lines (see ocr::speaker_lines): each part with its brightness; empty = one line
     parts: Vec<(String, f64)>,
 }
@@ -1189,7 +1192,7 @@ impl Reader {
                             None => {
                                 if !menu_asked.contains(&m.en) && !menu_asked.iter().any(|a| ocr::similar(a, &m.en)) && menu_asked.insert(m.en.clone()) {
                                     seq_counter += 1;
-                                    let _ = jobs.send(Job { area: MENU_TEXT.into(), seq: seq_counter, en: m.en.clone(), phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: Instant::now(), text_box: None, game_box: None, parts: Vec::new() });
+                                    let _ = jobs.send(Job { area: MENU_TEXT.into(), seq: seq_counter, en: m.en.clone(), phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: Instant::now(), text_box: None, game_box: None, parts: Vec::new(), context: None });
                                 }
                             }
                         }
@@ -1260,7 +1263,7 @@ impl Reader {
                     let mut ask = |en: &str| {
                         if menu_asked.insert(en.to_string()) {
                             seq_counter += 1;
-                            let _ = jobs.send(Job { area: MENU_TEXT.into(), seq: seq_counter, en: en.to_string(), phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: Instant::now(), text_box: None, game_box: None, parts: Vec::new() });
+                            let _ = jobs.send(Job { area: MENU_TEXT.into(), seq: seq_counter, en: en.to_string(), phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: Instant::now(), text_box: None, game_box: None, parts: Vec::new(), context: None });
                         }
                     };
                     screen_missing = localize_screen(layout, &cache.map, &mut ask);
@@ -1314,7 +1317,7 @@ impl Reader {
                             if !layout.reason_en.is_empty() {
                                 seq_counter += 1;
                                 latest.lock().unwrap().insert(SCREEN_REASON.into(), seq_counter);
-                                let _ = jobs.send(Job { area: SCREEN_REASON.into(), seq: seq_counter, en: layout.reason_en.clone(), phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: Instant::now(), text_box: None, game_box: None, parts: Vec::new() });
+                                let _ = jobs.send(Job { area: SCREEN_REASON.into(), seq: seq_counter, en: layout.reason_en.clone(), phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: Instant::now(), text_box: None, game_box: None, parts: Vec::new(), context: None });
                             }
                         }
                         // (dev builds: which page, read off what — a page taken for one wrongly is found by this)
@@ -1471,11 +1474,13 @@ impl Reader {
                                     None => {
                                         if menu_asked.insert(title.clone()) {
                                             seq_counter += 1;
-                                            let _ = jobs.send(Job { area: MENU_TEXT.into(), seq: seq_counter, en: title, phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: now, text_box: None, game_box: None, parts: Vec::new() });
+                                            let _ = jobs.send(Job { area: MENU_TEXT.into(), seq: seq_counter, en: title, phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: now, text_box: None, game_box: None, parts: Vec::new(), context: None });
                                         }
                                     }
                                 }
                             }
+                            // (the chat round each message, for the language models: who sent what)
+                            let around = crate::phone::chat_context(&pieces);
                             for p in &pieces {
                                 if p.title {
                                     let fg = p.look.fg;
@@ -1587,7 +1592,7 @@ impl Reader {
                                     let ask = if gave_up { cut_en.clone() } else { p.en.clone() };
                                     if !ask.is_empty() && !menu_asked.contains(&ask) && !menu_asked.iter().any(|a| ocr::similar(a, &ask)) && menu_asked.insert(ask.clone()) {
                                         seq_counter += 1;
-                                        let _ = jobs.send(Job { area: MENU_TEXT.into(), seq: seq_counter, en: ask, phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: now, text_box: None, game_box: None, parts: Vec::new() });
+                                        let _ = jobs.send(Job { area: MENU_TEXT.into(), seq: seq_counter, en: ask, phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: now, text_box: None, game_box: None, parts: Vec::new(), context: around.clone() });
                                     }
                                 }
                                 match ar {
@@ -1666,7 +1671,7 @@ impl Reader {
                             .or_else(|| cache.map.get(&plain).cloned());
                             if ar.is_none() && menu_asked.insert(plain.clone()) {
                                 seq_counter += 1;
-                                let _ = jobs.send(Job { area: MENU_TEXT.into(), seq: seq_counter, en: plain.clone(), phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: now, text_box: None, game_box: None, parts: Vec::new() });
+                                let _ = jobs.send(Job { area: MENU_TEXT.into(), seq: seq_counter, en: plain.clone(), phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: now, text_box: None, game_box: None, parts: Vec::new(), context: crate::chat::message_context(&b) });
                             }
                             // (a translation without its slots: the emojis after it, as they come)
                             let ar = ar.map(|a| {
@@ -2124,7 +2129,7 @@ impl Reader {
                             _ => (text_box, game_box),
                         };
                         st.line_boxes = Some((text_box, game_box));
-                        let _ = jobs.send(Job { area: area.id.clone(), seq: seq_counter, en, phrases, icons, line_h, en_start, text_box, game_box, parts });
+                        let _ = jobs.send(Job { area: area.id.clone(), seq: seq_counter, en, phrases, icons, line_h, en_start, text_box, game_box, parts, context: None });
                     }
                 } else if !st.current.is_empty()
                     && st.last_seen.is_some_and(|s| now - s > Duration::from_millis(clear_ms))
@@ -2202,6 +2207,13 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
             continue;
         }
         let c = cfg.lock().unwrap().clone();
+        // what the line is said in: a spoken line among the ones before it; a menu's or the phone's text
+        // on its own, or with its screen round it (and never the next spoken line's context)
+        tr.set_context(if job.area == MENU_TEXT || job.area == SCREEN_REASON {
+            job.context.clone().map(translate::LineContext::Given).unwrap_or(translate::LineContext::Alone)
+        } else {
+            translate::LineContext::Spoken
+        });
         let status_sink = sink.clone();
         let status = move |s: String| {
             status_sink.emit("status-msg", serde_json::Value::String(s));

@@ -616,6 +616,19 @@ function ps5SoundRow(s) {
     el("div", { class: "row ps5-volume" }, el("span", { class: "muted small" }, t("Volume")), el("div", { class: "grow" }, vol), pct));
 }
 
+// smooth play: fewer frames read for text while the PS5 plays, so the computer keeps up with the picture
+function ps5SmoothRow(s) {
+  const on = el("input", { type: "checkbox", id: "ps5-smooth" });
+  on.checked = s.smooth !== false;
+  on.addEventListener("change", () => {
+    ps5 = { ...ps5, smooth: on.checked };
+    invoke("ps5_set_smooth", { on: on.checked });
+  });
+  return el("div", { class: "field" },
+    el("label", { class: "check" }, on, " ", el("span", {}, t("Smooth play"))),
+    el("p", { class: "muted small" }, t("Reads the text at most 20 times a second while the PS5 plays, so a slower computer keeps up with the picture. Subtitles still show at once.")));
+}
+
 function ps5Linked(s) {
   const name = s.console.name || "PS5";
   const note = el("p", { class: "small muted" });
@@ -647,7 +660,8 @@ function ps5Linked(s) {
     el("div", { class: "ps5-step ps5-settings" },
       ps5SoundRow(s),
       el("div", { class: "field" }, el("label", { for: "ps5-quality" }, t("Stream quality")), quality,
-        el("p", { class: "muted small" }, t("1080p reads small text best; 720p for a slower home network.")))),
+        el("p", { class: "muted small" }, t("1080p reads small text best; 720p for a slower home network."))),
+      ps5SmoothRow(s)),
     el("p", { class: "muted small ps5-foot" }, t("Controllers connected to this PC play on the PS5. Use Play to play full screen.")),
   );
 }
@@ -2093,6 +2107,24 @@ async function pullPreview(url, run) {
   let seq = 0;
   let shownUrl = null;
   let first = true;
+  // A YUY2 frame is drawn at the screen's next refresh, not the moment it arrives, and the next one is
+  // asked for meanwhile: frames come in evenly with the screen's own rhythm instead of whenever a
+  // request happened to finish (judder), and the next download doesn't wait for the drawing. A frame
+  // that arrives before the last was drawn takes its place (the newest is always the one shown).
+  let pending = null;
+  let drawAsked = false;
+  const drawPending = () => {
+    drawAsked = false;
+    const f = pending;
+    pending = null;
+    if (!f || run !== pullRun) return;
+    if (yuvDraw(f.data, f.w, f.h, f.bt709, f.full)) {
+      frameShown();
+      canvas.hidden = false;
+      img.hidden = true;
+      if (first) { first = false; fitFrame(); }
+    }
+  };
   while (run === pullRun) {
     try {
       const r = await fetch(`${url}?after=${seq}`, { cache: "no-store" });
@@ -2109,12 +2141,8 @@ async function pullPreview(url, run) {
         const h = Number(r.headers.get("X-Height"));
         const data = new Uint8Array(await r.arrayBuffer());
         if (run !== pullRun) break;
-        if (yuvDraw(data, w, h, r.headers.get("X-Matrix") !== "601", r.headers.get("X-Range") === "full")) {
-          frameShown();
-          canvas.hidden = false;
-          img.hidden = true;
-          if (first) { first = false; fitFrame(); }
-        }
+        pending = { data, w, h, bt709: r.headers.get("X-Matrix") !== "601", full: r.headers.get("X-Range") === "full" };
+        if (!drawAsked) { drawAsked = true; requestAnimationFrame(drawPending); }
         continue;
       }
       const blobUrl = URL.createObjectURL(await r.blob());

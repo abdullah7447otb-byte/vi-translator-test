@@ -67,6 +67,9 @@ pub struct Saved {
     /// 1080p at the higher bitrate (ps::Video::p1080_high)
     #[serde(default)]
     pub high_bitrate: bool,
+    /// Smooth play: fewer frames read for text while the PS5 plays (see SMOOTH_READ); none: on
+    #[serde(default)]
+    pub smooth: Option<bool>,
     /// the PS5's sound on this computer: off, and its volume (0–100; none: 100)
     #[serde(default)]
     pub sound_off: bool,
@@ -87,7 +90,14 @@ struct Global {
     restart: AtomicBool,
     /// the sound as the settings say, read by the playing stream
     sound: Arc<ps::play::Sound>,
+    /// smooth play as the settings say, read by the playing stream
+    smooth: AtomicBool,
 }
+
+/// Smooth play: the frames read for text while the PS5 plays at most this often (20 a second), so
+/// the reading leaves the computer free to decode the picture. A line on screen is still read within
+/// 50 ms of appearing; the game's subtitles stay up for seconds.
+const SMOOTH_READ: Duration = Duration::from_millis(50);
 
 static G: OnceLock<Global> = OnceLock::new();
 
@@ -107,6 +117,7 @@ pub fn init(app: AppHandle, data_dir: &Path) {
         error: Mutex::new(String::new()),
         restart: AtomicBool::new(false),
         sound: Arc::new(ps::play::Sound::new(!saved.sound_off, saved.volume.unwrap_or(100))),
+        smooth: AtomicBool::new(saved.smooth != Some(false)),
         saved: Mutex::new(saved),
     });
 }
@@ -134,6 +145,7 @@ pub fn status() -> serde_json::Value {
         "account_id": s.account_id,
         "resolution": if s.resolution == 720 { 720 } else { 1080 },
         "high_bitrate": s.high_bitrate && s.resolution != 720,
+        "smooth": s.smooth != Some(false),
         "sound": !s.sound_off,
         "volume": s.volume.unwrap_or(100),
         "console": s.console.as_ref().map(|c| serde_json::json!({ "name": c.nickname, "host": c.host })),
@@ -313,6 +325,15 @@ pub fn set_sound(on: bool, volume: u32) {
     }
 }
 
+/// Smooth play on or off; at once.
+pub fn set_smooth(on: bool) {
+    let g = g();
+    g.smooth.store(on, Ordering::Relaxed);
+    let mut s = saved();
+    s.smooth = Some(on);
+    save(&s);
+}
+
 /// Wakes the linked PS5 from rest mode.
 pub fn wake() -> Result<(), String> {
     let c = saved().console.ok_or("no PS5 linked")?;
@@ -444,17 +465,25 @@ struct ToShared {
 
 const COLOR: YuvColor = YuvColor { bt709: true, full_range: false };
 
+impl ToShared {
+    /// Time for the next frame read for text: as the timing says, and with smooth play no more than
+    /// once every SMOOTH_READ.
+    fn full_due(&self, last: Instant) -> bool {
+        self.shared.full_due(last) && (!g().smooth.load(Ordering::Relaxed) || last.elapsed() >= SMOOTH_READ)
+    }
+}
+
 impl ps::play::Screen for ToShared {
     // (most frames go nowhere: neither the reading nor the preview is due; they aren't copied out)
     fn wants_frame(&self) -> bool {
         let t = self.times.lock().unwrap();
-        self.shared.full_due(t.0) || self.shared.preview_due(t.1)
+        self.full_due(t.0) || self.shared.preview_due(t.1)
     }
 
     fn frame(&self, f: ps::play::I420) {
         let (full, preview) = {
             let t = self.times.lock().unwrap();
-            (self.shared.full_due(t.0), self.shared.preview_due(t.1))
+            (self.full_due(t.0), self.shared.preview_due(t.1))
         };
         if !full && !preview {
             return;
@@ -533,6 +562,16 @@ fn i420_to_rgba(f: &ps::play::I420) -> Vec<u8> {
     out
 }
 
+/// The status line while playing: the frame rate of the last second, and what was lost in the last
+/// ten (on the network: the Wi-Fi or the cable; too late: this computer decodes too slowly), so a
+/// stutter can be told apart. ui/i18n.js has the same words, for the translations.
+fn playing_status(name: &str, pads: u64, window: &std::collections::VecDeque<(u64, u64, u64)>) -> String {
+    let fps = window.back().map_or(0, |w| w.0);
+    let net: u64 = window.iter().map(|w| w.1).sum();
+    let late: u64 = window.iter().map(|w| w.2).sum();
+    format!("Playing on {name} ({pads} controller(s)) · {fps} fps · lost on the network: {net} · too late to decode: {late} (last 10 s)")
+}
+
 /// Connects to the registered PS5 (waking it if it rests) and plays until stopped, the stream ends
 /// or it fails (the manager starts it again).
 pub fn start(shared: Arc<Shared>) -> Ps5Capture {
@@ -590,6 +629,9 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
             }
         };
         let mut last_status = Instant::now() - Duration::from_secs(5);
+        // the last ten seconds, a second at a time: (pictures, lost on the network, too late to decode)
+        let mut window = std::collections::VecDeque::<(u64, u64, u64)>::new();
+        let mut before = (0u64, 0u64, 0u64);
         g().restart.store(false, Ordering::Relaxed);
         while !s2.load(Ordering::Relaxed) && !g().restart.swap(false, Ordering::Relaxed) {
             if let Some(pin) = g().pin.lock().unwrap().take() {
@@ -604,11 +646,18 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
             }
             if last_status.elapsed() > Duration::from_secs(1) {
                 last_status = Instant::now();
-                let frames = player.stats.frames.load(Ordering::Relaxed);
-                let pads = player.stats.controllers.load(Ordering::Relaxed);
+                let st = &player.stats;
+                let frames = st.frames.load(Ordering::Relaxed);
+                let now = (frames, st.net_lost.load(Ordering::Relaxed), st.late.load(Ordering::Relaxed));
+                window.push_back((now.0 - before.0, now.1 - before.1, now.2 - before.2));
+                before = now;
+                while window.len() > 10 {
+                    window.pop_front();
+                }
+                let pads = st.controllers.load(Ordering::Relaxed);
                 match ev {
                     Some(ps::Event::LoginPin { .. }) => set(format!("{}: enter your PlayStation login passcode in Source", c.nickname)),
-                    _ if frames > 0 => set(format!("Playing on {} ({} controller(s))", c.nickname, pads)),
+                    _ if frames > 0 => set(playing_status(&c.nickname, pads, &window)),
                     _ => {}
                 }
             }
@@ -649,6 +698,18 @@ mod tests {
         let f = ps::play::I420 { w, h, y, u, v, y_stride: ys, uv_stride: us };
         let two = crate::capture::yuy2_to_rgba(&ps::play::i420_to_yuy2(&f, true), w, h, COLOR);
         assert_eq!(i420_to_rgba(&f), two);
+    }
+
+    #[test]
+    fn the_status_counts_the_last_ten_seconds() {
+        let mut w = std::collections::VecDeque::new();
+        for i in 0..10u64 {
+            w.push_back((60 - i, i % 2, if i == 9 { 3 } else { 0 }));
+        }
+        assert_eq!(
+            playing_status("PS5", 1, &w),
+            "Playing on PS5 (1 controller(s)) · 51 fps · lost on the network: 5 · too late to decode: 3 (last 10 s)"
+        );
     }
 
     #[test]

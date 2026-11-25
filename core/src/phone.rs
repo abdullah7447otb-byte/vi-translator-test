@@ -49,6 +49,37 @@ pub struct Look {
     pub boxed: bool,
 }
 
+/// The phone's screen as words, for the language models' context: its title, and each message with
+/// who sent it (the character's own are on the right), top to bottom. None when there is less than
+/// two pieces of text: nothing round the one there is.
+pub fn chat_context(pieces: &[Piece]) -> Option<String> {
+    const MOST: usize = 24;
+    let cut = |t: &str| -> String { t.trim().chars().take(200).collect() };
+    let lines: Vec<String> = pieces
+        .iter()
+        .filter(|p| !p.en.trim().is_empty())
+        .map(|p| {
+            let en = cut(&p.en);
+            if p.title {
+                format!("Title: {en}")
+            } else if p.avatar.is_some() {
+                match p.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+                    Some(name) => format!("Chat list: {} - {en}", cut(name)),
+                    None => format!("Chat list: {en}"),
+                }
+            } else if p.look.label {
+                format!("Label: {en}")
+            } else if p.look.end {
+                format!("Sent by the player's character: {en}")
+            } else {
+                format!("Sent to the player's character: {en}")
+            }
+        })
+        .take(MOST)
+        .collect();
+    (lines.len() >= 2).then(|| lines.join("\n"))
+}
+
 fn px(rgba: &[u8], fw: u32, x: u32, y: u32) -> [u8; 3] {
     let i = ((y * fw + x) * 4) as usize;
     [rgba[i], rgba[i + 1], rgba[i + 2]]
@@ -1831,5 +1862,23 @@ mod tests {
         let p = pieces(&words, 400, 700);
         assert_eq!(p.len(), 2, "{p:?}"); // (the counts left out)
         assert_eq!((p[1].name.as_deref(), p[1].en.as_str()), (Some("Kenton"), "Still can't believe"));
+    }
+
+    #[test]
+    fn the_chat_round_a_message_says_who_sent_what() {
+        let p = |en: &str| Piece { rect: (0, 0, 10, 10), en: en.into(), title: false, name: None, look: Look::default(), split: None, avatar: None, preview: None, badge: None, emoji: Vec::new(), bubble: None };
+        let title = Piece { title: true, ..p("Lucia") };
+        let theirs = p("Where are you?");
+        let mine = Piece { look: Look { end: true, ..Look::default() }, ..p("On my way") };
+        let label = Piece { look: Look { label: true, ..Look::default() }, ..p("New message") };
+        let blank = p("  ");
+        assert_eq!(
+            chat_context(&[title, theirs.clone(), blank, mine, label]).as_deref(),
+            Some("Title: Lucia\nSent to the player's character: Where are you?\nSent by the player's character: On my way\nLabel: New message")
+        );
+        // one piece alone: nothing round it
+        assert_eq!(chat_context(&[theirs.clone()]), None);
+        let row = Piece { name: Some("Cal".into()), avatar: Some((0, 0, 8)), ..p("You up?") };
+        assert_eq!(chat_context(&[row, theirs]).unwrap().lines().next(), Some("Chat list: Cal - You up?"));
     }
 }

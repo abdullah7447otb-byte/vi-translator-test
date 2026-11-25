@@ -98,7 +98,8 @@ window.I18N = (() => {
       "Downloading the free translation model: {file} ...",
       "Loading the translation model ...",
       "Free local translator ready.",
-      "OCR unavailable: {error}"
+      "OCR unavailable: {error}",
+      "Playing on {name} ({pads} controller(s)) · {fps} fps · lost on the network: {net} · too late to decode: {late} (last 10 s)"
   ];
   const MSG_RE = MSGS.map((m) => {
     const names = [];

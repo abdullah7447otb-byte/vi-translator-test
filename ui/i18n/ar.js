@@ -411,4 +411,7 @@ I18N.add("ar", {
   "A border in Vice City colours, to tell it apart": "إطار بألوان فايس سيتي، لتمييزه",
   "Only reviewed translations: a reading that matches none isn't shown": "الترجمات المراجَعة فقط: القراءة التي لا تطابق أيًّا منها لا تُعرض",
   "1080p, sharper (needs a network cable)": "1080p أوضح (يحتاج كيبل إنترنت)",
+  "Playing on {name} ({pads} controller(s)) · {fps} fps · lost on the network: {net} · too late to decode: {late} (last 10 s)": "يلعب على {name} (أيادي: {pads}) · {fps} إطار/ث · ضاع من الشبكة: {net} · تأخر الجهاز: {late} (آخر 10 ث)",
+  "Smooth play": "لعب سلس",
+  "Reads the text at most 20 times a second while the PS5 plays, so a slower computer keeps up with the picture. Subtitles still show at once.": "يقرأ النص 20 مرة في الثانية كحد أقصى وقت اللعب من السوني، عشان الجهاز الأضعف يلحق على الصورة. الترجمة تطلع على طول مثل قبل.",
 });

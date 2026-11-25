@@ -243,6 +243,12 @@ fn made_up(line: &str, out: &str) -> bool {
 
 // ------------------------------------------------------------------------------------- translator
 
+/// GTA VI's two leads, for the language models' grammar (who is a man, who is a woman): only their
+/// names and that, as the game's makers have shown them.
+const GTA6_CAST: &str = "\n\
+             - The game is Grand Theft Auto VI. Its two lead characters: Jason (Jason Duval), a man, and\n\
+               Lucia (Lucia Caminos), a woman.";
+
 const DIALECTS: [(&str, &str); 4] = [
     ("msa", "Modern Standard Arabic (الفصحى), natural and readable, not stiff"),
     ("egyptian", "Egyptian Arabic dialect (اللهجة المصرية)"),
@@ -287,6 +293,21 @@ pub fn is_llm(engine: &str) -> bool {
     engine == "claude" || engine == "openai"
 }
 
+/// What a line is said in, for the language models (the other translators take each line alone).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum LineContext {
+    /// A spoken line or an instruction: the lines just before it are its context, and it becomes
+    /// theirs for the next one.
+    #[default]
+    Spoken,
+    /// Text on its own (a menu's word, a screen's title): no earlier lines, and it isn't one for the
+    /// next spoken line either.
+    Alone,
+    /// Text with what is round it on the same screen (the phone's chat: who sent each message), as
+    /// `Alone` otherwise.
+    Given(String),
+}
+
 pub struct Translator {
     http: reqwest::blocking::Client,
     model_dir: PathBuf,
@@ -297,6 +318,8 @@ pub struct Translator {
     /// target language the local model, phrase words and context are for
     lang: String,
     history: VecDeque<(String, String)>,
+    /// what the next lines are said in (`set_context`)
+    context: LineContext,
     pub cost_usd: f64,
     pub lines: u64,
     /// the offline model failed to download or load, when and why: not tried again on every line
@@ -310,7 +333,12 @@ impl Translator {
             .timeout(Duration::from_secs(20))
             .build()
             .expect("http client");
-        Self { http, model_dir, local: None, cache: HashMap::new(), phrase_words: HashMap::new(), lang: String::new(), history: VecDeque::new(), cost_usd: 0.0, lines: 0, local_failed: None }
+        Self { http, model_dir, local: None, cache: HashMap::new(), phrase_words: HashMap::new(), lang: String::new(), history: VecDeque::new(), context: LineContext::Spoken, cost_usd: 0.0, lines: 0, local_failed: None }
+    }
+
+    /// What the next lines are said in, until it's set again.
+    pub fn set_context(&mut self, c: LineContext) {
+        self.context = c;
     }
 
     /// `line` may contain button-icon placeholders "⟦n⟧" (see `ocr::text_with_icons`); `icons[n-1]` is
@@ -387,7 +415,12 @@ impl Translator {
         let expanded = expand_slang(line);
         let line = expanded.as_str();
         let icon_sig: usize = icons.iter().map(|i| i.len()).sum();
-        let key = format!("{}\u{1}{}\u{1}{}\u{1}{}\u{1}{:?}\u{1}{icon_sig}", cfg.engine, cfg.target_lang, cfg.dialect, line, phrases);
+        // (a line with a screen round it is its own: "Where are you?" in one chat isn't in another)
+        let around = match &self.context {
+            LineContext::Given(t) if is_llm(&cfg.engine) => t.as_str(),
+            _ => "",
+        };
+        let key = format!("{}\u{1}{}\u{1}{}\u{1}{}\u{1}{:?}\u{1}{icon_sig}\u{1}{around}", cfg.engine, cfg.target_lang, cfg.dialect, line, phrases);
         if let Some(s) = self.cache.get(&key) {
             return Ok(s.clone());
         }
@@ -634,6 +667,7 @@ impl Translator {
             format!("{} ({}), natural and readable", lang.name, lang.native)
         };
         let name = lang.name;
+        let cast = if cfg.game() == "gta6" { GTA6_CAST } else { "" };
         let system = format!(
             "You translate English video-game text (subtitles and on-screen instructions) into {name} for players reading live.\n\
              Target language: {target}.\n\
@@ -647,7 +681,9 @@ impl Translator {
                translate them in the same tag (same number). Never add tags that weren't in the input.\n\
              - Tags like <b1/> are controller button icons (e.g. the X or triangle button). Put each one where it\n\
                belongs in the {name} sentence, e.g. in Arabic \"Press <b1/> to jump\" -> \"اضغط <b1/> للقفز\". Keep every\n\
-               icon tag exactly once."
+               icon tag exactly once.\n\
+             - Use the context to get right who speaks to whom: in {name} that decides the grammatical gender\n\
+               and number of \"you\", of verbs and of adjectives.{cast}"
         );
         // Tag the highlighted phrases: "Go to the <c1>bank</c1>."
         let mut tagged = line.to_string();
@@ -665,11 +701,15 @@ impl Translator {
                 colors.insert(n.to_string(), color.clone());
             }
         }
-        let context: Vec<String> = self.history.iter().map(|(en, ar)| format!("EN: {en}\nAR: {ar}")).collect();
-        let prompt = if context.is_empty() {
-            format!("NEW line:\n{tagged}")
-        } else {
-            format!("Earlier lines:\n{}\n\nNEW line:\n{tagged}", context.join("\n"))
+        let prompt = match &self.context {
+            LineContext::Spoken if !self.history.is_empty() => {
+                let earlier: Vec<String> = self.history.iter().map(|(en, ar)| format!("EN: {en}\nAR: {ar}")).collect();
+                format!("Earlier lines:\n{}\n\nNEW line:\n{tagged}", earlier.join("\n"))
+            }
+            LineContext::Given(around) => {
+                format!("The line is on a screen in the game. What the screen shows, for context only (do not translate it):\n{around}\n\nNEW line:\n{tagged}")
+            }
+            _ => format!("NEW line:\n{tagged}"),
         };
         (system, prompt, colors)
     }
@@ -956,9 +996,12 @@ impl Translator {
         // Button icons: "<b1/>" -> icon segment (an icon the model dropped is added at the end).
         let segs = split_icon_tags(segs, icons);
         let plain: String = segs.iter().filter(|s| !is_icon(s)).map(|s| s.0.as_str()).collect();
-        self.history.push_back((line.to_string(), plain));
-        while self.history.len() > 3 {
-            self.history.pop_front();
+        // (only spoken lines are the next spoken line's context: a menu word or a phone message isn't)
+        if self.context == LineContext::Spoken {
+            self.history.push_back((line.to_string(), plain));
+            while self.history.len() > 3 {
+                self.history.pop_front();
+            }
         }
         segs
     }
@@ -1372,6 +1415,45 @@ pub fn keeps_terms(en: &str, ar: &str) -> bool {
 #[cfg(test)]
 mod openai_tests {
     use super::*;
+
+    #[test]
+    fn a_line_s_context_is_the_one_it_is_said_in() {
+        let dir = std::env::temp_dir().join("vit-context-test");
+        let mut tr = Translator::new(dir);
+        let mut cfg = Config::default();
+        cfg.target_lang = "ar".into();
+        tr.history.push_back(("You coming?".into(), "جاي؟".into()));
+        // a spoken line: the lines before it
+        let (system, user, _) = tr.llm_prompt(&cfg, "Yeah.", &[], &[]);
+        assert!(user.starts_with("Earlier lines:\nEN: You coming?\nAR: جاي؟\n\nNEW line:\nYeah."), "{user}");
+        assert!(system.contains("who speaks to whom"));
+        // a menu's word: alone, and not the next spoken line's context
+        tr.set_context(LineContext::Alone);
+        let (_, user, _) = tr.llm_prompt(&cfg, "Settings", &[], &[]);
+        assert_eq!(user, "NEW line:\nSettings");
+        tr.llm_reply("الإعدادات", &HashMap::new(), &[], "Settings");
+        assert_eq!(tr.history.len(), 1);
+        // the phone's chat: the screen round it, not the spoken lines
+        tr.set_context(LineContext::Given("Title: Lucia\nSent to the player's character: Where are you?".into()));
+        let (_, user, _) = tr.llm_prompt(&cfg, "Where are you?", &[], &[]);
+        assert!(user.contains("for context only (do not translate it):\nTitle: Lucia\n") && !user.contains("You coming?"), "{user}");
+        tr.llm_reply("وينك؟", &HashMap::new(), &[], "Where are you?");
+        assert_eq!(tr.history.len(), 1);
+        // spoken again: it is a context again
+        tr.set_context(LineContext::Spoken);
+        tr.llm_reply("أيوه.", &HashMap::new(), &[], "Yeah.");
+        assert_eq!(tr.history.back().map(|h| h.0.as_str()), Some("Yeah."));
+    }
+
+    #[test]
+    fn gta_vi_s_leads_are_named_for_the_grammar() {
+        let tr = Translator::new(std::env::temp_dir().join("vit-cast-test"));
+        let mut cfg = Config::default();
+        cfg.target_lang = "ar".into();
+        cfg.profile = "gta6".into();
+        let (system, _, _) = tr.llm_prompt(&cfg, "Hi.", &[], &[]);
+        assert!(system.contains("Jason (Jason Duval), a man") && system.contains("Lucia (Lucia Caminos), a woman"), "{system}");
+    }
 
     #[test]
     fn reads_the_answer_text() {

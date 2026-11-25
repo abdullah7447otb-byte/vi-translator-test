@@ -77,8 +77,14 @@ pub fn press(p: Pad, hold: Duration) {
 /// What the player has done so far (for the app's status line).
 #[derive(Default)]
 pub struct Stats {
+    /// pictures decoded
     pub frames: AtomicU64,
+    /// frames that came in but couldn't be decoded
     pub bad_frames: AtomicU64,
+    /// frames lost on the network (chiaki's count: never arrived whole)
+    pub net_lost: AtomicU64,
+    /// frames dropped because this computer decoded slower than they came
+    pub late: AtomicU64,
     pub controllers: AtomicU64,
 }
 
@@ -123,11 +129,14 @@ impl Handler for Inner {
         self.screen.event(&e);
     }
 
-    fn video(&self, frame: &[u8], _frames_lost: i32) -> bool {
+    fn video(&self, frame: &[u8], frames_lost: i32) -> bool {
+        if frames_lost > 0 {
+            self.stats.net_lost.fetch_add(frames_lost as u64, Ordering::Relaxed);
+        }
         match self.to_decoder.lock().unwrap().try_send(frame.to_vec()) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                self.stats.bad_frames.fetch_add(1, Ordering::Relaxed);
+                self.stats.late.fetch_add(1, Ordering::Relaxed);
                 self.resync.store(true, Ordering::Relaxed);
             }
             // (the player is stopping)

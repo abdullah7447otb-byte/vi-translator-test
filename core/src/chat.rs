@@ -33,6 +33,14 @@ impl Bubble {
     }
 }
 
+/// A message that came in, as words for the language models' context: who sent it to the
+/// player's character. None without a name: nothing more than the message itself.
+pub fn message_context(b: &Bubble) -> Option<String> {
+    let name = b.name.as_deref().map(str::trim).filter(|n| !n.is_empty())?;
+    let name: String = name.chars().take(60).collect();
+    Some(format!("A text message to the player's character, from: {name}"))
+}
+
 fn px(rgba: &[u8], fw: u32, x: u32, y: u32) -> [u8; 3] {
     let i = ((y * fw + x) * 4) as usize;
     [rgba[i], rgba[i + 1], rgba[i + 2]]
@@ -480,5 +488,12 @@ mod tests {
         // a bright sky across the whole corner is none
         fill(&mut rgba, (1344, 756, 576, 324), 200);
         assert_eq!(find_bubble(&rgba, fw, fh), None);
+    }
+
+    #[test]
+    fn a_message_s_context_is_who_sent_it() {
+        let b = Bubble { rect: (0, 0, 1, 1), name: Some(" Cal ".into()), en: "You up?".into(), avatar: None, badge: None, emoji: Vec::new(), bg: [0; 3], fg: [0; 3], name_fg: [0; 3] };
+        assert_eq!(message_context(&b).as_deref(), Some("A text message to the player's character, from: Cal"));
+        assert_eq!(message_context(&Bubble { name: None, ..b }), None);
     }
 }
