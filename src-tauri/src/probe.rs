@@ -64,8 +64,8 @@ pub fn probe_phone(out: &str, files: &[String]) -> anyhow::Result<()> {
         let started = Instant::now();
         let mut settled_at: Option<Instant> = None;
         // (the same frame again and again, as a phone held still: until every message has its Arabic and
-        // that has held for a second, or 20 s)
-        while started.elapsed() < Duration::from_secs(20) {
+        // that has held for a second, or 60 s — a slow computer, a virtual Mac, reads a frame in seconds)
+        while started.elapsed() < Duration::from_secs(60) {
             seq += 1;
             let fr = Arc::new(FrameData { w: f.w, h: f.h, rgba: f.rgba.clone(), seq });
             let wait = reader.step(engine::Input::Frame(&fr, &ocr));

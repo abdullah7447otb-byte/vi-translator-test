@@ -2011,6 +2011,13 @@ window.AS = (() => {
           own *= 0.93;
           d.style.fontSize = `${own}px`;
         }
+        // (a box too small for even that, a short card's word: its padding goes, then the size, so
+        // nothing runs out of it)
+        if (!fits(d)) d.style.padding = "0";
+        while (!fits(d) && own > base * 0.15) {
+          own *= 0.93;
+          d.style.fontSize = `${own}px`;
+        }
       }
       el.dataset.fs = fs.toFixed(2);
       INPLACE.last = { key, el, W, H };
