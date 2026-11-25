@@ -445,6 +445,7 @@ pub fn save_png(f: &FrameData, path: &std::path::Path) -> anyhow::Result<()> {
 /// A card with its console off still sends a picture, "No Signal": the Mac stays awake then too.)
 #[cfg(target_os = "macos")]
 fn keep_awake(on: bool, held: &mut Option<std::process::Child>) {
+    no_app_nap(on);
     // (one that was ended from outside is started again)
     let running = held.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)));
     if on && !running {
@@ -455,6 +456,35 @@ fn keep_awake(on: bool, held: &mut Option<std::process::Child>) {
             let _ = c.wait();
         }
     }
+}
+
+/// App Nap off while a picture comes in: with the app's window hidden or covered (the PS5 on its own
+/// screen, the translations on an iPad, a Mac mini with no screen at all) macOS would otherwise slow
+/// the app's timers and threads, and the reading and translating with them. A user-initiated,
+/// latency-critical activity for as long as it lasts (kept on the thread that asks: the capture
+/// manager's).
+#[cfg(target_os = "macos")]
+fn no_app_nap(on: bool) {
+    use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+    thread_local! {
+        static ACTIVITY: std::cell::RefCell<Option<objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2::runtime::NSObjectProtocol>>>> = const { std::cell::RefCell::new(None) };
+    }
+    ACTIVITY.with(|a| {
+        let mut a = a.borrow_mut();
+        let info = NSProcessInfo::processInfo();
+        match (on, a.is_some()) {
+            (true, false) => {
+                let why = NSString::from_str("Reading and translating the game's picture");
+                *a = Some(info.beginActivityWithOptions_reason(NSActivityOptions::UserInitiatedAllowingIdleSystemSleep | NSActivityOptions::LatencyCritical, &why));
+            }
+            (false, true) => {
+                if let Some(t) = a.take() {
+                    unsafe { info.endActivity(&t) };
+                }
+            }
+            _ => {}
+        }
+    });
 }
 
 /// Keeps a capture running on the window named in the config; restarts it when the title changes
