@@ -105,6 +105,21 @@ jobs:
           mkdir -p ../out
           cp ../target/universal-apple-darwin/release/bundle/dmg/*.dmg ../out/VI-Translator-macos.dmg
 
+      # An Intel Mac's build has no offline translator (no ONNX Runtime for Intel Macs): there the tests that
+      # draw translations use a stand-in translator (tools/mock_translator.py, Arabic for every line) — the
+      # drawing is what they check. On Apple silicon the app's own offline translator is used.
+      - name: Stand-in translator (Intel Mac)
+        if: matrix.os == 'macos'
+        run: |
+          if [ "$(uname -m)" = x86_64 ]; then
+            nohup python3 tools/mock_translator.py 5000 > /dev/null 2>&1 &
+            sleep 1
+            echo "VIT_PROBE_ENGINE=libre" >> "$GITHUB_ENV"
+            echo "VIT_PROBE_LIBRE=http://127.0.0.1:5000" >> "$GITHUB_ENV"
+            echo "VIT_SNAP_SERVICE=libre" >> "$GITHUB_ENV"
+            echo "stand-in translator on :5000"
+          fi
+
       # The app's own reading (Apple Vision, the offline translator) on CouchSubs' real GTA VI phone frames,
       # drawn by the app's own code in headless Chrome, and checked (tools/phone_render.py): every message's
       # Arabic inside its own bubble on the game's phone, one text size, turned as the phone is, no English
@@ -124,7 +139,7 @@ jobs:
       - name: UI renders (macOS)
         if: matrix.os == 'macos'
         run: |
-          python3 tools/ui_render.py target/universal-apple-darwin/release/vi-translator "$VIT_FRAMES" ui ui-renders
+          python3 tools/ui_render.py target/universal-apple-darwin/release/vi-translator "$VIT_FRAMES" ui ui-renders ${VIT_SNAP_SERVICE:+--service $VIT_SNAP_SERVICE}
           cat ui-renders/ui-renders.md
 
       - uses: actions/upload-artifact@v4
