@@ -1091,7 +1091,11 @@ const ENGINES = [
   { id: "libre", name: "LibreTranslate", badge: "Free / self-hosted", d: "Open source. Use your own server or a hosted one." },
   { id: "claude", name: "Claude (Anthropic)", badge: "≈ $1 per game", d: "Best with slang, jokes and context. Can use a dialect. Paid per use." },
   { id: "openai", name: "ChatGPT (OpenAI)", badge: "≈ $1 per game", d: "Natural translations with context, like Claude. Can use a dialect. Paid per use." },
+  // (macOS 26 or later only: shown when the app's helper says this Mac has it; see appleStatus)
+  { id: "apple", name: "Apple (on this Mac, offline)", badge: "Free", d: "Apple's own translation, on this Mac's Neural Engine: no account, no internet once its language is downloaded. Usually more natural than the local one. If it fails on a line, the local translator takes it.", apple: true },
 ];
+// Apple's translation on this Mac: "installed", "supported" (its language to download first), or none
+let appleStatus = "missing";
 const ENGINE_FIELDS = {
   local: [],
   deepl: [["deepl_key", "DeepL API key", "password", "Free keys end in :fx"]],
@@ -1138,7 +1142,7 @@ function renderLang() {
 
 function renderEngines() {
   $("engines").innerHTML = "";
-  for (const e of ENGINES) {
+  for (const e of ENGINES.filter((e) => !e.apple || appleStatus === "installed" || appleStatus === "supported")) {
     const el = document.createElement("label");
     el.className = `engine${cfg.engine === e.id ? " active" : ""}`;
     el.innerHTML = `<input type="radio" name="engine" ${cfg.engine === e.id ? "checked" : ""} />
@@ -1182,6 +1186,25 @@ function renderEngines() {
     f.appendChild(input);
     if (help) f.insertAdjacentHTML("beforeend", `<div class="muted small" style="margin:4px 0 0">${t(help)}</div>`);
     form.appendChild(f);
+  }
+  if (cfg.engine === "apple") {
+    const p = document.createElement("div");
+    p.className = "field";
+    const ready = appleStatus === "installed";
+    p.innerHTML = `<div class="muted small">${AS.esc(ready ? t("Arabic is downloaded on this Mac: Apple's translation is ready.") : t("Download Arabic for Apple translation first: System Settings › General › Language & Region › Translation Languages › Arabic. Until then the local translator translates."))}</div>`;
+    if (!ready) {
+      const b = document.createElement("button");
+      b.className = "btn";
+      b.textContent = t("Download Arabic for Apple translation");
+      b.addEventListener("click", () => invoke("open_translation_settings").catch(() => {}));
+      p.appendChild(b);
+      const again = document.createElement("button");
+      again.className = "btn";
+      again.textContent = t("Check again");
+      again.addEventListener("click", async () => { appleStatus = await invoke("apple_status").catch(() => "missing"); renderEngines(); });
+      p.appendChild(again);
+    }
+    form.appendChild(p);
   }
   if (cfg.engine === "openai") {
     const row = document.createElement("div");
@@ -2895,6 +2918,8 @@ function lockControls() {
     log({ error: t("Could not list fonts: {e}", { e }) });
   }
   renderEngines();
+  // (Apple's translation: only on a Mac that has it)
+  invoke("apple_status").then((st) => { appleStatus = st || "missing"; renderEngines(); }).catch(() => {});
   applyLock();
   renderProfile();
   renderPages();

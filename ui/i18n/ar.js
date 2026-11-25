@@ -513,4 +513,10 @@ I18N.add("ar", {
   "Asking the server…": "جارٍ سؤال الخادم…",
   "It answered: {text}": "ردّ: {text}",
   "Enter your OpenAI API key, or a server address.": "اكتب مفتاح OpenAI، أو عنوان خادم.",
+  "Apple (on this Mac, offline)": "Apple (على هذا الماك، بدون نت)",
+  "Apple's own translation, on this Mac's Neural Engine: no account, no internet once its language is downloaded. Usually more natural than the local one. If it fails on a line, the local translator takes it.": "ترجمة Apple نفسها على الـ Neural Engine في هذا الماك: بدون حساب، وبدون نت بعد ما تنزّل اللغة. غالباً أطبع من المحلي. وإذا فشلت في سطر، يترجمه المترجم المحلي.",
+  "Arabic is downloaded on this Mac: Apple's translation is ready.": "العربي منزّل على هذا الماك: ترجمة Apple جاهزة.",
+  "Download Arabic for Apple translation first: System Settings › General › Language & Region › Translation Languages › Arabic. Until then the local translator translates.": "نزّل العربي لترجمة Apple أول: إعدادات النظام › عام › اللغة والمنطقة › لغات الترجمة › العربية. ولين تنزّله، المترجم المحلي يترجم.",
+  "Download Arabic for Apple translation": "نزّل العربي لترجمة Apple",
+  "Check again": "تحقق مرة ثانية",
 });

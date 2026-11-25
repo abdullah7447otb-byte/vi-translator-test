@@ -424,7 +424,8 @@ impl Translator {
         }
         // The free offline model into Arabic: the glossary's whole lines as they are, its names as
         // "[n]" (put back in Arabic below), and its Arabic tidied (crate::glossary)
-        let offline_ar = cfg.engine == "local" && cfg.target_lang == "ar";
+        // (the glossary's whole lines, the names kept, the clean-up: for the offline translator and Apple's alike)
+        let offline_ar = (cfg.engine == "local" || cfg.engine == "apple") && cfg.target_lang == "ar";
         if offline_ar && icons.is_empty() && phrases.is_empty() {
             if let Some(ar) = crate::glossary::whole_line(&cfg.glossary, line) {
                 return Ok(vec![(ar, None)]);
@@ -502,7 +503,7 @@ impl Translator {
             _ => "",
         };
         // (the player's glossary changes the offline model's answer: a new one is a new key)
-        let glossary = if cfg.engine == "local" { cfg.glossary.as_str() } else { "" };
+        let glossary = if cfg.engine == "local" || cfg.engine == "apple" { cfg.glossary.as_str() } else { "" };
         let key = format!("{}\u{1}{}\u{1}{}\u{1}{}\u{1}{:?}\u{1}{icon_sig}\u{1}{around}\u{1}{glossary}", cfg.engine, cfg.target_lang, cfg.dialect, line, phrases);
         if let Some(s) = self.cache.get(&key) {
             return Ok(s.clone());
@@ -538,7 +539,7 @@ impl Translator {
             }
             // The offline model translates one sentence well and a paragraph badly (a menu's help text: it
             // drifts and invents, even Bible verses): several sentences go one by one, in the same batch.
-            let parts = if cfg.engine == "local" && icons.is_empty() && phrases.is_empty() { sentences(&plain) } else { Vec::new() };
+            let parts = if (cfg.engine == "local" || cfg.engine == "apple") && icons.is_empty() && phrases.is_empty() { sentences(&plain) } else { Vec::new() };
             let (out, sentence) = if parts.len() > 1 {
                 let out = self.mt_batch(cfg, &parts, status)?;
                 let joined = out.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
@@ -643,6 +644,17 @@ impl Translator {
 
     fn mt_batch(&mut self, cfg: &Config, texts: &[String], status: &dyn Fn(String)) -> Result<Vec<String>> {
         match cfg.engine.as_str() {
+            // Apple's on-device translation (macOS 26): on any failure the offline translator takes the line,
+            // and the reason is in the log
+            "apple" => match crate::apple_translate::translate(crate::langs::get(&cfg.target_lang).code, texts) {
+                Ok(out) => Ok(out),
+                Err(e) => {
+                    crate::vlog!("[apple] {e:#}: the offline translator takes this line");
+                    let mut local = cfg.clone();
+                    local.engine = "local".into();
+                    self.mt_batch(&local, texts, status)
+                }
+            },
             "local" => {
                 if self.local.is_none() {
                     // (a download that failed is tried again after a while, not on every line)

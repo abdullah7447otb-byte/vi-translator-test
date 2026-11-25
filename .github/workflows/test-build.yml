@@ -68,6 +68,28 @@ jobs:
           mkdir -p ../out
           cp "../target/${{ matrix.target }}/release/vi-translator.exe" ../out/vi-translator-windows-x64.exe
 
+      # Apple's on-device translation helper (src-tauri/apple): built with a macOS 26 SDK when the runner has
+      # one, else a stand-in that says so (the app then offers no Apple engine). Bundled in the .app's MacOS.
+      - name: Apple translation helper (macOS)
+        if: matrix.os == 'macos'
+        working-directory: src-tauri/apple
+        run: |
+          mkdir -p build
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$X" ]; then sudo xcode-select -s "$X"; fi
+          echo "SDK: $(xcrun --show-sdk-version)"
+          if swiftc -O -parse-as-library -target arm64-apple-macos11 vit-apple-translate.swift -o build/arm64 \
+             && swiftc -O -parse-as-library -target x86_64-apple-macos11 vit-apple-translate.swift -o build/x86_64; then
+            lipo -create build/arm64 build/x86_64 -output build/vit-apple-translate
+            echo "built with Apple's Translation framework"
+          else
+            cp stub.sh build/vit-apple-translate
+            echo "::warning::no macOS 26 SDK on this runner: the Apple engine is a stand-in in this build"
+          fi
+          chmod +x build/vit-apple-translate
+          codesign -s - -f build/vit-apple-translate || true
+          echo "status on this runner: $(build/vit-apple-translate --status en ar || echo failed)"
+
       - name: Build (macOS .dmg)
         if: matrix.os == 'macos'
         working-directory: src-tauri

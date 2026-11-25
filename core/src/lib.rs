@@ -26,6 +26,7 @@ pub mod phone;
 pub mod phone_pose;
 pub mod screen_anchor;
 pub mod phone_anchor;
+pub mod apple_translate;
 pub mod chat;
 pub mod phrasebook;
 pub mod screens;

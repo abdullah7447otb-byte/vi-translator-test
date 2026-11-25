@@ -699,6 +699,28 @@ fn open_screen_recording_settings(webview: tauri::Webview) -> Result<(), String>
     Ok(())
 }
 
+/// Apple's on-device translation on this Mac, English → the chosen language: "installed", "supported" (its
+/// language to download), "unsupported", "no-os" (before macOS 26) or "missing" (not a Mac, no helper).
+#[tauri::command]
+async fn apple_status(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let lang = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).target_lang.clone();
+    if !cfg!(target_os = "macos") {
+        return Ok("missing".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || vi_translator_core::apple_translate::status(vi_translator_core::langs::get(&lang).code)).await.map_err(|e| e.to_string())
+}
+
+/// System Settings at Language & Region, where Translation Languages are downloaded (macOS).
+#[tauri::command]
+fn open_translation_settings(webview: tauri::Webview) -> Result<(), String> {
+    main_only(&webview)?;
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg("x-apple.systempreferences:com.apple.Localization-Settings.extension").spawn().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// The log's folder, opened in the file manager.
 #[tauri::command]
 fn open_log_folder(webview: tauri::Webview) -> Result<String, String> {
@@ -2028,7 +2050,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(hotkey::plugin())
         .manage(AppState { cfg: cfg.clone(), shared: shared.clone(), saver: saver.clone(), memory: memory.clone(), update: update.clone() })
-        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, test_llm_server, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin])
+        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, test_llm_server, apple_status, open_translation_settings, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin])
         .setup(move |app| {
             if let Some(w) = app.get_webview_window("main") {
                 let test = if updater::TEST_BUILD { " (test build · updates off)" } else { "" };
