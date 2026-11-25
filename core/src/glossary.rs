@@ -13,6 +13,8 @@
 use std::sync::RwLock;
 
 const BUILT_IN: &str = include_str!("glossary_ar.tsv");
+/// Lines the game shows on their own only (the map's legend): never taken out of a sentence.
+const LINES: &str = include_str!("glossary_ar_lines.tsv");
 
 /// The player's own lines, "English = Arabic" one a line (the setting), parsed when it changes.
 static PLAYER: RwLock<(String, Vec<(String, String)>)> = RwLock::new((String::new(), Vec::new()));
@@ -67,7 +69,8 @@ fn plain(t: &str) -> String {
 /// The Arabic for a whole line the glossary has (its case and a full stop at its end aside).
 pub fn whole_line(setting: &str, line: &str) -> Option<String> {
     let want = plain(line);
-    entries(setting).into_iter().find(|(en, _)| plain(en) == want).map(|(_, ar)| ar)
+    static L: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    entries(setting).into_iter().chain(L.get_or_init(|| parse_tsv(LINES)).iter().cloned()).find(|(en, _)| plain(en) == want).map(|(_, ar)| ar)
 }
 
 /// `line` with each glossary name in it (a whole word or words, any case) as "[n]", numbered after
@@ -90,7 +93,10 @@ pub fn protect(setting: &str, line: &str, taken: usize) -> (String, Vec<String>)
             let before = lower[..i].chars().next_back();
             let after = lower[end..].chars().next();
             let edge = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '\'');
-            if edge(before) && edge(after) && out.is_char_boundary(i) && out.is_char_boundary(end) {
+            // (a name the glossary writes with a capital is a name only where the line writes it so: "Downtown"
+            // is the district, "meet me downtown" a word)
+            let named = !en.chars().next().is_some_and(char::is_uppercase) || out[i..].chars().next().is_some_and(char::is_uppercase);
+            if edge(before) && edge(after) && out.is_char_boundary(i) && out.is_char_boundary(end) && named {
                 arabic.push(ar.clone());
                 let mark = format!("[{}]", taken + arabic.len());
                 out.replace_range(i..end, &mark);
@@ -157,6 +163,27 @@ fn has_repeat(en: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_place_and_legend_entry_round_trips_and_names_need_their_capital() {
+        // every name comes back as its Arabic through [n]
+        for (en, ar) in parse_tsv(BUILT_IN) {
+            let (p, arabic) = protect("", &format!("Go to {en} now"), 0);
+            assert!(p.contains("[1]"), "{en}: {p}");
+            assert_eq!(arabic.first(), Some(&ar), "{en}");
+        }
+        // the longest first, and two names in one line both kept
+        let (p, arabic) = protect("", "Fly from Vice City International Airport to Vice Beach", 0);
+        assert_eq!(p, "Fly from [1] to [2]");
+        assert_eq!(arabic, vec!["مطار فايس سيتي الدولي".to_string(), "فايس بيتش".to_string()]);
+        // a word, not the district
+        assert_eq!(protect("", "Meet me downtown", 0).1.len(), 0);
+        // the legend: whole lines only
+        assert_eq!(whole_line("", "Gas Station").as_deref(), Some("محطة وقود"));
+        assert_eq!(whole_line("", "Pay 'n' Spray").as_deref(), Some("باي آند سبراي"));
+        assert_eq!(protect("", "Find a safe place", 0).1.len(), 0);
+        assert_eq!(protect("", "Take it to the Gas Station", 0).1.len(), 0);
+    }
 
     #[test]
     fn whole_lines_and_names() {

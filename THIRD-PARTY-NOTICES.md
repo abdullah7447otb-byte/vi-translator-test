@@ -24,3 +24,9 @@ Parts of it come from, or are ported from, the projects below. Their notices are
 
 - Source: `third-party/mbedtls`.
 - License: Apache-2.0 or GPL-2.0-or-later. See its own LICENSE file.
+
+## GTA VI Landmarks
+
+- Source: map.gtadb.org, as listed on gta6map.city.
+- License: Creative Commons Attribution 4.0 (CC BY 4.0).
+- Place names only, in `core/src/glossary_ar.tsv` and `core/src/glossary_ar_lines.tsv`. The Arabic for each name is ours.
