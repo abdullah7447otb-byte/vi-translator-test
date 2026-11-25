@@ -223,7 +223,8 @@ pub fn grab_screen_region(x: i32, y: i32, w: i32, h: i32) -> Option<Vec<u8>> {
 /// window that has no title (`kCGWindowName`) — a game-streaming window like PS Remote Play's can be
 /// one — and windows in another Space (a full-screen app). Here a window without a title goes by its
 /// app's name, and windows off this Space are listed too.
-// (CGWindowListCreateImage, as xcap uses too: ScreenCaptureKit is the newer way)
+// (pictures from ScreenCaptureKit where it works, macOS 12.3 and later; CGWindowListCreateImage,
+// as xcap uses, where it doesn't)
 #[cfg(target_os = "macos")]
 #[allow(deprecated)]
 mod mac {
@@ -387,6 +388,67 @@ mod mac {
         out
     }
 
+    /// ScreenCaptureKit's capture of one window (native/vit_sck.m).
+    struct Sck {
+        p: *mut c_void,
+        seq: u64,
+        buf: Vec<u8>,
+    }
+    // (used by the capture thread alone)
+    unsafe impl Send for Sck {}
+
+    unsafe extern "C" {
+        fn vit_sck_start(window_id: u32, pw: f64, ph: f64, nominal: i32, fps: i32, err: *mut u8, errlen: usize) -> *mut c_void;
+        fn vit_sck_frame(p: *mut c_void, have: u64, dst: *mut u8, dst_len: usize, w: *mut u32, h: *mut u32, seq: *mut u64) -> i32;
+        fn vit_sck_resize(p: *mut c_void, pw: f64, ph: f64, nominal: i32, fps: i32);
+        fn vit_sck_stop(p: *mut c_void);
+    }
+
+    /// What ScreenCaptureKit is asked for: 60 pictures a second at most (the app reads fewer).
+    const SCK_FPS: i32 = 60;
+
+    impl Sck {
+        fn start(w: &Win) -> std::result::Result<Self, String> {
+            let mut err = [0u8; 256];
+            let nominal = (w.rect.size.width >= NOMINAL_FROM_W) as i32;
+            let p = unsafe { vit_sck_start(w.id, w.rect.size.width, w.rect.size.height, nominal, SCK_FPS, err.as_mut_ptr(), err.len()) };
+            if p.is_null() {
+                let end = err.iter().position(|b| *b == 0).unwrap_or(err.len());
+                return Err(String::from_utf8_lossy(&err[..end]).into_owned());
+            }
+            Ok(Sck { p, seq: 0, buf: Vec::new() })
+        }
+
+        /// The newest picture, if there is a new one; Err: the stream stopped.
+        fn frame(&mut self) -> std::result::Result<Option<(u32, u32, Vec<u8>)>, ()> {
+            loop {
+                let (mut w, mut h, mut seq) = (0u32, 0u32, 0u64);
+                let r = unsafe { vit_sck_frame(self.p, self.seq, self.buf.as_mut_ptr(), self.buf.len(), &mut w, &mut h, &mut seq) };
+                match r {
+                    1 => {
+                        self.seq = seq;
+                        let n = w as usize * h as usize * 4;
+                        return Ok(Some((w, h, self.buf[..n].to_vec())));
+                    }
+                    0 => return Ok(None),
+                    -2 => self.buf.resize(w as usize * h as usize * 4, 0),
+                    _ => return Err(()),
+                }
+            }
+        }
+
+        fn resize(&self, w: &Win) {
+            let nominal = (w.rect.size.width >= NOMINAL_FROM_W) as i32;
+            unsafe { vit_sck_resize(self.p, w.rect.size.width, w.rect.size.height, nominal, SCK_FPS) };
+        }
+    }
+
+    impl Drop for Sck {
+        fn drop(&mut self) {
+            unsafe { vit_sck_stop(self.p) };
+        }
+    }
+
     /// What to do when the Screen Recording permission is missing (the Source tab shows a button that
     /// opens the setting: see main.rs open_screen_recording_settings).
     pub const SCREEN_RECORDING: &str = "Screen Recording is off for VI Translator: turn it on in System Settings › Privacy & Security › Screen Recording, then open VI Translator again.";
@@ -414,6 +476,19 @@ mod mac {
             vi_translator_core::vlog!("[capture] \"{}\": its first picture is one colour (blank, or a plain screen)", win.label);
         }
         let id = win.id;
+        // ScreenCaptureKit where it works (VIT_CAPTURE=cg: the old way, to compare)
+        let mut sck = if std::env::var("VIT_CAPTURE").as_deref() == Ok("cg") {
+            None
+        } else {
+            match Sck::start(&win) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    vi_translator_core::vlog!("[capture] ScreenCaptureKit: {e}; capturing \"{}\" with CoreGraphics", win.label);
+                    None
+                }
+            }
+        };
+        vi_translator_core::vlog!("[capture] \"{}\" with {}", win.label, if sck.is_some() { "ScreenCaptureKit" } else { "CoreGraphics" });
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let thread = std::thread::spawn(move || {
@@ -422,16 +497,67 @@ mod mac {
             let mut misses = 0;
             // (where the window is: looked up again twice a second, not for every frame, as listing
             // the windows costs about as much as reading one)
+            let mut size = (win.rect.size.width, win.rect.size.height);
             let mut win = Some(win);
             let mut looked = Instant::now();
+            // (the newest ScreenCaptureKit picture, and whether it's been passed on: the system
+            // sends one only when the window changes, so a still window's is passed on again
+            // four times a second, as the reading expects pictures to keep coming)
+            let mut latest: Option<(u32, u32, Vec<u8>)> = None;
+            let (mut fresh_full, mut fresh_preview) = (false, false);
             while !flag.load(Ordering::Relaxed) {
                 let full = shared.full_due(last);
                 let preview = shared.preview_due(last_preview);
-                if full || preview {
-                    if win.is_none() || looked.elapsed() >= Duration::from_millis(500) {
-                        win = by_id(id);
-                        looked = Instant::now();
+                if win.is_none() || looked.elapsed() >= Duration::from_millis(500) {
+                    win = by_id(id);
+                    looked = Instant::now();
+                    if let (Some(s), Some(w)) = (sck.as_ref(), win.as_ref()) {
+                        let now = (w.rect.size.width, w.rect.size.height);
+                        if (now.0 - size.0).abs() >= 1.0 || (now.1 - size.1).abs() >= 1.0 {
+                            size = now;
+                            s.resize(w);
+                        }
                     }
+                }
+                if let Some(s) = sck.as_mut() {
+                    match s.frame() {
+                        Ok(Some(f)) => {
+                            latest = Some(f);
+                            fresh_full = true;
+                            fresh_preview = true;
+                        }
+                        Ok(None) => {}
+                        Err(()) => {
+                            vi_translator_core::vlog!("[capture] ScreenCaptureKit stopped; CoreGraphics from now on");
+                            sck = None;
+                        }
+                    }
+                    if win.is_none() {
+                        misses += 1;
+                        if misses > 20 {
+                            break;
+                        }
+                    } else {
+                        misses = 0;
+                    }
+                    let again = last.elapsed() >= Duration::from_millis(250);
+                    if let Some((w, h, rgba)) = latest.as_ref() {
+                        let (w, h) = (*w, *h);
+                        if preview && (fresh_preview || again) {
+                            fresh_preview = false;
+                            last_preview = Instant::now();
+                            shared.put_preview(shrink(rgba, w, h, (w * 4) as usize, false));
+                        }
+                        if full && (fresh_full || again) {
+                            fresh_full = false;
+                            last = Instant::now();
+                            shared.put_full(w, h, rgba.clone());
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(4));
+                    continue;
+                }
+                if full || preview {
                     match win.as_ref().and_then(capture) {
                         Some((w, h, rgba)) => {
                             misses = 0;

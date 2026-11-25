@@ -1787,6 +1787,21 @@ fn main() {
         }
         return;
     }
+    // `--capture-window "Window title" seconds out.png`: the window captured as the app does
+    if let Some(i) = args.iter().position(|a| a == "--capture-window") {
+        let (Some(title), Some(secs), Some(out)) = (args.get(i + 1), args.get(i + 2).and_then(|s| s.parse::<f64>().ok()), args.get(i + 3)) else {
+            vi_translator_core::vlog!("usage: --capture-window \"Window title\" seconds out.png");
+            std::process::exit(2);
+        };
+        match capture::capture_test(title, secs, std::path::Path::new(out)) {
+            Ok(line) => println!("{line}"),
+            Err(e) => {
+                println!("error: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--grab") {
         let (Some(title), Some(out)) = (args.get(i + 1), args.get(i + 2)) else {
             vi_translator_core::vlog!("usage: --grab \"Window title\" out.png");

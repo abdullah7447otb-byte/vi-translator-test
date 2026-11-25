@@ -117,6 +117,21 @@ jobs:
           python3 -m pip install --quiet --break-system-packages playwright==1.63.0 || python3 -m pip install --quiet playwright==1.63.0
           python3 tools/phone_render.py phone-renders/probe.json ui phone-renders --app "$APP"
 
+      # A window that changes 60 times a second, captured as the app captures (ScreenCaptureKit, then the
+      # old CoreGraphics way to compare). Needs the runner to allow screen recording: if it doesn't,
+      # that's what the result says.
+      - name: Window capture (macOS)
+        if: matrix.os == 'macos'
+        continue-on-error: true
+        run: |
+          APP=target/universal-apple-darwin/release/vi-translator
+          mkdir -p video-bench
+          osascript -l JavaScript tools/test_window.js &
+          sleep 6
+          { echo "ScreenCaptureKit:"; "$APP" --capture-window "VIT capture test" 10 video-bench/capture-sck.png 2>&1 | tail -3
+            echo "CoreGraphics:"; VIT_CAPTURE=cg "$APP" --capture-window "VIT capture test" 10 video-bench/capture-cg.png 2>&1 | tail -3; } | tee video-bench/window-capture.txt
+          kill %1 || true
+
       - uses: actions/upload-artifact@v4
         if: always() && matrix.os == 'macos'
         with:

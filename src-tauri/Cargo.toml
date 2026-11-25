@@ -63,3 +63,4 @@ objc2-core-foundation = { version = "0.3", features = ["CFData", "CFCGTypes", "C
 
 [build-dependencies]
 tauri-build = "2"
+cc = "1"
