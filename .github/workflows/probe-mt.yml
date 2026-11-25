@@ -1,0 +1,22 @@
+# The offline translator's model files and a speed test of faster decoding (tools/probe_mt.py):
+# run by pushing to a branch named probe-*. Prints its findings to the log.
+name: Probe offline translator
+
+on:
+  push:
+    branches: ["probe-*"]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install onnxruntime==1.22.0 tokenizers huggingface_hub numpy
+      - run: python tools/probe_mt.py
