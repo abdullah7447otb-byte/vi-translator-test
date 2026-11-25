@@ -936,6 +936,12 @@ impl Reader {
         // pause-menu text the translator failed on: asked again when it's read again (every 30 s at most)
         // (every 5 s while the translator has nothing to do: a failed word is asked again sooner)
         let retry_after = if crate::perf::translating_for().is_none() { Duration::from_secs(5) } else { Duration::from_secs(30) };
+        // (the lines asked for are told apart from every new reading — each one compared with them all: a long
+        // session's thousands of misread variants made every reading slower. The translations themselves are
+        // kept in the menu cache, so a line asked again is found there first)
+        if menu_asked.len() > 4000 {
+            menu_asked.clear();
+        }
         if menu_retry_at.elapsed() >= retry_after {
             menu_retry_at = Instant::now();
             for en in std::mem::take(&mut *ctx.live.menu_failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner)) {
@@ -1400,6 +1406,7 @@ impl Reader {
                             // the ones remembered from the last place, which came back as doubles)
                             if prev.is_some_and(|p| p.0.abs_diff(scr.0) > scr.2 / 5 || p.1.abs_diff(scr.1) > scr.3 / 5) {
                                 ctx.live.phone_pieces.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+                                *PHONE_PNG.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                             }
                             scr
                         })
@@ -1415,8 +1422,20 @@ impl Reader {
                                 *at = None;
                                 return false;
                             }
+                            let words = chat_words(&r.pieces);
+                            let mut shown = PHONE_CHAT_TEXT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             if r.pieces.iter().any(|p| p.title) {
                                 *at = Some(now);
+                                *shown = words;
+                                return true;
+                            }
+                            // (the header unread for a while — a short name read now and then — but the same chat's
+                            // messages: still that chat; after 3 s it went, and came back with the next header read)
+                            if at.is_some() && same_chat(&shown, &words) {
+                                *at = Some(now);
+                                shown.extend(words);
+                                shown.sort();
+                                shown.dedup();
                                 return true;
                             }
                             at.is_some_and(|t| now.saturating_duration_since(t) < Duration::from_millis(3000))
@@ -1462,11 +1481,11 @@ impl Reader {
                                 Some(serde_json::json!({ "uv": uv, "png": format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png)) }))
                             })
                             .collect();
-                        let uv = |r: (u32, u32, u32, u32)| quad_in.and_then(|q| crate::phone::on_screen(q, r));
+                        let uv = |r: (u32, u32, u32, u32)| quad_in.and_then(|q| crate::phone::on_screen(q, r)).map(|v| v.map(r3));
                         // (steady from one read to the next: a misreading keeps the first reading, a missed piece stays a moment)
-                        let pieces = crate::phone::steady(&mut ctx.live.phone_pieces.lock().unwrap_or_else(std::sync::PoisonError::into_inner), read.pieces, scr, now);
+                        let pieces = crate::phone::steady_for(&mut ctx.live.phone_pieces.lock().unwrap_or_else(std::sync::PoisonError::into_inner), read.pieces, scr, now, phone_hold(interval_ms).max(crate::phone::KEEP));
                         let (w, h) = (f.w as f64, f.h as f64);
-                        let frac = |r: (u32, u32, u32, u32)| [r.0 as f64 / w, r.1 as f64 / h, r.2 as f64 / w, r.3 as f64 / h];
+                        let frac = |r: (u32, u32, u32, u32)| [r3(r.0 as f64 / w), r3(r.1 as f64 / h), r3(r.2 as f64 / w), r3(r.3 as f64 / h)];
                         let lang = c.target_lang.clone();
                         let mut out = Vec::new();
                         let read_btns = crate::phone::read_buttons(ocr, &f.rgba, f.w, f.h);
@@ -1486,13 +1505,10 @@ impl Reader {
                                     // (a button's word plain: "تراجع!" is "تراجع")
                                     Some(ar) => {
                                         // (its icon after it, as the game's: "SEND ✕")
-                                        let icon = crate::phone::button_icon(&f.rgba, f.w, f.h, *r).and_then(|ic| crate::phone::part_png(&f.rgba, f.w, f.h, ic, (0, 0, ic.2, ic.3), 40).map(|png| (ic, png)));
+                                        let icon = crate::phone::button_icon(&f.rgba, f.w, f.h, *r).and_then(|ic| phone_png(format!("btn|{en}"), || crate::phone::part_png(&f.rgba, f.w, f.h, ic, (0, 0, ic.2, ic.3), 40)).map(|png| (ic, png)));
                                         btns.push(serde_json::json!({
                                             "rect": frac(*r), "en": en, "ar": ar.trim_end_matches(['!', '.', '!']).trim(),
-                                            "icon": icon.as_ref().map(|(_, png)| {
-                                                use base64::Engine as _;
-                                                format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png))
-                                            }),
+                                            "icon": icon.as_ref().map(|(_, png)| png.clone()),
                                             "icon_rect": icon.map(|(ic, _)| frac(ic)),
                                         }))
                                     }
@@ -1511,10 +1527,7 @@ impl Reader {
                                     let fg = p.look.fg;
                                     let bg = p.look.bg;
                                     // (the chat's header: its contact's picture at its end)
-                                    let pic = p.avatar.and_then(|a| crate::phone::part_png(fr, f.w, f.h, p.rect, (a.0, a.1, a.2, a.2), 56)).map(|png| {
-                                        use base64::Engine as _;
-                                        format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png))
-                                    });
+                                    let pic = p.avatar.and_then(|a| phone_png(format!("tav|{}", p.en), || crate::phone::part_png(fr, f.w, f.h, p.rect, (a.0, a.1, a.2, a.2), 56)));
                                     out.push(serde_json::json!({ "rect": frac(p.rect), "uv": uv(p.rect), "box_uv": p.bubble.and_then(uv), "title": true, "ar": speaker::name_in(&lang, &p.en, None), "fg": format!("#{:02x}{:02x}{:02x}", fg[0], fg[1], fg[2]), "bg": format!("#{:02x}{:02x}{:02x}", bg[0], bg[1], bg[2]), "avatar": pic }));
                                     continue;
                                 }
@@ -1589,18 +1602,16 @@ impl Reader {
                                 let ar = ar.map(|a| if p.emoji.is_empty() || a.contains('{') { a } else { format!("{a} {}", (1..=p.emoji.len()).map(|i| format!("{{{i}}}")).collect::<String>()) });
                                 // (a chat list's row shows while its message's translation comes: its contact, its picture)
                                 let ar = if p.avatar.is_some() && p.en.is_empty() { Some(String::new()) } else { ar };
-                                let png = |o: (i32, i32, u32, u32), h: u32| {
-                                    crate::phone::part_png(fr, f.w, f.h, p.rect, o, h).map(|png| {
-                                        use base64::Engine as _;
-                                        format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png))
-                                    })
+                                // (each picture as first sent for this piece: see PHONE_PNG)
+                                let png = |kind: &str, o: (i32, i32, u32, u32), h: u32| {
+                                    phone_png(format!("{kind}|{}|{}|{h}", p.name.as_deref().unwrap_or(""), p.en), || crate::phone::part_png(fr, f.w, f.h, p.rect, o, h))
                                 };
                                 if ar.is_none() && p.avatar.is_some() {
                                     out.push(serde_json::json!({
                                         "rect": frac(p.rect), "uv": uv(p.rect), "box_uv": p.bubble.and_then(uv), "ar": "", "name": p.name.as_ref().map(|n| speaker::name_in(&lang, n, None)),
                                         "bg": hex(p.look.bg), "fg": hex(p.look.fg), "edge": p.look.edge.map(hex),
-                                        "avatar": p.avatar.and_then(|a| png((a.0, a.1, a.2, a.2), 56)),
-                                        "badge": p.badge.and_then(|b| png(b, 28)),
+                                        "avatar": p.avatar.and_then(|a| png("av", (a.0, a.1, a.2, a.2), 56)),
+                                        "badge": p.badge.and_then(|b| png("bd", b, 28)),
                                     }));
                                 }
                                 // (a chat's message not translated yet: its English meanwhile, marked pending — it's in its place
@@ -1632,13 +1643,10 @@ impl Reader {
                                         "edge": p.look.edge.map(hex),
                                         "boxed": p.look.boxed,
                                         // (a chat list's row: its contact's picture, as on the phone)
-                                        "avatar": p.avatar.and_then(|a| png((a.0, a.1, a.2, a.2), 56)),
-                                        "preview": p.preview.and_then(|b| png(b, 28)),
-                                        "badge": p.badge.and_then(|b| png(b, 28)),
-                                        "emoji": p.emoji.iter().filter_map(|e| crate::phone::part_png(fr, f.w, f.h, *e, (0, 0, e.2, e.3), 40)).map(|png| {
-                                            use base64::Engine as _;
-                                            format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png))
-                                        }).collect::<Vec<_>>(),
+                                        "avatar": p.avatar.and_then(|a| png("av", (a.0, a.1, a.2, a.2), 56)),
+                                        "preview": p.preview.and_then(|b| png("pv", b, 28)),
+                                        "badge": p.badge.and_then(|b| png("bd", b, 28)),
+                                        "emoji": p.emoji.iter().enumerate().filter_map(|(i, e)| phone_png(format!("em|{}|{i}", p.en), || crate::phone::part_png(fr, f.w, f.h, *e, (0, 0, e.2, e.3), 40))).collect::<Vec<_>>(),
                                     })),
                                     None => {}
                                 }
@@ -1748,9 +1756,13 @@ impl Reader {
                             }
                             None => {
                                 // (put away: gone a moment after it was last seen, not on a frame it was missed)
-                                let gone = ctx.live.phone_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none_or(|t| now.saturating_duration_since(t) > Duration::from_millis(300));
+                                // (three readings' time: see phone_hold)
+                                let gone = ctx.live.phone_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none_or(|t| now.saturating_duration_since(t) > phone_hold(interval_ms));
                                 if gone && up.is_some() {
                                     *up = None;
+                                    *PHONE_CHAT_AT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                                    PHONE_CHAT_TEXT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+                                    *PHONE_PNG.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                                     *ctx.live.chat_read.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                                     ctx.live.phone_active.store(false, std::sync::atomic::Ordering::Relaxed);
                                     ctx.sink.emit("phone", serde_json::Value::Null);
@@ -2200,6 +2212,55 @@ static PHONE_QUAD: Mutex<Option<([(f64, f64); 4], [(f64, f64); 4], Instant)>> = 
 /// The phone screen's place as last read, and when (phone::steady_screen).
 /// When a chat's header was last read on the phone (a chat's overlay only: see the phone block).
 static PHONE_CHAT_AT: Mutex<Option<Instant>> = Mutex::new(None);
+/// The chat's messages as last shown (their words, lower case): a reading that misses the header but shows
+/// the same messages is the same chat, still up (`same_chat`).
+static PHONE_CHAT_TEXT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The pictures cut from the phone (contacts' pictures, emojis, buttons' icons) as first sent, by what they
+/// belong to: cut again each reading, their PNG came out a few bytes different every time — the overlay redrew
+/// them (they blinked) and every reading was sent as a change.
+static PHONE_PNG: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+/// How long the phone stays up after the last reading that found it: three readings' time (the read rate
+/// is lowered under load: a fixed 300 ms took it down on a single missed reading), at least 0.9 s, at most 2.5 s.
+fn phone_hold(interval_ms: u64) -> Duration {
+    Duration::from_millis(interval_ms.saturating_mul(3).clamp(900, 2500))
+}
+
+/// A picture cut from the phone, as first sent for `key` (see PHONE_PNG).
+fn phone_png(key: String, make: impl FnOnce() -> Option<Vec<u8>>) -> Option<String> {
+    let mut guard = PHONE_PNG.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let map = guard.get_or_insert_with(HashMap::new);
+    if let Some(v) = map.get(&key) {
+        return Some(v.clone());
+    }
+    use base64::Engine as _;
+    let v = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(make()?));
+    if map.len() > 400 {
+        map.clear();
+    }
+    map.insert(key, v.clone());
+    Some(v)
+}
+
+/// The words of a chat's messages, for telling the same chat (PHONE_CHAT_TEXT).
+fn chat_words(pieces: &[crate::phone::Piece]) -> Vec<String> {
+    pieces
+        .iter()
+        .filter(|p| !p.title)
+        .map(|p| p.en.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>())
+        .filter(|t| t.len() >= 4)
+        .collect()
+}
+
+/// A reading with no header: the same chat as the one shown, if one of its messages is one shown there.
+fn same_chat(shown: &[String], now: &[String]) -> bool {
+    now.iter().any(|t| shown.iter().any(|s| s == t || (t.len() >= 8 && (s.contains(t.as_str()) || t.contains(s.as_str())))))
+}
+
+/// Rounded to a thousandth (of the picture, of the screen): a pixel's wobble in a reading is no change to send.
+fn r3(v: f64) -> f64 {
+    (v * 1000.0).round() / 1000.0
+}
 static PHONE_SCREEN: Mutex<Option<((u32, u32, u32, u32), Instant)>> = Mutex::new(None);
 
 fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: &mpsc::Receiver<Job>, present: mpsc::Sender<PMsg>) {
@@ -2813,5 +2874,55 @@ mod english_color_tests {
         let icons = vec!["data:x".to_string()];
         let segs = with_phrase_colors(english_segments("Press ⟦1⟧ to follow Nate", &icons), &[("Nate".into(), "#ff86bf".into()), ("Lucia".into(), "#ff86bf".into())]);
         assert_eq!(segs, vec![("Press ".to_string(), None), (String::new(), Some("icon:data:x".to_string())), (" to follow ".to_string(), None), ("Nate".to_string(), Some("#ff86bf".to_string()))]);
+    }
+}
+
+#[cfg(test)]
+mod phone_hold_tests {
+    use super::*;
+
+    #[test]
+    fn the_phone_stays_up_three_readings() {
+        // a fast read rate: at least 0.9 s; lowered under load: three readings; never more than 2.5 s
+        assert_eq!(phone_hold(100), Duration::from_millis(900));
+        assert_eq!(phone_hold(500), Duration::from_millis(1500));
+        assert_eq!(phone_hold(2000), Duration::from_millis(2500));
+    }
+
+    #[test]
+    fn a_chat_without_its_header_is_the_same_chat_by_its_messages() {
+        let p = |en: &str, title: bool| crate::phone::Piece { rect: (0, 0, 10, 10), en: en.into(), title, name: None, look: Default::default(), split: None, avatar: None, preview: None, badge: None, emoji: Vec::new(), bubble: None };
+        let shown = chat_words(&[p("Cal", true), p("Where are you?", false), p("On my way", false)]);
+        // (the header is no message)
+        assert_eq!(shown, vec!["whereareyou".to_string(), "onmyway".to_string()]);
+        // the same messages, the header missed: the same chat
+        assert!(same_chat(&shown, &chat_words(&[p("Where are you?", false)])));
+        // a message read a little shorter (cut by the screen's edge): still it
+        assert!(same_chat(&shown, &chat_words(&[p("Where are yo", false)])));
+        // another app's text: not the chat
+        assert!(!same_chat(&shown, &chat_words(&[p("Camera", false), p("Selfie mode", false)])));
+    }
+
+    #[test]
+    fn a_missed_message_stays_as_long_as_it_is_told() {
+        let t = Instant::now();
+        let p = crate::phone::Piece { rect: (824, 738, 205, 48), en: "On my way".into(), title: false, name: None, look: Default::default(), split: None, avatar: None, preview: None, badge: None, emoji: Vec::new(), bubble: None };
+        let screen = (690, 480, 402, 420);
+        let mut seen = Vec::new();
+        crate::phone::steady_for(&mut seen, vec![p], screen, t, Duration::from_millis(1500));
+        // missed by readings 1.2 s long: still there
+        assert_eq!(crate::phone::steady_for(&mut seen, vec![], screen, t + Duration::from_millis(1200), Duration::from_millis(1500)).len(), 1);
+        // gone after its time
+        assert!(crate::phone::steady_for(&mut seen, vec![], screen, t + Duration::from_millis(1600), Duration::from_millis(1500)).is_empty());
+    }
+
+    #[test]
+    fn a_picture_is_sent_as_first_cut() {
+        *PHONE_PNG.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        let a = phone_png("av|Cal|x".into(), || Some(vec![1, 2, 3]));
+        // cut again, a byte different: the first one
+        let b = phone_png("av|Cal|x".into(), || Some(vec![1, 2, 4]));
+        assert_eq!(a, b);
+        assert_eq!(r3(0.123456), 0.123);
     }
 }

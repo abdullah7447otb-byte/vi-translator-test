@@ -1117,6 +1117,12 @@ pub fn similar(a: &str, b: &str) -> bool {
     if a.is_empty() || b.is_empty() {
         return false;
     }
+    // (too different in length to be alike: told before anything is allocated — this runs over every line
+    // asked for in a session, for each line read)
+    let (na, nb) = (a.chars().count(), b.chars().count());
+    if na.abs_diff(nb) * 20 >= na.max(nb) * 3 {
+        return false;
+    }
     let a: Vec<char> = a.to_lowercase().chars().collect();
     let b: Vec<char> = b.to_lowercase().chars().collect();
     // (the edit distance is at least the difference in length: too different to be alike, without

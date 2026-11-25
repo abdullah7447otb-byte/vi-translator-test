@@ -2887,7 +2887,7 @@ function lockControls() {
   renderObs();
   updateLan();
   updateTvs();
-  invoke("app_version").then((v) => { $("app-version").textContent = "v" + v; document.title = "VI Translator " + v; }).catch(() => {});
+  invoke("app_version").then((v) => { $("app-version").textContent = "v" + v; document.title = "Barqawi " + v; }).catch(() => {});
   // the tools for developing the app: development builds only
   invoke("dev_build").then((dev) => { $("debug-section").hidden = !dev; }).catch(() => {});
   invoke("has_offline").then((has) => {

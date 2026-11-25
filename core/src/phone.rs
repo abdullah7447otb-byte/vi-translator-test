@@ -1699,6 +1699,12 @@ fn distance(a: &str, b: &str) -> usize {
 /// changed). A piece read before and missed this time stays for KEEP (its bubble went for a frame).
 /// `seen`: the pieces as read before (kept up to date); `screen`: where the screen is now.
 pub fn steady(seen: &mut Vec<Seen>, read: Vec<Piece>, screen: (u32, u32, u32, u32), now: std::time::Instant) -> Vec<Piece> {
+    steady_for(seen, read, screen, now, KEEP)
+}
+
+/// `steady`, a missed piece staying for `keep` (the engine's: three readings' time, the read rate lowered
+/// under load — a fixed 600 ms dropped a message missed by two readings in a row).
+pub fn steady_for(seen: &mut Vec<Seen>, read: Vec<Piece>, screen: (u32, u32, u32, u32), now: std::time::Instant, keep: std::time::Duration) -> Vec<Piece> {
     let (sx, sy) = (screen.0 as i32, screen.1 as i32);
     let norm = |t: &str| t.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
     let mut used = vec![false; seen.len()];
@@ -1756,7 +1762,7 @@ pub fn steady(seen: &mut Vec<Seen>, read: Vec<Piece>, screen: (u32, u32, u32, u3
     // a chat scrolling: its new reading there, the old one gone)
     let read_now: Vec<(u32, u32)> = out.iter().map(|p| (p.rect.1, p.rect.1 + p.rect.3)).collect();
     for (i, s) in seen.iter().enumerate() {
-        if !used[i] && now.saturating_duration_since(s.when) < KEEP {
+        if !used[i] && now.saturating_duration_since(s.when) < keep {
             let rect = ((sx + s.at.0).max(0) as u32, (sy + s.at.1).max(0) as u32, s.at.2, s.at.3);
             let covered = read_now.iter().any(|&(a, b)| rect.1 < b && a < rect.1 + rect.3);
             if !covered {
@@ -1764,7 +1770,7 @@ pub fn steady(seen: &mut Vec<Seen>, read: Vec<Piece>, screen: (u32, u32, u32, u3
             }
         }
     }
-    seen.retain(|s| now.saturating_duration_since(s.when) < KEEP * 4);
+    seen.retain(|s| now.saturating_duration_since(s.when) < keep * 4);
     out.sort_by_key(|p| p.rect.1);
     out
 }

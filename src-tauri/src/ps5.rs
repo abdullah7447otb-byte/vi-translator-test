@@ -223,7 +223,7 @@ pub fn sign_in(data_dir: &Path) -> Result<(), String> {
     let url: tauri::Url = login_url().parse().map_err(|e| format!("{e}"))?;
     let done = Arc::new(AtomicBool::new(false));
     let b = WebviewWindowBuilder::new(&app, PSN_LABEL, WebviewUrl::External(url))
-        .title("PlayStation Network — VI Translator")
+        .title("PlayStation Network — Barqawi")
         .inner_size(520.0, 760.0)
         .center()
         .on_navigation(move |u| {

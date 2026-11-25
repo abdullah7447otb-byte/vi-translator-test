@@ -144,7 +144,7 @@ pub fn list_windows(own_title: &str) -> Vec<WindowInfo> {
         .filter(|w| !w.is_minimized().unwrap_or(false))
         .filter_map(|w| {
             let title = w.title().ok()?.trim().to_string();
-            if title.is_empty() || title == own_title || title.starts_with("VI Translator overlay") {
+            if title.is_empty() || title.starts_with(own_title) || title.starts_with("VI Translator") {
                 return None;
             }
             Some(WindowInfo { title, process: w.app_name().unwrap_or_default() })
@@ -315,7 +315,7 @@ mod mac {
             let app = string(d, "kCGWindowOwnerName").unwrap_or_default().trim().to_string();
             let title = string(d, "kCGWindowName").unwrap_or_default().trim().to_string();
             let label = if title.is_empty() { app.clone() } else { title };
-            if label.is_empty() || label.starts_with("VI Translator") || app == "Window Server" || app == "Dock" {
+            if label.is_empty() || label.starts_with("VI Translator") || label.starts_with(crate::DISPLAY_NAME) || app == "Window Server" || app == "Dock" {
                 continue;
             }
             let shareable = number(d, "kCGWindowSharingState") != Some(0.0);
@@ -381,7 +381,7 @@ mod mac {
 
     pub fn list_windows(own_title: &str) -> Vec<WindowInfo> {
         let mut out: Vec<WindowInfo> =
-            all().into_iter().filter(|w| w.label != own_title).map(|w| WindowInfo { title: w.label, process: w.app }).collect();
+            all().into_iter().filter(|w| !w.label.starts_with(own_title)).map(|w| WindowInfo { title: w.label, process: w.app }).collect();
         out.sort_by_key(|w| w.title.to_lowercase());
         out.dedup_by(|a, b| a.title == b.title);
         out

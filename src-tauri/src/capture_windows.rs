@@ -369,7 +369,7 @@ pub fn list_windows(own_title: &str) -> Vec<WindowInfo> {
         .filter(|w| w.is_valid())
         .filter_map(|w| {
             let title = w.title().ok()?.trim().to_string();
-            if title.is_empty() || title == own_title {
+            if title.is_empty() || title.starts_with(own_title) || title.starts_with("VI Translator overlay") {
                 return None;
             }
             // invisible system windows that only confuse the list

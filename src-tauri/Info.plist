@@ -2,11 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleName</key>
+	<string>Barqawi</string>
+	<key>CFBundleDisplayName</key>
+	<string>Barqawi</string>
 	<key>NSCameraUsageDescription</key>
-	<string>VI Translator reads the game's picture from your capture card.</string>
+	<string>Barqawi reads the game's picture from your capture card.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>VI Translator plays your capture card's sound on this Mac.</string>
+	<string>Barqawi plays your capture card's sound on this Mac.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>VI Translator shows live translations on phones, tablets and TVs on your home network.</string>
+	<string>Barqawi shows live translations on phones, tablets and TVs on your home network.</string>
 </dict>
 </plist>

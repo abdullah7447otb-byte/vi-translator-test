@@ -48,6 +48,9 @@ use crate::ocr_engine::PlatformOcr;
 use crate::translate::Translator;
 
 pub const APP_TITLE: &str = "VI Translator";
+/// The name shown to the player: the main window's title, the Mac's Dock and menu bar. (The bundle
+/// identifier, the .app/.exe names and the data folders keep "VI Translator": nothing linked or saved moves.)
+pub const DISPLAY_NAME: &str = "Barqawi";
 const IDENTIFIER: &str = "com.vitranslator.app";
 /// The folder name in Documents and Pictures.
 const FOLDER: &str = "VI Translator";
@@ -542,7 +545,7 @@ fn list_windows(webview: tauri::Webview) -> Result<Vec<capture::WindowInfo>, Str
 
 /// Other apps' windows (the Xbox player's window is a source of its own).
 fn other_windows() -> Vec<capture::WindowInfo> {
-    let mut w = capture::list_windows(APP_TITLE);
+    let mut w = capture::list_windows(DISPLAY_NAME);
     w.retain(|w| w.title != xbox::TITLE);
     w
 }
@@ -1963,7 +1966,7 @@ fn main() {
         .setup(move |app| {
             if let Some(w) = app.get_webview_window("main") {
                 let test = if updater::TEST_BUILD { " (test build · updates off)" } else { "" };
-                let _ = w.set_title(&format!("VI Translator {}{test}", env!("CARGO_PKG_VERSION")));
+                let _ = w.set_title(&format!("{DISPLAY_NAME} {}{test}", env!("CARGO_PKG_VERSION")));
             }
             {
                 // the snapshot's keyboard shortcut, if one is set
