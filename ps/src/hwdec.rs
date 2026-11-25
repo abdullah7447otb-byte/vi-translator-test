@@ -23,6 +23,8 @@ mod ffi {
         #[cfg(target_os = "macos")]
         pub fn vit_vt_free(p: *mut c_void);
         #[cfg(target_os = "macos")]
+        pub fn vit_vt_hardware(p: *mut c_void) -> i32;
+        #[cfg(target_os = "macos")]
         pub fn vit_vt_decode(p: *mut c_void, data: *const u8, len: usize, y: *mut *const u8, uv: *mut *const u8, w: *mut i32, h: *mut i32, ys: *mut i32, uvs: *mut i32) -> i32;
         #[cfg(windows)]
         pub fn vit_mf_new(software: i32) -> *mut c_void;
@@ -61,6 +63,14 @@ enum Inner {
 
 pub struct VideoDecoder {
     inner: Inner,
+    /// the system's decoder kept even when it turns out to decode on the CPU (the tests); for
+    /// the stream it is left for OpenH264 then (a software VideoToolbox, as in a virtual Mac, was
+    /// slower than OpenH264)
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    keep_software: bool,
+    /// whether the system's decoder is the hardware's (None: not known yet)
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    hardware: Option<bool>,
     /// hardware failures in a row (two: OpenH264 from then on)
     #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
     failures: u32,
@@ -71,7 +81,7 @@ impl VideoDecoder {
         #[cfg(any(target_os = "macos", windows))]
         if kind == Decode::Auto {
             if let Some(n) = Self::native(false) {
-                return Ok(VideoDecoder { inner: Inner::Hard(n), failures: 0 });
+                return Ok(VideoDecoder { inner: Inner::Hard(n), failures: 0, keep_software: false, hardware: None });
             }
         }
         let _ = kind;
@@ -80,7 +90,7 @@ impl VideoDecoder {
 
     pub fn software() -> Result<Self, String> {
         let d = openh264::decoder::Decoder::new().map_err(|e| format!("video decoder: {e}"))?;
-        Ok(VideoDecoder { inner: Inner::Soft(d), failures: 0 })
+        Ok(VideoDecoder { inner: Inner::Soft(d), failures: 0, keep_software: false, hardware: Some(false) })
     }
 
     /// The system's decoder; `cpu`: also Windows decoding on the CPU (for the tests).
@@ -98,7 +108,7 @@ impl VideoDecoder {
     pub fn system_for_test() -> Option<Self> {
         #[cfg(any(target_os = "macos", windows))]
         {
-            Self::native(true).map(|n| VideoDecoder { inner: Inner::Hard(n), failures: 0 })
+            Self::native(true).map(|n| VideoDecoder { inner: Inner::Hard(n), failures: 0, keep_software: true, hardware: None })
         }
         #[cfg(not(any(target_os = "macos", windows)))]
         None
@@ -109,7 +119,9 @@ impl VideoDecoder {
         match &self.inner {
             Inner::Soft(_) => "OpenH264 (CPU)",
             #[cfg(target_os = "macos")]
-            Inner::Hard(_) => "VideoToolbox",
+            Inner::Hard(_) => {
+                if self.hardware == Some(false) { "VideoToolbox (CPU)" } else { "VideoToolbox" }
+            }
             #[cfg(windows)]
             Inner::Hard(n) => {
                 if unsafe { ffi::vit_mf_hardware(n.0) } != 0 { "Media Foundation (graphics card)" } else { "Media Foundation (CPU)" }
@@ -117,8 +129,20 @@ impl VideoDecoder {
         }
     }
 
+    /// The system's decoder (hardware or not: see `decodes_in_hardware`).
     pub fn is_hardware(&self) -> bool {
         !matches!(self.inner, Inner::Soft(_))
+    }
+
+    /// Known to decode in the hardware (the Mac's media engine, a graphics card).
+    pub fn decodes_in_hardware(&self) -> bool {
+        match &self.inner {
+            Inner::Soft(_) => false,
+            #[cfg(target_os = "macos")]
+            Inner::Hard(_) => self.hardware == Some(true),
+            #[cfg(windows)]
+            Inner::Hard(n) => (unsafe { ffi::vit_mf_hardware(n.0) }) != 0,
+        }
     }
 
     /// OpenH264 from now on (the caller asks the PS5 for a key frame).
@@ -164,6 +188,17 @@ impl VideoDecoder {
                     return Err(if self.failures >= 2 { format!("hardware decoder failed ({r}): fall back") } else { format!("hardware decoder failed ({r})") });
                 }
                 self.failures = 0;
+                #[cfg(target_os = "macos")]
+                if self.hardware.is_none() {
+                    let hw = unsafe { ffi::vit_vt_hardware(n.0) };
+                    if hw >= 0 {
+                        self.hardware = Some(hw == 1);
+                        if hw == 0 && !self.keep_software {
+                            self.failures = 2;
+                            return Err("VideoToolbox decodes on the CPU here: fall back".into());
+                        }
+                    }
+                }
                 if r == 0 || y.is_null() || uv.is_null() || w <= 0 || h <= 0 || ys < w || uvs < w {
                     return Ok(None);
                 }

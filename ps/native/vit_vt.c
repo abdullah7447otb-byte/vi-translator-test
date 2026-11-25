@@ -103,6 +103,17 @@ VitVt *vit_vt_new(void) {
 	return calloc(1, sizeof(VitVt));
 }
 
+// Whether the session decodes in hardware (the media engine): 1 yes, 0 no (software, as in a
+// virtual machine), -1 not known yet (no session).
+int vit_vt_hardware(VitVt *vt) {
+	if (!vt || !vt->session) return -1;
+	CFBooleanRef hw = NULL;
+	if (VTSessionCopyProperty(vt->session, kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder, NULL, &hw) != noErr || !hw) return -1;
+	int r = CFBooleanGetValue(hw) ? 1 : 0;
+	CFRelease(hw);
+	return r;
+}
+
 void vit_vt_free(VitVt *vt) {
 	if (!vt) return;
 	drop_session(vt);

@@ -66,8 +66,6 @@ struct Run {
 
 fn run(mut d: VideoDecoder, frames: &[Vec<u8>]) -> Run {
     let name = d.name().to_string();
-    // (Media Foundation on the CPU is Windows's software decoder, not hardware)
-    let hardware = d.is_hardware() && !name.contains("CPU");
     let mut pictures = Vec::new();
     let mut times = Vec::new();
     let (cpu0, wall0) = (cpu_time::ProcessTime::now(), Instant::now());
@@ -80,6 +78,10 @@ fn run(mut d: VideoDecoder, frames: &[Vec<u8>]) -> Run {
         }
     }
     let cpu_pct = cpu0.elapsed().as_secs_f64() / wall0.elapsed().as_secs_f64().max(1e-9) * 100.0;
+    // (known only once it has decoded: VideoToolbox in a virtual Mac, Media Foundation without a
+    // graphics card, decode on the CPU)
+    let hardware = d.decodes_in_hardware();
+    let name = d.name().to_string();
     Run { name, hardware, pictures, times, cpu_pct }
 }
 
@@ -153,7 +155,7 @@ fn the_system_decoder_matches_openh264() {
                     assert!(h_p95 <= 8.0, "{} p95 {h_p95:.2} ms > 8 ms", sys.name);
                 }
             } else {
-                note.push_str(&format!(" {} decodes on the CPU here (no graphics card on this runner): the speed checks are for hardware.", sys.name));
+                note.push_str(&format!(" {} decodes on the CPU on this runner (a virtual machine: no media engine or graphics card), so the speed checks, which are for hardware, do not apply; the app itself uses OpenH264 in that case.", sys.name));
             }
         }
         None => note.push_str("No system decoder on this computer (Linux, or none available): OpenH264 only."),

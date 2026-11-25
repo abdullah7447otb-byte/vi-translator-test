@@ -355,7 +355,7 @@ fn decode_thread(
             Ok(None) => {}
             Err(e) if dec.is_hardware() && e.ends_with("fall back") => {
                 stats.bad_frames.fetch_add(1, Ordering::Relaxed);
-                screen.log(2, &format!("[video] {} failed twice in a row ({e}): OpenH264 from now on", dec.name()));
+                screen.log(2, &format!("[video] {}: {e}: OpenH264 from now on", dec.name()));
                 if let Err(e) = dec.fall_back() {
                     return screen.log(1, &e);
                 }
