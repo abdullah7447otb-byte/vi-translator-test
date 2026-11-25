@@ -104,12 +104,12 @@ impl Tvs {
     /// Read the connected TVs from `path`, and keep them there from now on.
     pub fn load(&self, path: PathBuf) {
         let list: Vec<PairedTv> = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        *self.list.lock().unwrap() = list.into_iter().filter(|t| !t.token.is_empty()).collect();
-        *self.path.lock().unwrap() = Some(path);
+        *self.list.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = list.into_iter().filter(|t| !t.token.is_empty()).collect();
+        *self.path.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path);
     }
 
     fn save(&self, list: &[PairedTv]) {
-        if let Some(p) = self.path.lock().unwrap().as_ref() {
+        if let Some(p) = self.path.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
             if let Ok(b) = serde_json::to_vec_pretty(list) {
                 let tmp = p.with_extension("json.tmp");
                 if std::fs::write(&tmp, b).is_ok() {
@@ -124,15 +124,15 @@ impl Tvs {
         if token.is_empty() {
             return false;
         }
-        let local = self.local.lock().unwrap();
-        (!local.is_empty() && same(local.as_bytes(), token.as_bytes())) || self.list.lock().unwrap().iter().any(|t| same(t.token.as_bytes(), token.as_bytes()))
+        let local = self.local.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        (!local.is_empty() && same(local.as_bytes(), token.as_bytes())) || self.list.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|t| same(t.token.as_bytes(), token.as_bytes()))
     }
 
     /// A key for this device's own viewer of the TV page (a phone showing the translations over its
     /// picture as the TVs do): `/tv?t=<key>` from 127.0.0.1. Made once per run, never saved, not
     /// among the connected TVs; `/tv/forget` with it does nothing.
     pub fn local_key(&self) -> String {
-        let mut k = self.local.lock().unwrap();
+        let mut k = self.local.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if k.is_empty() {
             *k = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
         }
@@ -140,21 +140,21 @@ impl Tvs {
     }
 
     pub fn list(&self) -> Vec<TvInfo> {
-        let seen = self.seen.lock().unwrap();
+        let seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let online = |id: &str| seen.iter().any(|(s, at)| s == id && at.elapsed() < ONLINE_FOR);
-        self.list.lock().unwrap().iter().map(|t| TvInfo { id: t.id.clone(), name: t.name.clone(), online: online(&t.id) }).collect()
+        self.list.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().map(|t| TvInfo { id: t.id.clone(), name: t.name.clone(), online: online(&t.id) }).collect()
     }
 
     /// The connected TV with this key asked for its page or the overlays now (for `TvInfo::online`).
     pub fn touch(&self, token: &str) {
-        let Some(id) = self.list.lock().unwrap().iter().find(|t| same(t.token.as_bytes(), token.as_bytes())).map(|t| t.id.clone()) else { return };
-        let mut seen = self.seen.lock().unwrap();
+        let Some(id) = self.list.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|t| same(t.token.as_bytes(), token.as_bytes())).map(|t| t.id.clone()) else { return };
+        let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         seen.retain(|(s, _)| *s != id);
         seen.push((id, Instant::now()));
     }
 
     pub(crate) fn add(&self, tv: PairedTv) {
-        let mut l = self.list.lock().unwrap();
+        let mut l = self.list.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         l.retain(|t| t.id != tv.id);
         l.push(tv);
         self.save(&l);
@@ -162,7 +162,7 @@ impl Tvs {
 
     /// Removed here: the TV's key stops working (the TV notices and shows a new code).
     pub fn remove_id(&self, id: &str) -> bool {
-        let mut l = self.list.lock().unwrap();
+        let mut l = self.list.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let before = l.len();
         l.retain(|t| t.id != id);
         let changed = l.len() != before;
@@ -174,7 +174,7 @@ impl Tvs {
 
     /// The TV disconnected itself.
     pub fn remove_token(&self, token: &str) -> bool {
-        let mut l = self.list.lock().unwrap();
+        let mut l = self.list.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let before = l.len();
         l.retain(|t| !same(t.token.as_bytes(), token.as_bytes()));
         let changed = l.len() != before;
@@ -231,7 +231,7 @@ pub fn find(tvs: &Tvs) -> Vec<FoundTv> {
             s.spawn(move || {
                 for i in chunk {
                     if let Some((address, h)) = hello(c, Ipv4Addr::new(a, b, n, *i)) {
-                        found.lock().unwrap().push((address, h));
+                        found.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((address, h));
                     }
                 }
             });
@@ -318,7 +318,7 @@ pub fn pair(tvs: &Tvs, address: &str, code: &str, pc: &str, pc_name: &str) -> Re
 impl Tvs {
     /// The TVs that offered their code lately: id and name.
     fn offered(&self) -> Vec<(String, String)> {
-        let mut o = self.offered.lock().unwrap();
+        let mut o = self.offered.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         o.retain(|x| x.at.elapsed() < OFFER_FRESH);
         o.iter().map(|x| (x.id.clone(), x.name.clone())).collect()
     }
@@ -345,13 +345,13 @@ impl Tvs {
             n => n.chars().take(60).collect(),
         };
         {
-            let mut offered = self.offered.lock().unwrap();
+            let mut offered = self.offered.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             offered.retain(|x| x.id != o.id && x.at.elapsed() < OFFER_FRESH);
             offered.push(Offered { id: o.id.clone(), name: name.clone(), at: Instant::now() });
         }
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(p) = pending.iter_mut().find(|p| p.id == o.id && p.result.is_none()) else { return (404, "{}".into()) };
-        let mut wrong = self.wrong.lock().unwrap();
+        let mut wrong = self.wrong.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if !same(p.code.as_bytes(), o.code.as_bytes()) {
             let n = match wrong.iter_mut().find(|(id, _)| *id == o.id) {
                 Some((_, n)) => {
@@ -373,7 +373,7 @@ impl Tvs {
         }
         wrong.retain(|(id, _)| *id != o.id);
         self.add(PairedTv { id: o.id.clone(), name: name.clone(), token: p.token.clone() });
-        self.offered.lock().unwrap().retain(|x| x.id != o.id);
+        self.offered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|x| x.id != o.id);
         p.result = Some(Ok(name));
         (200, serde_json::json!({ "pc_name": p.pc_name, "token": p.token }).to_string())
     }
@@ -395,14 +395,14 @@ fn pair_offered_within(tvs: &Tvs, id: &str, code: &str, pc_name: &str, wait: Dur
     }
     let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
     {
-        let mut pending = tvs.pending.lock().unwrap();
+        let mut pending = tvs.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         pending.retain(|p| p.id != id);
         pending.push(Pending { id: id.to_string(), code, token: token.clone(), pc_name: pc_name.to_string(), result: None });
     }
     let start = Instant::now();
     loop {
         std::thread::sleep(Duration::from_millis(50));
-        let mut pending = tvs.pending.lock().unwrap();
+        let mut pending = tvs.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // (connected again meanwhile: this one was replaced)
         let Some(i) = pending.iter().position(|p| p.token == token) else { return Err(PairError::NoAnswer) };
         if pending[i].result.is_some() || start.elapsed() >= wait {

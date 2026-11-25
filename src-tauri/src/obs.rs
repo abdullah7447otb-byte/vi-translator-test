@@ -156,18 +156,27 @@ pub fn list(port: u16, password: &str) -> Result<(Vec<(String, String)>, Option<
 
 pub struct ObsCapture {
     stop: Arc<AtomicBool>,
-    handle: JoinHandle<()>,
-    preview: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
+    preview: Option<JoinHandle<()>>,
 }
 
 impl ObsCapture {
     pub fn is_finished(&self) -> bool {
-        self.handle.is_finished()
+        self.handle.as_ref().is_none_or(|h| h.is_finished())
     }
-    pub fn stop(self) {
+    pub fn stop(mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        let _ = self.handle.join();
-        let _ = self.preview.join();
+        for h in [self.handle.take(), self.preview.take()].into_iter().flatten() {
+            let _ = h.join();
+        }
+    }
+}
+
+// (dropped without `stop` — its owner ended on an error — it still ends, rather than running on
+// beside the one started in its place)
+impl Drop for ObsCapture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -234,5 +243,5 @@ pub fn start(name: String, port: u16, password: String, shared: Arc<Shared>) -> 
             }
         }
     });
-    ObsCapture { stop, handle, preview }
+    ObsCapture { stop, handle: Some(handle), preview: Some(preview) }
 }

@@ -124,7 +124,7 @@ pub fn init(app: AppHandle, data_dir: &Path) {
 
 fn save(s: &Saved) {
     let g = g();
-    *g.saved.lock().unwrap() = s.clone();
+    *g.saved.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = s.clone();
     if let Ok(t) = serde_json::to_string_pretty(s) {
         let _ = std::fs::write(&g.file, t);
     }
@@ -132,13 +132,13 @@ fn save(s: &Saved) {
 }
 
 pub fn saved() -> Saved {
-    g().saved.lock().unwrap().clone()
+    g().saved.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
 /// The Source tab's PS5 panel: signed in? which PS5? does the stream want the login passcode?
 pub fn status() -> serde_json::Value {
     let g = g();
-    let s = g.saved.lock().unwrap().clone();
+    let s = g.saved.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     serde_json::json!({
         "signed_in": !s.account_id.is_empty(),
         "account": s.account_name,
@@ -149,13 +149,13 @@ pub fn status() -> serde_json::Value {
         "sound": !s.sound_off,
         "volume": s.volume.unwrap_or(100),
         "console": s.console.as_ref().map(|c| serde_json::json!({ "name": c.nickname, "host": c.host })),
-        "pin_wanted": *g.pin_wanted.lock().unwrap(),
-        "error": g.error.lock().unwrap().clone(),
+        "pin_wanted": *g.pin_wanted.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        "error": g.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
     })
 }
 
 fn set_error(e: impl Into<String>) {
-    *g().error.lock().unwrap() = e.into();
+    *g().error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = e.into();
     let _ = g().app.emit_to("main", "ps5", status());
 }
 
@@ -319,7 +319,7 @@ pub fn set_sound(on: bool, volume: u32) {
     let mut s = saved();
     s.sound_off = !on;
     s.volume = Some(volume.min(100));
-    *g.saved.lock().unwrap() = s.clone();
+    *g.saved.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = s.clone();
     if let Ok(t) = serde_json::to_string_pretty(&s) {
         let _ = std::fs::write(&g.file, t);
     }
@@ -364,17 +364,17 @@ pub fn find() -> Result<Vec<Found>, String> {
     let known: Vec<std::net::Ipv4Addr> = saved().console.and_then(|c| c.host.parse().ok()).into_iter().collect();
     let list = Arc::new(Mutex::new(Vec::new()));
     let l = list.clone();
-    let d = ps::Discovery::start(&known, move |h| *l.lock().unwrap() = h, Arc::new(|_, _| {})).map_err(|e| e.to_string())?;
+    let d = ps::Discovery::start(&known, move |h| *l.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = h, Arc::new(|_, _| {})).map_err(|e| e.to_string())?;
     let t = Instant::now();
     while t.elapsed() < Duration::from_secs(6) {
         std::thread::sleep(Duration::from_millis(100));
         // (one answer is usually all there is: stop waiting a little after it)
-        if !list.lock().unwrap().is_empty() && t.elapsed() > Duration::from_millis(1500) {
+        if !list.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty() && t.elapsed() > Duration::from_millis(1500) {
             break;
         }
     }
     drop(d);
-    let hosts = list.lock().unwrap().clone();
+    let hosts = list.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     Ok(hosts.into_iter().filter(|h| h.ps5).map(|h| Found { host: h.addr, name: h.name, on: h.ready, standby: h.standby }).collect())
 }
 
@@ -395,7 +395,7 @@ pub fn link(host: &str, pin: &str) -> Result<String, String> {
         },
         Arc::new(move |level, t| {
             if level <= 2 {
-                l.lock().unwrap().push(t.to_string());
+                l.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(t.to_string());
             }
         }),
     )
@@ -418,7 +418,7 @@ pub fn link(host: &str, pin: &str) -> Result<String, String> {
         }
         Ok(ps::RegistResult::Cancelled) => Err("Linking was cancelled.".into()),
         _ => {
-            let why = log.lock().unwrap().last().cloned().unwrap_or_default();
+            let why = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).last().cloned().unwrap_or_default();
             Err(format!("The PS5 did not accept the PIN or the account. {why}").trim().to_string())
         }
     }
@@ -433,7 +433,7 @@ pub fn forget() {
 
 /// The login passcode the stream asked for.
 pub fn give_pin(pin: &str) {
-    *g().pin.lock().unwrap() = Some(pin.trim().to_string());
+    *g().pin.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pin.trim().to_string());
 }
 
 // ---------------------------------------------------------------------------------------- playing
@@ -441,16 +441,26 @@ pub fn give_pin(pin: &str) {
 /// The PS5's picture going to `Shared` while it lives (as a capture card's does).
 pub struct Ps5Capture {
     stop: Arc<AtomicBool>,
-    handle: std::thread::JoinHandle<()>,
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Ps5Capture {
     pub fn is_finished(&self) -> bool {
-        self.handle.is_finished()
+        self.handle.as_ref().is_none_or(|h| h.is_finished())
     }
-    pub fn stop(self) {
+    pub fn stop(mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        let _ = self.handle.join();
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+// (dropped without `stop` — its owner ended on an error — it still ends, rather than running on
+// beside the one started in its place)
+impl Drop for Ps5Capture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -476,20 +486,20 @@ impl ToShared {
 impl ps::play::Screen for ToShared {
     // (most frames go nowhere: neither the reading nor the preview is due; they aren't copied out)
     fn wants_frame(&self) -> bool {
-        let t = self.times.lock().unwrap();
+        let t = self.times.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.full_due(t.0) || self.shared.preview_due(t.1)
     }
 
     fn frame(&self, f: ps::play::I420) {
         let (full, preview) = {
-            let t = self.times.lock().unwrap();
+            let t = self.times.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             (self.full_due(t.0), self.shared.preview_due(t.1))
         };
         if !full && !preview {
             return;
         }
         let w = f.w & !1;
-        let mut t = self.times.lock().unwrap();
+        let mut t = self.times.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if full {
             t.0 = Instant::now();
             // (straight from the planes: no YUY2 picture in between when only the reading wants it)
@@ -505,21 +515,21 @@ impl ps::play::Screen for ToShared {
     fn event(&self, e: &ps::Event) {
         match e {
             ps::Event::LoginPin { wrong } => {
-                *g().pin_wanted.lock().unwrap() = Some(*wrong);
+                *g().pin_wanted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(*wrong);
                 let _ = g().app.emit_to("main", "ps5", status());
             }
             ps::Event::Connected => {
-                *g().pin_wanted.lock().unwrap() = None;
+                *g().pin_wanted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 let _ = g().app.emit_to("main", "ps5", status());
             }
             _ => {}
         }
-        *self.state.lock().unwrap() = Some(e.clone());
+        *self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e.clone());
     }
 
     fn log(&self, level: i32, text: &str) {
         if level <= 2 || std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
-            eprintln!("[ps5] {text}");
+            vi_translator_core::vlog!("[ps5] {text}");
         }
     }
 }
@@ -634,13 +644,13 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
         let mut before = (0u64, 0u64, 0u64);
         g().restart.store(false, Ordering::Relaxed);
         while !s2.load(Ordering::Relaxed) && !g().restart.swap(false, Ordering::Relaxed) {
-            if let Some(pin) = g().pin.lock().unwrap().take() {
+            if let Some(pin) = g().pin.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
                 player.login_pin(&pin);
             }
-            let ev = screen.state.lock().unwrap().clone();
+            let ev = screen.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
             if let Some(ps::Event::Quit { error, why }) = ev {
                 set(if error { format!("PS5: the stream ended ({why})") } else { format!("PS5: {why}") });
-                *g().pin_wanted.lock().unwrap() = None;
+                *g().pin_wanted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 std::thread::sleep(Duration::from_secs(3));
                 break;
             }
@@ -665,7 +675,7 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
         }
         drop(player);
     });
-    Ps5Capture { stop, handle }
+    Ps5Capture { stop, handle: Some(handle) }
 }
 
 #[cfg(test)]

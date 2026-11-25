@@ -24,6 +24,9 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      # a test build: no update check (src-tauri/src/updater.rs TEST_BUILD)
+      VIT_TEST_BUILD: "1"
     steps:
       - uses: actions/checkout@v5
         with:

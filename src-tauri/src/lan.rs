@@ -42,7 +42,7 @@ pub fn run(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared>, memory:
     let mut listener: Option<(TcpListener, u16)> = None;
     loop {
         let (on, port) = {
-            let c = cfg.lock().unwrap();
+            let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             shared.live_off.store(!c.live_translations, Ordering::Relaxed);
             (c.lan_page, c.lan_port)
         };
@@ -52,12 +52,12 @@ pub fn run(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared>, memory:
                 listener = match TcpListener::bind(("0.0.0.0", port)) {
                     Ok(l) => {
                         let _ = l.set_nonblocking(true);
-                        *shared.lan_error.lock().unwrap() = None;
+                        *shared.lan_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                         Some((l, port))
                     }
                     // (shown in the window: "Starting…" forever would hide it)
                     Err(e) => {
-                        *shared.lan_error.lock().unwrap() = Some(format!("port {port}: {e}"));
+                        *shared.lan_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("port {port}: {e}"));
                         None
                     }
                 };

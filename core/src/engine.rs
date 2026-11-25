@@ -508,19 +508,19 @@ pub fn read_stacked(ocr: &ocr::Ocr, rgba: &[u8], fw: u32, fh: u32, base: &crate:
 /// (None), told to the overlays ("cover") when it changes.
 fn set_cover(sink: &dyn Sink, live: &Live, area: &str, cover: Option<serde_json::Value>) {
     let changed = {
-        let mut m = live.covers.lock().unwrap();
+        let mut m = live.covers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match cover {
             Some(v) => m.insert(area.to_string(), v.clone()).as_ref() != Some(&v),
             None => m.remove(area).is_some(),
         }
     };
     if changed {
-        let v = live.covers.lock().unwrap().get(area).cloned();
+        let v = live.covers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(area).cloned();
         sink.emit("cover", serde_json::json!({ "area": area, "cover": v }));
     }
 }
 
-fn present_loop(sink: Arc<dyn Sink>, rx: mpsc::Receiver<PMsg>, live: Arc<Live>) {
+fn present_loop(sink: Arc<dyn Sink>, rx: &mpsc::Receiver<PMsg>, live: Arc<Live>) {
     let mut p = Presenter { follow: true, ..Presenter::default() };
     let mut events: HashMap<(String, u64), TranslationEvent> = HashMap::new();
     loop {
@@ -543,7 +543,7 @@ fn present_loop(sink: Arc<dyn Sink>, rx: mpsc::Receiver<PMsg>, live: Arc<Live>) 
                 PMsg::Ended { area, seq, at } => p.ended(&area, seq, at),
                 PMsg::ClearAll { upto } => {
                     events.clear();
-                    let areas: Vec<String> = live.covers.lock().unwrap().keys().cloned().collect();
+                    let areas: Vec<String> = live.covers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).keys().cloned().collect();
                     for a in areas {
                         set_cover(&*sink, &live, &a, None);
                     }
@@ -557,7 +557,7 @@ fn present_loop(sink: Arc<dyn Sink>, rx: mpsc::Receiver<PMsg>, live: Arc<Live>) 
                 Act::Show { area, seq } => {
                     if let Some(ev) = events.remove(&(area.clone(), seq)) {
                         // (the text seen there is this line, or one before it: its translation is up now)
-                        let cover_seq = live.covers.lock().unwrap().get(&area).map(|c| c["seq"].as_u64().unwrap_or(0));
+                        let cover_seq = live.covers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&area).map(|c| c["seq"].as_u64().unwrap_or(0));
                         if cover_seq.is_some_and(|s| s != 0 && s <= seq) {
                             set_cover(&*sink, &live, &area, None);
                         }
@@ -566,15 +566,15 @@ fn present_loop(sink: Arc<dyn Sink>, rx: mpsc::Receiver<PMsg>, live: Arc<Live>) 
                             .iter()
                             .map(|(t, c)| if c.as_deref().is_some_and(|c| c.starts_with("icon:")) { "🎮" } else { t.as_str() })
                             .collect();
-                        live.on_screen.lock().unwrap().insert(area.clone(), serde_json::json!({ "en": ev.en, "ar": ar.trim() }));
-                        live.shown.lock().unwrap().insert(area.clone(), serde_json::to_value(&ev).unwrap_or_default());
+                        live.on_screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(area.clone(), serde_json::json!({ "en": ev.en, "ar": ar.trim() }));
+                        live.shown.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(area.clone(), serde_json::to_value(&ev).unwrap_or_default());
                         crate::live::push(&live, &area, &ev.en, &ev.en_segments, &ev.segments, ev.at);
                         sink.emit("translation", serde_json::to_value(&ev).unwrap_or_default());
                     }
                 }
                 Act::Hide { area } => {
-                    live.on_screen.lock().unwrap().remove(&area);
-                    live.shown.lock().unwrap().remove(&area);
+                    live.on_screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&area);
+                    live.shown.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&area);
                     let ev = TranslationEvent { area, en: String::new(), en_segments: Vec::new(), segments: Vec::new(), stats: String::new(), error: None, line_h: 0.0, text_box: None, game_box: None, cached: false, at: 0 };
                     sink.emit("translation", serde_json::to_value(&ev).unwrap_or_default());
                 }
@@ -836,13 +836,14 @@ pub fn start(ctx: Context) -> Reader {
     let latest = Arc::new(Mutex::new(HashMap::new()));
     let (tx, rx) = mpsc::channel::<Job>();
     let (ptx, prx) = mpsc::channel::<PMsg>();
+    // (each started again after an error, with the same queue: see log::supervise)
     {
         let (s, l) = (ctx.sink.clone(), ctx.live.clone());
-        std::thread::spawn(move || present_loop(s, prx, l));
+        crate::log::spawn_supervised("present", move || present_loop(s.clone(), &prx, l.clone()));
     }
     {
         let (c, l, p) = (ctx.clone(), latest.clone(), ptx.clone());
-        std::thread::spawn(move || translate_loop(c, l, rx, p));
+        crate::log::spawn_supervised("translate", move || translate_loop(c.clone(), l.clone(), &rx, p.clone()));
     }
     Reader { state: Some(ReadState::new(&ctx.paths)), ctx, latest, jobs: tx, present: ptx }
 }
@@ -900,7 +901,7 @@ impl Reader {
                 return wait;
             }};
         }
-        let c = ctx.cfg.lock().unwrap().clone();
+        let c = ctx.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         let t0 = Instant::now();
         // (the player's, or the game's own: see Config::timing)
         let (interval_ms, stable_ms, clear_after_ms) = c.timing();
@@ -908,16 +909,16 @@ impl Reader {
             // another language: everything shown and cached is in the old one
             last_lang = c.target_lang.clone();
             let l = langs::get(&c.target_lang);
-            *ctx.live.live_lang.lock().unwrap() = serde_json::json!({ "code": l.code, "rtl": l.rtl });
-            ctx.memory.lock().unwrap().set_lang(&c.target_lang);
+            *ctx.live.live_lang.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = serde_json::json!({ "code": l.code, "rtl": l.rtl });
+            ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_lang(&c.target_lang);
             menu_asked.clear();
             menu_states.clear();
             {
-                let mut mc = ctx.live.menu_cache.lock().unwrap();
+                let mut mc = ctx.live.menu_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 mc.lang = c.target_lang.clone();
                 mc.map.clear();
             }
-            ctx.live.menu_failed.lock().unwrap().clear();
+            ctx.live.menu_failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
             if screen.is_some() {
                 hide_screen(&*ctx.sink, &ctx.live, &latest, &mut screen);
             }
@@ -932,7 +933,7 @@ impl Reader {
         // pause-menu text the translator failed on: asked again when it's read again (every 30 s at most)
         if menu_retry_at.elapsed() >= Duration::from_secs(30) {
             menu_retry_at = Instant::now();
-            for en in std::mem::take(&mut *ctx.live.menu_failed.lock().unwrap()) {
+            for en in std::mem::take(&mut *ctx.live.menu_failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner)) {
                 menu_asked.remove(&en);
             }
         }
@@ -981,7 +982,7 @@ impl Reader {
                     menu_states.clear();
                     pages = pagescript::Pages::for_game(&now_for.0, &ctx.paths.data);
                     if let (Some(p), true) = (&pages, std::env::var_os("VI_TRANSLATOR_DEBUG").is_some()) {
-                        eprintln!("[pages] {} script ({}): {:?}", now_for.0, p.origin, p.list.iter().map(|i| &i.id).collect::<Vec<_>>());
+                        crate::vlog!("[pages] {} script ({}): {:?}", now_for.0, p.origin, p.list.iter().map(|i| &i.id).collect::<Vec<_>>());
                     }
                     pages_for = now_for;
                 }
@@ -1152,7 +1153,7 @@ impl Reader {
                     // translation memory; anything else is sent to the translator and shows on a later read.
                     // Other players' names (a friends list): the script marks them private — never
                     // translated, sent or kept.
-                    *ctx.live.screen_private.lock().unwrap() = layout.menu.iter().filter(|m| m.private).map(|m| [m.rect.x, m.rect.y, m.rect.w, m.rect.h]).collect();
+                    *ctx.live.screen_private.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = layout.menu.iter().filter(|m| m.private).map(|m| [m.rect.x, m.rect.y, m.rect.w, m.rect.h]).collect();
                     layout.menu.retain(|m| !m.private);
                     for m in layout.menu.iter_mut() {
                         if m.fixed {
@@ -1164,7 +1165,7 @@ impl Reader {
                         // (OCR may spell a line slightly differently from one read to the next; looked at only
                         // when the layout's words don't have it)
                         let cached = || {
-                            let cache = ctx.live.menu_cache.lock().unwrap();
+                            let cache = ctx.live.menu_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             cache.map.get(&m.en).cloned().or_else(|| cache.map.iter().find(|(k, _)| ocr::similar(k, &m.en)).map(|(_, v)| v.clone()))
                         };
                         let remembered = || {
@@ -1259,7 +1260,7 @@ impl Reader {
                 // once translated.
                 if let Some(layout) = found.as_mut() {
                     // (the lock, not a copy of the cache: the translator only waits a moment to add to it)
-                    let cache = ctx.live.menu_cache.lock().unwrap();
+                    let cache = ctx.live.menu_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let mut ask = |en: &str| {
                         if menu_asked.insert(en.to_string()) {
                             seq_counter += 1;
@@ -1306,17 +1307,17 @@ impl Reader {
                             st.candidate_lines.clear();
                             st.current_seq = 0;
                             seq_counter += 1;
-                            latest.lock().unwrap().insert(id.clone(), seq_counter);
+                            latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.clone(), seq_counter);
                         }
                         let _ = present.send(PMsg::ClearAll { upto: seq_counter });
                     }
                     if screen.as_ref() != Some(&layout) {
                         let reason_changed = screen.as_ref().map(|s| s.reason_en != layout.reason_en).unwrap_or(true);
                         if reason_changed {
-                            *ctx.live.screen_reason.lock().unwrap() = serde_json::json!([]);
+                            *ctx.live.screen_reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = serde_json::json!([]);
                             if !layout.reason_en.is_empty() {
                                 seq_counter += 1;
-                                latest.lock().unwrap().insert(SCREEN_REASON.into(), seq_counter);
+                                latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(SCREEN_REASON.into(), seq_counter);
                                 let _ = jobs.send(Job { area: SCREEN_REASON.into(), seq: seq_counter, en: layout.reason_en.clone(), phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: Instant::now(), text_box: None, game_box: None, parts: Vec::new(), context: None });
                             }
                         }
@@ -1327,7 +1328,7 @@ impl Reader {
                             let was = screen.as_ref().and_then(|s| serde_json::to_value(s).ok()).and_then(|s| s.get("id").cloned());
                             if was.as_ref() != v.get("id") {
                                 let ens = |k: &str| v.get(k).and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.get("en").and_then(|e| e.as_str())).take(6).collect::<Vec<_>>().join(" | ")).unwrap_or_default();
-                                eprintln!(
+                                crate::vlog!(
                                     "[page] detected {} | title {:?} | labels {} | menu {} | buttons {}",
                                     v.get("id").and_then(|x| x.as_str()).unwrap_or("?"),
                                     v.get("title_en").and_then(|x| x.as_str()).unwrap_or(""),
@@ -1337,7 +1338,7 @@ impl Reader {
                                 );
                             }
                         }
-                        *ctx.live.screen.lock().unwrap() = serde_json::to_value(&layout).ok();
+                        *ctx.live.screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = serde_json::to_value(&layout).ok();
                         ctx.sink.emit("screen", serde_json::to_value(Some(&layout)).unwrap_or_default());
                         ctx.live.screen_active.store(true, std::sync::atomic::Ordering::Relaxed);
                         screen = Some(layout);
@@ -1368,13 +1369,13 @@ impl Reader {
                         // (where the screen is, steady: a frame finding less of it is the last place — the reading
                         // turned upright round the same middle, the rows in the same places)
                         .map(|scr| {
-                            let mut last = PHONE_SCREEN.lock().unwrap();
+                            let mut last = PHONE_SCREEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             let prev = last.map(|(r, _)| r);
                             let scr = crate::phone::steady_screen(&mut last, scr, Instant::now());
                             // (the phone somewhere else now — turned to, walked with: its rows as read there, not
                             // the ones remembered from the last place, which came back as doubles)
                             if prev.is_some_and(|p| p.0.abs_diff(scr.0) > scr.2 / 5 || p.1.abs_diff(scr.1) > scr.3 / 5) {
-                                ctx.live.phone_pieces.lock().unwrap().clear();
+                                ctx.live.phone_pieces.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
                             }
                             scr
                         })
@@ -1384,7 +1385,7 @@ impl Reader {
                         // with no list's rows since: the chat list, the phone's other apps and a light doorway taken
                         // for a screen get no second phone)
                         .filter(|(_, r)| {
-                            let mut at = PHONE_CHAT_AT.lock().unwrap();
+                            let mut at = PHONE_CHAT_AT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             let now = Instant::now();
                             if r.pieces.iter().any(|p| p.avatar.is_some() && !p.title) {
                                 *at = None;
@@ -1402,7 +1403,7 @@ impl Reader {
                 let now = Instant::now();
                 match found {
                     Some((scr, read)) => {
-                        *ctx.live.phone_seen.lock().unwrap() = Some(now);
+                        *ctx.live.phone_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(now);
                         // (a phone held tilted: read upright — its pieces' places and pictures are in that frame,
                         // `fr`; its turn, and the pictures' column's slant in it, go to the overlay, drawn as turned)
                         let fr: &[u8] = read.upright.as_deref().unwrap_or(&f.rgba[..]);
@@ -1413,7 +1414,7 @@ impl Reader {
                         // (the screen's corners not found this frame — the picture moving, a scroll's blur: the last ones
                         // found, a moment old at most; without them the overlay fell back to another layout and jumped)
                         let (quad, quad_in) = {
-                            let mut last = PHONE_QUAD.lock().unwrap();
+                            let mut last = PHONE_QUAD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             match (read.quad, read.quad_in_pieces) {
                                 (Some(q), Some(qi)) => {
                                     *last = Some((q, qi, now));
@@ -1439,7 +1440,7 @@ impl Reader {
                             .collect();
                         let uv = |r: (u32, u32, u32, u32)| quad_in.and_then(|q| crate::phone::on_screen(q, r));
                         // (steady from one read to the next: a misreading keeps the first reading, a missed piece stays a moment)
-                        let pieces = crate::phone::steady(&mut ctx.live.phone_pieces.lock().unwrap(), read.pieces, scr, now);
+                        let pieces = crate::phone::steady(&mut ctx.live.phone_pieces.lock().unwrap_or_else(std::sync::PoisonError::into_inner), read.pieces, scr, now);
                         let (w, h) = (f.w as f64, f.h as f64);
                         let frac = |r: (u32, u32, u32, u32)| [r.0 as f64 / w, r.1 as f64 / h, r.2 as f64 / w, r.3 as f64 / h];
                         let lang = c.target_lang.clone();
@@ -1447,8 +1448,8 @@ impl Reader {
                         let read_btns = crate::phone::read_buttons(ocr, &f.rgba, f.w, f.h);
                         let mut btns = Vec::new();
                         {
-                            let m = ctx.memory.lock().unwrap();
-                            let cache = ctx.live.menu_cache.lock().unwrap();
+                            let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let cache = ctx.live.menu_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             // the buttons' words at the bottom right ("SELECT", "BACK"): the layout's words for
                             // them, else the memory's, else the translator's (asked once)
                             for (r, en) in &read_btns {
@@ -1512,7 +1513,7 @@ impl Reader {
                                 // translator's own words and back several times a second)
                                 let row_key = p.name.clone().filter(|_| p.avatar.is_some());
                                 let ar = {
-                                    let mut guard = PHONE_ROW_AR.lock().unwrap();
+                                    let mut guard = PHONE_ROW_AR.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                                     let rows = guard.get_or_insert_with(HashMap::new);
                                     match (&row_key, &ar) {
                                         (Some(k), Some(a)) if reviewed_now => {
@@ -1622,7 +1623,7 @@ impl Reader {
                         }
                         let sbg = crate::phone::screen_bg(fr, f.w, f.h, scr, scr.1, scr.1 + scr.3);
                         let v = serde_json::json!({ "screen": frac(scr), "screen_bg": format!("#{:02x}{:02x}{:02x}", sbg[0], sbg[1], sbg[2]), "pieces": out, "list": pieces.iter().any(|p| p.avatar.is_some() && !p.title), "buttons": btns, "turn": turn, "slant": slant, "screen_own": screen_own.map(frac), "quad": quad.map(|q| q.map(|(x, y)| [x / w, y / h])), "photos": photos, "stickers": stickers });
-                        let mut up = ctx.live.phone.lock().unwrap();
+                        let mut up = ctx.live.phone.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         if up.as_ref() != Some(&v) {
                             *up = Some(v.clone());
                             ctx.live.phone_active.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1636,7 +1637,7 @@ impl Reader {
                         let bubble = chat.and_then(|r| {
                             let frac_r = screens::Rect { x: r.0 as f64 / f.w as f64, y: r.1 as f64 / f.h as f64, w: r.2 as f64 / f.w as f64, h: r.3 as f64 / f.h as f64 };
                             let sig = screens::region_sig(f, &frac_r);
-                            let mut memo = ctx.live.chat_read.lock().unwrap();
+                            let mut memo = ctx.live.chat_read.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             let same = memo.as_ref().is_some_and(|(s, mr, _)| {
                                 let near = mr.0.abs_diff(r.0) <= 12 && mr.1.abs_diff(r.1) <= 12 && mr.2.abs_diff(r.2) <= 12 && mr.3.abs_diff(r.3) <= 12;
                                 near && s.iter().zip(&sig).map(|(a, b)| a.abs_diff(*b) as u32).sum::<u32>() / (sig.len().max(1) as u32) < 6
@@ -1649,8 +1650,8 @@ impl Reader {
                         let chat_v = bubble.and_then(|b| {
                             let lang = c.target_lang.clone();
                             let hex = |c: [u8; 3]| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
-                            let m = ctx.memory.lock().unwrap();
-                            let cache = ctx.live.menu_cache.lock().unwrap();
+                            let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let cache = ctx.live.menu_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             // (its emojis as slots "{1}" … in the Arabic, their pictures drawn there)
                             let exact = m.get(&b.en, &crate::memory::slots(b.emoji.len()), &[]).map(|(segs, src)| (crate::memory::slot_text(&segs), src));
                             // (the words alone, for the translator)
@@ -1711,10 +1712,10 @@ impl Reader {
                                 })
                             })
                         });
-                        let mut up = ctx.live.phone.lock().unwrap();
+                        let mut up = ctx.live.phone.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         match chat_v {
                             Some(cv) => {
-                                *ctx.live.phone_seen.lock().unwrap() = Some(now);
+                                *ctx.live.phone_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(now);
                                 let v = serde_json::json!({ "chat": cv });
                                 if up.as_ref() != Some(&v) {
                                     *up = Some(v.clone());
@@ -1724,10 +1725,10 @@ impl Reader {
                             }
                             None => {
                                 // (put away: gone a moment after it was last seen, not on a frame it was missed)
-                                let gone = ctx.live.phone_seen.lock().unwrap().is_none_or(|t| now.saturating_duration_since(t) > Duration::from_millis(300));
+                                let gone = ctx.live.phone_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none_or(|t| now.saturating_duration_since(t) > Duration::from_millis(300));
                                 if gone && up.is_some() {
                                     *up = None;
-                                    *ctx.live.chat_read.lock().unwrap() = None;
+                                    *ctx.live.chat_read.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                                     ctx.live.phone_active.store(false, std::sync::atomic::Ordering::Relaxed);
                                     ctx.sink.emit("phone", serde_json::Value::Null);
                                 }
@@ -1915,7 +1916,7 @@ impl Reader {
                         let reviewed_only = fx.reviewed_only(&area.id);
                         let iconed = if reviewed_only { crop.as_ref().map(|cr| ocr::text_with_icons(cr, &words).0).unwrap_or_default() } else { String::new() };
                         let at_hand = || {
-                            let m = ctx.memory.lock().unwrap();
+                            let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             if reviewed_only {
                                 let reviewed = |l: &str| m.get(l, &[], &[]).is_some_and(|(_, src)| src == "reviewed");
                                 return reviewed(&text) || (!iconed.is_empty() && reviewed(&iconed)) || speaker::without_name(&text).is_some_and(|r| reviewed(r));
@@ -1954,7 +1955,7 @@ impl Reader {
                         && crop.as_ref().is_some_and(|cr| {
                             let (t, icons, _) = ocr::text_with_icons(cr, &words);
                             let line = if icons.is_empty() || stacks { &st.candidate } else { &t };
-                            let m = ctx.memory.lock().unwrap();
+                            let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             // (a speaker name in front is not part of what's remembered)
                             let knows = |l: &str| m.knows(l) || speaker::without_name(l).is_some_and(|rest| m.knows(rest)) || m.knows(&speaker::sentence_of(l));
                             // (stacked lines: each line known, the block new — a line came or went)
@@ -1987,7 +1988,7 @@ impl Reader {
                     // vehicle:" — that the memory takes for the same line, the same translation: the same line,
                     // not sent again, its box moving each time)
                     if !stacks && !recolor && !st.current.is_empty() && (known || settled) && !same_text(&st.candidate, &st.candidate_lines, &st.current, &st.current_lines) {
-                        let m = ctx.memory.lock().unwrap();
+                        let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         let ar = |l: &str| m.get(l, &[], &[]).map(|(segs, _)| segs.iter().map(|s| s.0.as_str()).collect::<String>().trim().to_string());
                         // (or a misreading the memory takes for another line, near the line up too: "Get ih vehicle"
                         // with "Get in a vehicle" up is a letter from "Get in vehicle", two from the line up — "اركب
@@ -2015,7 +2016,7 @@ impl Reader {
                     let reviewed_only = c.fx(&area.id).reviewed_only(&area.id);
                     let allowed = !reviewed_only || {
                         let iconed = crop.as_ref().map(|cr| ocr::text_with_icons(cr, &words).0).unwrap_or_default();
-                        let m = ctx.memory.lock().unwrap();
+                        let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         let reviewed = |l: &str| m.get(l, &[], &[]).is_some_and(|(_, src)| src == "reviewed");
                         reviewed(&st.candidate) || (!iconed.is_empty() && reviewed(&iconed)) || speaker::without_name(&st.candidate).is_some_and(|r| reviewed(r))
                     };
@@ -2036,14 +2037,14 @@ impl Reader {
                         // white, their pink word coming a moment later, and the line went up white, then pink)
                         {
                             // (by the line the memory takes it for: a misreading of it finds its colours too)
-                            let key: String = ctx.memory.lock().unwrap().line_of(&st.current).unwrap_or_else(|| st.current.clone()).to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect();
-                            let mut seen = LINE_COLORS.lock().unwrap();
+                            let key: String = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).line_of(&st.current).unwrap_or_else(|| st.current.clone()).to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect();
+                            let mut seen = LINE_COLORS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             if !phrases.is_empty() {
                                 if seen.len() > 2000 {
                                     seen.clear();
                                 }
                                 seen.insert(key, phrases.clone());
-                                AREA_COLORS.lock().unwrap().insert(area.id.clone(), phrases.iter().map(|p| p.1.clone()).collect());
+                                AREA_COLORS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(area.id.clone(), phrases.iter().map(|p| p.1.clone()).collect());
                             } else if let Some(p) = seen.get(&key) {
                                 phrases = p.clone();
                             }
@@ -2054,7 +2055,7 @@ impl Reader {
                         // seen in, else GTA VI's pink, from its first frame; its own colours, when they show, follow.
                         // Only where the translation is the reviewed one: the colours carry no English words)
                         if phrases.is_empty() && c.fx(&area.id).reviewed_only(&area.id) {
-                            let colors = AREA_COLORS.lock().unwrap().get(&area.id).cloned().unwrap_or_else(|| vec![GTA6_HIGHLIGHT.to_string()]);
+                            let colors = AREA_COLORS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&area.id).cloned().unwrap_or_else(|| vec![GTA6_HIGHLIGHT.to_string()]);
                             phrases = (0..4).map(|i| (String::new(), colors.get(i).or(colors.last()).cloned().unwrap_or_default())).collect();
                         }
                         // Controller button icons inside the text ("Press ✕ to ...") come along as placeholders.
@@ -2066,7 +2067,7 @@ impl Reader {
                         // (where only reviewed lines go, only a reviewed one as read plain: the translator's
                         // "Hold L2 to …" took the place of the reviewed "Hold ⟦1⟧ to …")
                         let plain_known = !icons_found.is_empty() && {
-                            let m = ctx.memory.lock().unwrap();
+                            let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             let has = |l: &str| if reviewed_only { m.get(l, &[], &[]).is_some_and(|(_, src)| src == "reviewed") } else { m.knows(l) };
                             has(&st.current) || speaker::without_name(&st.current).is_some_and(|r| has(r))
                         };
@@ -2097,7 +2098,7 @@ impl Reader {
                         // weren't found this time but where it was found last)
                         let game_box = if area.needs_box { help_box.map(to_frame).or(game_box) } else { game_box };
                         seq_counter += 1;
-                        latest.lock().unwrap().insert(area.id.clone(), seq_counter);
+                        latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(area.id.clone(), seq_counter);
                         // the previous English line ended when this one appeared
                         let en_start = if recolor { st.current_start.unwrap_or(now) } else { st.candidate_since.unwrap_or(now) };
                         // (stacked lines: the block up isn't over, a line joined or left it; the new block's
@@ -2118,7 +2119,7 @@ impl Reader {
                         st.current_start = Some(en_start);
                         // (the text seen there now has its seq: its translation takes its black box down)
                         {
-                            let mut covers = ctx.live.covers.lock().unwrap();
+                            let mut covers = ctx.live.covers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             if let Some(v) = covers.get_mut(&area.id).filter(|v| v["seq"].as_u64() == Some(0)) {
                                 v["seq"] = seq_counter.into();
                             }
@@ -2178,8 +2179,10 @@ static PHONE_QUAD: Mutex<Option<([(f64, f64); 4], [(f64, f64); 4], Instant)>> = 
 static PHONE_CHAT_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static PHONE_SCREEN: Mutex<Option<((u32, u32, u32, u32), Instant)>> = Mutex::new(None);
 
-fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: mpsc::Receiver<Job>, present: mpsc::Sender<PMsg>) {
+fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: &mpsc::Receiver<Job>, present: mpsc::Sender<PMsg>) {
     let Context { cfg, live: shared, memory, sink, paths } = ctx;
+    // (started again after an error: no line is being translated any more)
+    crate::perf::translating(false);
     let mut tr = Translator::new(paths.model_dir());
     // Subtitle lines (and a page's reason) first; a page's menu text only when nothing else waits,
     // newest first (the tab on screen now before an old backlog): a menu full of text never holds a
@@ -2203,10 +2206,10 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
         let Some(job) = lines_q.pop_front().or_else(|| menu_q.pop_back()) else { continue };
         // Skip text that was already replaced on screen while we were busy. (Pause-menu lines
         // aren't an area: each is translated once and kept, so never skip those.)
-        if job.area != MENU_TEXT && latest.lock().unwrap().get(&job.area).copied() != Some(job.seq) {
+        if job.area != MENU_TEXT && latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&job.area).copied() != Some(job.seq) {
             continue;
         }
-        let c = cfg.lock().unwrap().clone();
+        let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         // what the line is said in: a spoken line among the ones before it; a menu's or the phone's text
         // on its own, or with its screen round it (and never the next spoken line's context)
         tr.set_context(if job.area == MENU_TEXT || job.area == SCREEN_REASON {
@@ -2226,6 +2229,7 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
         // translator merges or drops one ("… so... What?" lost the "What?"). Each comes back in its own
         // line, the other speaker's in grey like the game's.
         let t_translate = Instant::now();
+        crate::perf::translating(true);
         let (result, hit) = if job.parts.len() > 1 {
             let mut all: translate::Segments = Vec::new();
             let mut hits = true;
@@ -2250,6 +2254,7 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
         } else {
             translate_spoken(&mut tr, &c, &memory, &job.en, &job.icons, &job.phrases, &status)
         };
+        crate::perf::translating(false);
         perf_note(PerfKind::Translate, t_translate.elapsed().as_secs_f64() * 1000.0);
         let hit_from = if hit { "memory" } else { "" };
         // time from the English line appearing to its Arabic being ready
@@ -2258,7 +2263,7 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
             perf_note(PerfKind::Ready, ready_ms);
         }
         let mem_note = {
-            let mut m = memory.lock().unwrap();
+            let mut m = memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if m.lang() == c.target_lang {
                 m.record(hit, ready_ms);
             }
@@ -2267,14 +2272,14 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
         // pause-menu text: keep it for the menu page (it appears on the next read)
         if job.area == MENU_TEXT {
             let ar: String = result.as_ref().map(|segs| segs.iter().map(|s| s.0.as_str()).collect()).unwrap_or_default();
-            let mut mc = shared.menu_cache.lock().unwrap();
+            let mut mc = shared.menu_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             // (asked in another language than the one in use now: the menu asks again in this one)
             if mc.lang != c.target_lang {
                 continue;
             }
             if ar.trim().is_empty() {
                 // (an error, or nothing: asked again later, when it's read again — see ocr_loop)
-                shared.menu_failed.lock().unwrap().push(job.en.clone());
+                shared.menu_failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(job.en.clone());
             } else {
                 mc.map.insert(job.en.clone(), ar.trim().to_string());
             }
@@ -2297,7 +2302,7 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
         let job = Job { en: strip_icon_tokens(&job.en), ..job };
         // The Mission Failed reason is only useful while it is current. (Area lines go to the
         // presenter even if a newer line exists: it shows them for their time, then the next.)
-        if job.area == SCREEN_REASON && latest.lock().unwrap().get(&job.area).copied() != Some(job.seq) {
+        if job.area == SCREEN_REASON && latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&job.area).copied() != Some(job.seq) {
             continue;
         }
         let (seq, en_start) = (job.seq, job.en_start);
@@ -2334,7 +2339,7 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
             },
         };
         if ev.area == SCREEN_REASON && ev.error.is_none() {
-            *shared.screen_reason.lock().unwrap() = serde_json::to_value(&ev.segments).unwrap_or_default();
+            *shared.screen_reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = serde_json::to_value(&ev.segments).unwrap_or_default();
             crate::live::push(&shared, SCREEN_REASON, &ev.en, &ev.en_segments, &ev.segments, ev.at);
         }
         if ev.area == SCREEN_REASON || ev.error.is_some() {
@@ -2436,13 +2441,13 @@ fn translate_spoken(
 /// with a reviewed translation, or a sentence it knows without the name. (name, colour, rest)
 fn plain_speaker<'a>(memory: &Arc<Mutex<memory::Memory>>, c: &Config, en: &'a str) -> Option<(String, String, &'a str)> {
     let (name, rest) = speaker::plain_name(en)?;
-    let known = speaker::is_known(&name) || speaker::is_role(&name) || reviewed_name(memory, c, &name).is_some() || memory.lock().unwrap().knows(rest);
+    let known = speaker::is_known(&name) || speaker::is_role(&name) || reviewed_name(memory, c, &name).is_some() || memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).knows(rest);
     known.then(|| (name, speaker::PLAIN_NAME_COLOR.to_string(), rest))
 }
 
 /// A reviewed translation of a name alone ("Dobbs" -> "دوبس") from the downloaded translations.
 fn reviewed_name(memory: &Arc<Mutex<memory::Memory>>, c: &Config, name: &str) -> Option<String> {
-    let m = memory.lock().unwrap();
+    let m = memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if m.lang() != c.target_lang {
         return None;
     }
@@ -2461,7 +2466,7 @@ fn translate_line(
     // (from the memory of the job's language only: just after a language switch the memory may
     // not have followed yet, and its lines would be in the other language)
     let mut remembered = {
-        let m = memory.lock().unwrap();
+        let m = memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if m.lang() == c.target_lang { m.get(en, icons, phrases) } else { None }
     };
     // (not one that mangled a term that must stay, like GTA+ — made before terms were protected)
@@ -2482,7 +2487,7 @@ fn translate_line(
         None => tr.translate(c, en, phrases, icons, status),
     };
     if let (false, Ok(segs)) = (hit, &result) {
-        let mut m = memory.lock().unwrap();
+        let mut m = memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // (translated for the language in use when the job started: if the player switched since,
         // it belongs to neither memory)
         // (not one that lost a term that must stay, like GTA+: it would be turned down when reused)
@@ -2722,11 +2727,11 @@ fn localize_screen(l: &mut screens::ScreenLayout, cache: &HashMap<String, String
 fn hide_screen(sink: &dyn Sink, shared: &Live, latest: &Mutex<HashMap<String, u64>>, screen: &mut Option<screens::ScreenLayout>) {
     *screen = None;
     // its reason may still be with the translator: translate_loop drops it when it comes
-    latest.lock().unwrap().remove(SCREEN_REASON);
+    latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(SCREEN_REASON);
     shared.screen_active.store(false, std::sync::atomic::Ordering::Relaxed);
-    *shared.screen.lock().unwrap() = None;
-    shared.screen_private.lock().unwrap().clear();
-    *shared.screen_reason.lock().unwrap() = serde_json::json!([]);
+    *shared.screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    shared.screen_private.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+    *shared.screen_reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = serde_json::json!([]);
     sink.emit("screen", serde_json::Value::Null);
 }
 

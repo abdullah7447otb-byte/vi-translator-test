@@ -414,4 +414,9 @@ I18N.add("ar", {
   "Playing on {name} ({pads} controller(s)) · {fps} fps · lost on the network: {net} · too late to decode: {late} (last 10 s)": "يلعب على {name} (أيادي: {pads}) · {fps} إطار/ث · ضاع من الشبكة: {net} · تأخر الجهاز: {late} (آخر 10 ث)",
   "Smooth play": "لعب سلس",
   "Reads the text at most 20 times a second while the PS5 plays, so a slower computer keeps up with the picture. Subtitles still show at once.": "يقرأ النص 20 مرة في الثانية كحد أقصى وقت اللعب من السوني، عشان الجهاز الأضعف يلحق على الصورة. الترجمة تطلع على طول مثل قبل.",
+  "Open log folder": "افتح مجلد السجل",
+  "If something goes wrong, the log says what happened.": "إذا صار أي خطأ، السجل يوضح وش صار.",
+  "No new picture for {s} s: the source stopped sending": "ما وصلت صورة جديدة من {s} ث: المصدر وقف الإرسال",
+  "The text hasn't been read for {s} s": "ما انقرأ النص من {s} ث",
+  "The translator has been on one line for {s} s": "المترجم على نفس السطر من {s} ث",
 });

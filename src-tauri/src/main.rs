@@ -83,7 +83,7 @@ fn move_old_folders() {
             // (a folder open in Explorer can't be moved: copy it instead, and leave the old one)
             if std::fs::rename(&old, &new).is_err() {
                 if let Err(e) = copy_dir(&old, &new) {
-                    eprintln!("could not copy {} to {}: {e}", old.display(), new.display());
+                    vi_translator_core::vlog!("could not copy {} to {}: {e}", old.display(), new.display());
                 }
             }
         }
@@ -174,7 +174,7 @@ fn main_only(w: &tauri::Webview) -> Result<(), String> {
 /// Translation memory: on/off, size, hits/misses and the time saved.
 #[tauri::command]
 fn memory_status(state: tauri::State<AppState>) -> memory::Stats {
-    state.memory.lock().unwrap().stats()
+    state.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).stats()
 }
 
 /// A line's translation from the memory, in the language in use, as plain text (the Game profile's
@@ -182,14 +182,14 @@ fn memory_status(state: tauri::State<AppState>) -> memory::Stats {
 /// GTA VI's phone's translations now up (see the core's engine), for its overlay window when it opens.
 #[tauri::command]
 fn get_phone(state: tauri::State<AppState>) -> Option<serde_json::Value> {
-    state.shared.phone.lock().unwrap().clone()
+    state.shared.phone.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
 /// What the memory takes a line for, and its translation and where it came from (for checking a
 /// reading the app showed: dev builds' console).
 #[tauri::command]
 fn memory_probe(state: tauri::State<AppState>, line: String) -> serde_json::Value {
-    let m = state.memory.lock().unwrap();
+    let m = state.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let got = m.get(&line, &[], &[]);
     serde_json::json!({
         "line_of": m.line_of(&line),
@@ -200,14 +200,14 @@ fn memory_probe(state: tauri::State<AppState>, line: String) -> serde_json::Valu
 
 #[tauri::command]
 fn memory_line(state: tauri::State<AppState>, line: String) -> Option<String> {
-    let m = state.memory.lock().unwrap();
+    let m = state.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     m.get(&line, &[], &[]).map(|(segs, _)| segs.iter().map(|s| s.0.as_str()).collect::<String>().trim().to_string())
 }
 
 #[tauri::command]
 fn memory_clear(webview: tauri::Webview, state: tauri::State<AppState>) -> Result<(), String> {
     main_only(&webview)?;
-    state.memory.lock().unwrap().clear();
+    state.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
     Ok(())
 }
 
@@ -268,14 +268,17 @@ fn has_offline() -> bool {
 /// A newer version of the app, if one was found.
 #[tauri::command]
 fn update_status(state: tauri::State<AppState>) -> Option<updater::Update> {
-    state.update.lock().unwrap().clone()
+    state.update.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
 /// Download and check the newer version, put it in place and restart into it.
 #[tauri::command]
 async fn install_update(app: AppHandle, webview: tauri::Webview, state: tauri::State<'_, AppState>) -> Result<(), String> {
     main_only(&webview)?;
-    let u = state.update.lock().unwrap().clone().ok_or("no update available")?;
+    if updater::TEST_BUILD {
+        return Err("This is a test build: it doesn't update itself.".into());
+    }
+    let u = state.update.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().ok_or("no update available")?;
     // VI Translator.app (the .dmg's): its update is the new .dmg, on the release's page
     if u.app_bundle {
         return std::process::Command::new("open").arg(&u.page).spawn().map(|_| ()).map_err(|e| format!("could not open {}: {e}", u.page));
@@ -288,7 +291,7 @@ async fn install_update(app: AppHandle, webview: tauri::Webview, state: tauri::S
 #[tauri::command]
 fn lan_info(webview: tauri::Webview, state: tauri::State<AppState>) -> Result<lan::LanInfo, String> {
     main_only(&webview)?;
-    let c = state.cfg.lock().unwrap().clone();
+    let c = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     Ok(lan::info(&c, &state.shared))
 }
 
@@ -306,7 +309,7 @@ async fn find_tvs(webview: tauri::Webview, state: tauri::State<'_, AppState>) ->
 #[tauri::command]
 async fn connect_tv(webview: tauri::Webview, state: tauri::State<'_, AppState>, address: String, code: String) -> Result<String, String> {
     main_only(&webview)?;
-    let (c, shared) = (state.cfg.lock().unwrap().clone(), state.shared.clone());
+    let (c, shared) = (state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(), state.shared.clone());
     // the TV loads its page from the home-network sharing, which has to be on (the window turns it on first)
     let running = shared.lan_running.load(std::sync::atomic::Ordering::Relaxed);
     let ip = lan::lan_ip();
@@ -337,7 +340,7 @@ fn remove_tv(webview: tauri::Webview, state: tauri::State<AppState>, id: String)
 #[tauri::command]
 fn open_lan_page(webview: tauri::Webview, state: tauri::State<AppState>) -> Result<(), String> {
     main_only(&webview)?;
-    let c = state.cfg.lock().unwrap().clone();
+    let c = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     let url = lan::info(&c, &state.shared).url.ok_or("The page is not running")?;
     open_url(&url)
 }
@@ -484,7 +487,7 @@ async fn open_xbox(app: AppHandle, webview: tauri::Webview) -> Result<(), String
 /// install id) for an overlay, which needs only areas, style and language.
 #[tauri::command]
 fn get_config(webview: tauri::Webview, state: tauri::State<AppState>) -> Config {
-    let c = state.cfg.lock().unwrap();
+    let c = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if webview.label() == "main" { c.clone() } else { c.redacted() }
 }
 
@@ -501,7 +504,7 @@ fn save_config(app: AppHandle, webview: tauri::Webview, state: tauri::State<AppS
     let mut config = config;
     // One lock for the whole merge, write and event: a layout update or a game switch landing
     // between them can't be lost, nor the file and the event come out older than the settings.
-    let mut now = state.cfg.lock().unwrap();
+    let mut now = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     // the built-in profiles are the app's (layout updates may have changed them meanwhile)
     config.builtins = now.builtins.clone();
     config.server_games = now.server_games.clone();
@@ -550,7 +553,7 @@ fn list_screens(webview: tauri::Webview) -> Result<Vec<capture::ScreenInfo>, Str
 async fn list_sources(webview: tauri::Webview, state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
     main_only(&webview)?;
     let (port, password) = {
-        let c = state.cfg.lock().unwrap();
+        let c = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         (c.obs_port, c.obs_password.clone())
     };
     let (windows, devices, obs) = tauri::async_runtime::spawn_blocking(move || {
@@ -608,14 +611,14 @@ async fn find_picture(webview: tauri::Webview, title: String) -> Result<Option<[
 /// The sound inputs (for the capture card's sound) and what that sound is doing now.
 #[tauri::command]
 async fn sound_inputs(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let status = state.shared.sound_status.lock().unwrap().clone();
+    let status = state.shared.sound_status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     let inputs = tauri::async_runtime::spawn_blocking(card_sound::list_inputs).await.map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "inputs": inputs, "status": status }))
 }
 
 #[tauri::command]
 fn sound_status(state: tauri::State<AppState>) -> String {
-    state.shared.sound_status.lock().unwrap().clone()
+    state.shared.sound_status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
 /// The snapshot's keyboard shortcut: in use now and kept in the settings, or why these keys can't be.
@@ -625,11 +628,11 @@ fn set_snap_hotkey(app: AppHandle, webview: tauri::Webview, state: tauri::State<
     let keys = keys.trim().to_string();
     if let Err(e) = hotkey::set(&app, &keys) {
         // (the one in use before stays)
-        let old = state.cfg.lock().unwrap().snap_hotkey.clone();
+        let old = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).snap_hotkey.clone();
         let _ = hotkey::set(&app, &old);
         return Err(e);
     }
-    let mut c = state.cfg.lock().unwrap();
+    let mut c = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     c.snap_hotkey = keys;
     c.save(&config_path()).map_err(|e| e.to_string())
 }
@@ -650,15 +653,15 @@ fn vcam_status(state: tauri::State<AppState>) -> String {
 #[tauri::command]
 fn get_screen(state: tauri::State<AppState>) -> serde_json::Value {
     serde_json::json!({
-        "layout": state.shared.screen.lock().unwrap().clone(),
-        "reason": state.shared.screen_reason.lock().unwrap().clone(),
+        "layout": state.shared.screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+        "reason": state.shared.screen_reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
     })
 }
 
 /// Debugging: state of the frame saver (on/off, frames saved, folder).
 #[tauri::command]
 fn frame_saver_status(state: tauri::State<AppState>) -> debug_frames::SaverEvent {
-    let on = state.cfg.lock().unwrap().debug_save_frames;
+    let on = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).debug_save_frames;
     state.saver.event(on)
 }
 
@@ -666,7 +669,17 @@ fn frame_saver_status(state: tauri::State<AppState>) -> debug_frames::SaverEvent
 #[tauri::command]
 fn open_frames_folder(webview: tauri::Webview, state: tauri::State<AppState>) -> Result<String, String> {
     main_only(&webview)?;
-    let dir = state.saver.folder.lock().unwrap().clone().unwrap_or_else(frames_dir);
+    let dir = state.saver.folder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_else(frames_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    debug_frames::open_folder(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.display().to_string())
+}
+
+/// The log's folder, opened in the file manager.
+#[tauri::command]
+fn open_log_folder(webview: tauri::Webview) -> Result<String, String> {
+    main_only(&webview)?;
+    let dir = vi_translator_core::log::folder().unwrap_or_else(|| data_dir().join("logs"));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     debug_frames::open_folder(&dir).map_err(|e| e.to_string())?;
     Ok(dir.display().to_string())
@@ -700,8 +713,8 @@ fn snapshots_dir() -> PathBuf {
 /// picture; the app saves its own drawing of the others, see `save_snapshot_render`).
 fn snapshot_now(cfg: &Mutex<Config>, shared: &Shared, memory: &Mutex<memory::Memory>) -> anyhow::Result<snapshot::Snapshot> {
     let Some(frame) = shared.latest() else { anyhow::bail!("no picture yet: pick a source first") };
-    let private = shared.screen_private.lock().unwrap().clone();
-    let c = cfg.lock().unwrap().clone();
+    let private = shared.screen_private.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     let id = debug_frames::timestamp();
     let ocr = || {
         Ocr::init_thread();
@@ -759,7 +772,7 @@ fn open_snapshots_folder(webview: tauri::Webview) -> Result<String, String> {
 #[tauri::command]
 fn open_previews_folder(webview: tauri::Webview) -> Result<String, String> {
     main_only(&webview)?;
-    let dir = preview_shot::FOLDER.lock().unwrap().clone().unwrap_or_else(|| pictures_dir().map(|p| p.join(FOLDER).join("previews")).unwrap_or_else(|| data_dir().join("previews")));
+    let dir = preview_shot::FOLDER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_else(|| pictures_dir().map(|p| p.join(FOLDER).join("previews")).unwrap_or_else(|| data_dir().join("previews")));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     debug_frames::open_folder(&dir).map_err(|e| e.to_string())?;
     Ok(dir.display().to_string())
@@ -780,13 +793,13 @@ fn preview_loop(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared>) {
     let mut last_status = Instant::now() - Duration::from_secs(5);
     loop {
         std::thread::sleep(Duration::from_millis(5));
-        let raw = shared.preview_raw.lock().unwrap().clone();
+        let raw = shared.preview_raw.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         // someone started watching, but the picture hasn't changed since: start from the last full frame
         let watching = shared.watching();
         let raw = match raw {
-            None if watching && shared.preview_jpeg.lock().unwrap().is_none() && shared.preview_yuv.lock().unwrap().is_none() => shared.latest().map(|f| {
+            None if watching && shared.preview_jpeg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() && shared.preview_yuv.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() => shared.latest().map(|f| {
                 let small = Arc::new(capture::shrink(&f.rgba, f.w, f.h, (f.w * 4) as usize, false));
-                *shared.preview_raw.lock().unwrap() = Some(small.clone());
+                *shared.preview_raw.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(small.clone());
                 small
             }),
             r => r,
@@ -802,7 +815,7 @@ fn preview_loop(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared>) {
                 shared.put_preview_jpeg(jpeg);
             }
             if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
-                eprintln!("[preview] {}x{} JPEG in {:.1} ms", f.w, f.h, t.elapsed().as_secs_f64() * 1000.0);
+                vi_translator_core::vlog!("[preview] {}x{} JPEG in {:.1} ms", f.w, f.h, t.elapsed().as_secs_f64() * 1000.0);
             }
         }
         if last_status.elapsed() >= Duration::from_millis(500) {
@@ -812,8 +825,8 @@ fn preview_loop(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared>) {
                 .is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false));
             shared.preview_paused.store(!visible, std::sync::atomic::Ordering::Relaxed);
             let frame = shared.latest();
-            let status = shared.status.lock().unwrap().clone();
-            let port = cfg.lock().unwrap().obs_page_port;
+            let status = shared.stall.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_else(|| shared.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+            let port = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).obs_page_port;
             let (w, h) = frame.as_ref().map(|f| (f.w, f.h)).unwrap_or((0, 0));
             let _ = app.emit_to(
                 "main",
@@ -821,14 +834,65 @@ fn preview_loop(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared>) {
                 FrameEvent { live: frame.is_some(), w, h, status, preview_url: format!("http://127.0.0.1:{port}/preview") },
             );
             if frame.is_none() {
-                *shared.preview_raw.lock().unwrap() = None;
-                *shared.preview_jpeg.lock().unwrap() = None;
-                *shared.preview_yuv.lock().unwrap() = None;
+                *shared.preview_raw.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                *shared.preview_jpeg.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                *shared.preview_yuv.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
             }
         }
     }
 }
 
+
+/// What has stalled, from what the picture, the reading and the translator did last (each in
+/// seconds; None: it hasn't started / isn't busy). A picture that stops for 3 s, a reading that
+/// stops for 3 s while there is a picture, a translator on one line for 5 s.
+fn stall_of(picture: Option<f64>, read: Option<f64>, translating: Option<f64>) -> Option<String> {
+    match (picture, read, translating) {
+        (Some(p), _, _) if p >= 3.0 => Some(format!("No new picture for {} s: the source stopped sending", p as u64)),
+        (Some(_), Some(r), _) if r >= 3.0 => Some(format!("The text hasn't been read for {} s", r as u64)),
+        (_, _, Some(t)) if t >= 5.0 => Some(format!("The translator has been on one line for {} s", t as u64)),
+        _ => None,
+    }
+}
+
+/// Once a second: what has stalled (into the status line and the log); every 10 s a line of figures
+/// for the log (pictures a second, the reading's and the translator's times, the source's status).
+fn watch_loop(shared: Arc<Shared>) {
+    use vi_translator_core::perf::{self, PerfKind};
+    let mut last_seq = shared.seq.load(std::sync::atomic::Ordering::Relaxed);
+    let mut seq_at = Instant::now();
+    let mut ten = (Instant::now(), last_seq);
+    let mut was: Option<String> = None;
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        let seq = shared.seq.load(std::sync::atomic::Ordering::Relaxed);
+        if seq != last_seq {
+            (last_seq, seq_at) = (seq, Instant::now());
+        }
+        let live = shared.latest().is_some();
+        // (a window or a screen sends a picture only when it changes: a still one is no stall; a
+        // card, OBS and the PS5 send one all the time)
+        let changes_only = shared.hwnd.load(std::sync::atomic::Ordering::Relaxed) != 0 || shared.reading_screen.load(std::sync::atomic::Ordering::Relaxed);
+        let picture = (live && !changes_only).then(|| seq_at.elapsed().as_secs_f64());
+        let read = perf::last(PerfKind::Read).map(|t| t.elapsed().as_secs_f64());
+        let stall = stall_of(picture, read.filter(|_| live), perf::translating_for().map(|d| d.as_secs_f64()));
+        // (the log: when it starts and ends, not every second)
+        if stall.as_ref().map(|s| s.split(" for ").next()) != was.as_ref().map(|s| s.split(" for ").next()) {
+            match &stall {
+                Some(s) => vi_translator_core::vlog!("[stall] {s}"),
+                None => vi_translator_core::vlog!("[stall] over"),
+            }
+        }
+        was = stall.clone();
+        *shared.stall.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = stall;
+        if ten.0.elapsed() >= Duration::from_secs(10) {
+            let fps = (seq - ten.1) as f64 / ten.0.elapsed().as_secs_f64();
+            let status = shared.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            vi_translator_core::vlog!("[perf] {fps:.1} pictures/s · {} · {status}", perf::perf_status());
+            ten = (Instant::now(), seq);
+        }
+    }
+}
 
 /// The window and overlays hear the core's events as Tauri events of the same name.
 struct TauriSink(AppHandle);
@@ -1027,12 +1091,12 @@ fn read_video(file: &str, fps: f64, from: f64, to: f64) -> anyhow::Result<()> {
             writeln!(out, "{line}")?;
         }
         if n % 600 == 0 {
-            eprintln!("read-video: {:.0} min", t / 60.0);
+            vi_translator_core::vlog!("read-video: {:.0} min", t / 60.0);
             out.flush()?;
         }
     }
     let _ = child.wait();
-    eprintln!("read-video: {n} frames");
+    vi_translator_core::vlog!("read-video: {n} frames");
     Ok(())
 }
 
@@ -1205,11 +1269,11 @@ fn translate_frames(file: &str, times_file: &str, out_dir: &str) -> anyhow::Resu
         writeln!(out, "{}", serde_json::json!({ "t": t, "file": name, "w": w, "h": h, "areas": shown }))?;
         out.flush()?;
         if next % 100 == 0 {
-            eprintln!("translate-frames: {next}/{}", wanted.len());
+            vi_translator_core::vlog!("translate-frames: {next}/{}", wanted.len());
         }
     }
     let _ = child.kill();
-    eprintln!("translate-frames: {next} frames");
+    vi_translator_core::vlog!("translate-frames: {next} frames");
     Ok(())
 }
 
@@ -1406,7 +1470,7 @@ fn test_image(path: &str, area_id: &str) -> anyhow::Result<()> {
     let t = Instant::now();
     let mut words = ocr.recognize(&crop)?;
     if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
-        eprintln!("[ocr] words: {:?}", words.iter().map(|w| (&w.text, w.rect)).collect::<Vec<_>>());
+        vi_translator_core::vlog!("[ocr] words: {:?}", words.iter().map(|w| (&w.text, w.rect)).collect::<Vec<_>>());
     }
     if area.centered_only {
         words = ocr::centered_words(&words, area.x.clamp(0.0, 1.0) * w as f64, w as f64);
@@ -1484,6 +1548,9 @@ fn test_image(path: &str, area_id: &str) -> anyhow::Result<()> {
 
 fn main() {
     move_old_folders();
+    // the log, first: what happens from here on is kept (data folder / logs)
+    vi_translator_core::log::init(&data_dir().join("logs"));
+    vi_translator_core::vlog!("VI Translator {} starting ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
     let args: Vec<String> = std::env::args().collect();
     // `--screen-copy "Window title" out.png`: copy that window's area of the screen (overlays included).
     if let Some(i) = args.iter().position(|a| a == "--screen-copy") {
@@ -1496,7 +1563,7 @@ fn main() {
                 capture::save_png(&f, std::path::Path::new(out)).expect("save");
                 println!("saved {w}x{h} screen copy to {out}");
             }
-            None => eprintln!("screen copy failed"),
+            None => vi_translator_core::vlog!("screen copy failed"),
         }
         return;
     }
@@ -1510,14 +1577,14 @@ fn main() {
     }
     if let Some(i) = args.iter().position(|a| a == "--grab-device") {
         let (Some(name), Some(out)) = (args.get(i + 1), args.get(i + 2)) else {
-            eprintln!("usage: --grab-device \"Device name\" out.png");
+            vi_translator_core::vlog!("usage: --grab-device \"Device name\" out.png");
             std::process::exit(2);
         };
         let t = std::time::Instant::now();
         match device::grab_once(name).and_then(|f| capture::save_png(&f, std::path::Path::new(out)).map(|_| f)) {
             Ok(f) => println!("saved {}x{} frame to {out} ({} ms)", f.w, f.h, t.elapsed().as_millis()),
             Err(e) => {
-                eprintln!("error: {e:#}");
+                vi_translator_core::vlog!("error: {e:#}");
                 std::process::exit(1);
             }
         }
@@ -1541,7 +1608,7 @@ fn main() {
     }
     if let Some(i) = args.iter().position(|a| a == "--grab-obs") {
         let (Some(name), Some(out)) = (args.get(i + 1), args.get(i + 2)) else {
-            eprintln!("usage: --grab-obs \"OBS source name\" out.png");
+            vi_translator_core::vlog!("usage: --grab-obs \"OBS source name\" out.png");
             std::process::exit(2);
         };
         let cfg = Config::load(&config_path());
@@ -1561,7 +1628,7 @@ fn main() {
         match r {
             Ok(()) => println!("saved to {out} ({} ms total)", t.elapsed().as_millis()),
             Err(e) => {
-                eprintln!("error: {e:#}");
+                vi_translator_core::vlog!("error: {e:#}");
                 std::process::exit(1);
             }
         }
@@ -1582,7 +1649,7 @@ fn main() {
             match capture::grab_once(title) {
                 Ok(f) => frames.push(f),
                 Err(e) => {
-                    eprintln!("error: {e:#}");
+                    vi_translator_core::vlog!("error: {e:#}");
                     std::process::exit(1);
                 }
             }
@@ -1597,13 +1664,13 @@ fn main() {
     }
     if let Some(i) = args.iter().position(|a| a == "--grab") {
         let (Some(title), Some(out)) = (args.get(i + 1), args.get(i + 2)) else {
-            eprintln!("usage: --grab \"Window title\" out.png");
+            vi_translator_core::vlog!("usage: --grab \"Window title\" out.png");
             std::process::exit(2);
         };
         match capture::grab_once(title).and_then(|f| capture::save_png(&f, std::path::Path::new(out)).map(|_| f)) {
             Ok(f) => println!("saved {}x{} frame to {out}", f.w, f.h),
             Err(e) => {
-                eprintln!("error: {e:#}");
+                vi_translator_core::vlog!("error: {e:#}");
                 std::process::exit(1);
             }
         }
@@ -1663,7 +1730,7 @@ fn main() {
                     let t = Instant::now();
                     let present = pages.present(&info.id, &frame, &ocr);
                     if std::env::var_os("VI_TRANSLATOR_TIMING").is_some() {
-                        eprintln!("[timing] {name} {} present {} µs", info.id, t.elapsed().as_micros());
+                        vi_translator_core::vlog!("[timing] {name} {} present {} µs", info.id, t.elapsed().as_micros());
                     }
                     let Some(k) = present else { continue };
                     let read = pages.read(&info.id, &frame, &ocr, &k);
@@ -1709,7 +1776,7 @@ fn main() {
             Ok(())
         };
         if let Err(e) = run() {
-            eprintln!("read-pages: {e:#}");
+            vi_translator_core::vlog!("read-pages: {e:#}");
         }
         return;
     }
@@ -1718,18 +1785,18 @@ fn main() {
     if let Some(file) = args.iter().position(|a| a == "--read-video").and_then(|i| args.get(i + 1)) {
         let num = |name: &str, def: f64| args.iter().position(|a| a == name).and_then(|j| args.get(j + 1)).and_then(|v| v.parse().ok()).unwrap_or(def);
         if let Err(e) = read_video(file, num("--fps", 2.0), num("--from", 0.0), num("--to", 0.0)) {
-            eprintln!("read-video: {e:#}");
+            vi_translator_core::vlog!("read-video: {e:#}");
             std::process::exit(1);
         }
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--translate-frames") {
         let (Some(video), Some(times), Some(out)) = (args.get(i + 1), args.get(i + 2), args.get(i + 3)) else {
-            eprintln!("usage: --translate-frames <video> <times file> <out dir>");
+            vi_translator_core::vlog!("usage: --translate-frames <video> <times file> <out dir>");
             std::process::exit(2);
         };
         if let Err(e) = translate_frames(video, times, out) {
-            eprintln!("translate-frames: {e:#}");
+            vi_translator_core::vlog!("translate-frames: {e:#}");
             std::process::exit(1);
         }
         return;
@@ -1740,11 +1807,11 @@ fn main() {
     #[cfg(debug_assertions)]
     if let Some(i) = args.iter().position(|a| a == "--phone-crops") {
         let (Some(file), Some(out)) = (args.get(i + 1), args.get(i + 2)) else {
-            eprintln!("usage: --phone-crops <frame.png> <out dir>");
+            vi_translator_core::vlog!("usage: --phone-crops <frame.png> <out dir>");
             std::process::exit(2);
         };
         if let Err(e) = phone_crops(file, out) {
-            eprintln!("read-phone: {e:#}");
+            vi_translator_core::vlog!("read-phone: {e:#}");
             std::process::exit(1);
         }
         return;
@@ -1781,21 +1848,21 @@ fn main() {
             Ok(())
         };
         if let Err(e) = run() {
-            eprintln!("error: {e:#}");
+            vi_translator_core::vlog!("error: {e:#}");
             std::process::exit(1);
         }
         return;
     }
     if let Some(dir) = args.iter().position(|a| a == "--read-chat").and_then(|i| args.get(i + 1)) {
         if let Err(e) = read_chat(dir) {
-            eprintln!("error: {e:#}");
+            vi_translator_core::vlog!("error: {e:#}");
             std::process::exit(1);
         }
         return;
     }
     if let Some(dir) = args.iter().position(|a| a == "--read-phone").and_then(|i| args.get(i + 1)) {
         if let Err(e) = read_phone(dir) {
-            eprintln!("error: {e:#}");
+            vi_translator_core::vlog!("error: {e:#}");
             std::process::exit(1);
         }
         return;
@@ -1803,7 +1870,7 @@ fn main() {
     if let Some(dir) = args.iter().position(|a| a == "--read-lines").and_then(|i| args.get(i + 1)) {
         let area = args.iter().position(|a| a == "--area").and_then(|j| args.get(j + 1)).map(String::as_str).unwrap_or("subtitles");
         if let Err(e) = read_lines(dir, area) {
-            eprintln!("error: {e:#}");
+            vi_translator_core::vlog!("error: {e:#}");
             std::process::exit(1);
         }
         return;
@@ -1811,11 +1878,11 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--test-image") {
         let area = args.iter().position(|a| a == "--area").and_then(|j| args.get(j + 1)).map(String::as_str).unwrap_or("subtitles");
         let Some(image) = args.get(i + 1) else {
-            eprintln!("usage: --test-image <picture.png> [--area <id>]");
+            vi_translator_core::vlog!("usage: --test-image <picture.png> [--area <id>]");
             std::process::exit(2);
         };
         if let Err(e) = test_image(image, area) {
-            eprintln!("error: {e:#}");
+            vi_translator_core::vlog!("error: {e:#}");
             std::process::exit(1);
         }
         return;
@@ -1834,7 +1901,7 @@ fn main() {
     }
     let cfg = Arc::new(Mutex::new(loaded));
     let saver = Arc::new(debug_frames::SaverState::default());
-    let memory = Arc::new(Mutex::new(memory::Memory::load(db_dir(), &cfg.lock().unwrap().target_lang)));
+    let memory = Arc::new(Mutex::new(memory::Memory::load(db_dir(), &cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).target_lang)));
     let shared = Arc::new(Shared::default());
     // the TVs connected to show the overlays, and their keys (their own file, not the settings)
     shared.tvs.load(data_dir().join("tvs.json"));
@@ -1843,23 +1910,24 @@ fn main() {
     tauri::Builder::default()
         .plugin(hotkey::plugin())
         .manage(AppState { cfg: cfg.clone(), shared: shared.clone(), saver: saver.clone(), memory: memory.clone(), update: update.clone() })
-        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin])
+        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin])
         .setup(move |app| {
             if let Some(w) = app.get_webview_window("main") {
-                let _ = w.set_title(&format!("VI Translator {}", env!("CARGO_PKG_VERSION")));
+                let test = if updater::TEST_BUILD { " (test build · updates off)" } else { "" };
+                let _ = w.set_title(&format!("VI Translator {}{test}", env!("CARGO_PKG_VERSION")));
             }
             {
                 // the snapshot's keyboard shortcut, if one is set
-                let keys = cfg.lock().unwrap().snap_hotkey.clone();
+                let keys = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).snap_hotkey.clone();
                 if let Err(e) = hotkey::set(app.handle(), &keys) {
-                    eprintln!("[hotkey] \"{keys}\": {e}");
+                    vi_translator_core::vlog!("[hotkey] \"{keys}\": {e}");
                 }
             }
             ps5::init(app.handle().clone(), &data_dir());
             // Xbox in the app as the source (or `--xbox`): its player opens with the app
-            if xbox::available() && (cfg.lock().unwrap().window_title == xbox::TITLE || args.iter().any(|a| a == "--xbox")) {
+            if xbox::available() && (cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).window_title == xbox::TITLE || args.iter().any(|a| a == "--xbox")) {
                 if let Err(e) = xbox::open(app.handle(), &data_dir()) {
-                    eprintln!("[xbox] {e}");
+                    vi_translator_core::vlog!("[xbox] {e}");
                 }
             }
             let handle = app.handle().clone();
@@ -1867,20 +1935,20 @@ fn main() {
             {
                 // the Arabic-only page for an OBS Browser Source
                 let (h, c, s) = (handle.clone(), cfg.clone(), shared.clone());
-                std::thread::spawn(move || obs_page::run(h, c, s));
+                vi_translator_core::log::spawn_supervised("obs-page", move || obs_page::run(h.clone(), c.clone(), s.clone()));
             }
             {
                 let (h, c, s, m, k) = (app.handle().clone(), cfg.clone(), shared.clone(), memory.clone(), sink.clone());
-                std::thread::spawn(move || lan::run(h, c, s, m, k));
+                vi_translator_core::log::spawn_supervised("lan", move || lan::run(h.clone(), c.clone(), s.clone(), m.clone(), k.clone()));
             }
             {
                 let (h, c, u) = (app.handle().clone(), cfg.clone(), update.clone());
-                std::thread::spawn(move || updater::run(h, c, u));
+                vi_translator_core::log::spawn_supervised("updater", move || updater::run(h.clone(), c.clone(), u.clone()));
             }
 
             {
                 let (s, c) = (shared.clone(), cfg.clone());
-                std::thread::spawn(move || capture::run_manager(s, c));
+                vi_translator_core::log::spawn_supervised("capture", move || capture::run_manager(s.clone(), c.clone()));
             }
             // (dev builds: the debug server for the live preview, dev_debug.rs)
             #[cfg(debug_assertions)]
@@ -1892,34 +1960,38 @@ fn main() {
             {
                 // the capture card's sound on the speakers (with a card as the source)
                 let (s, c) = (shared.clone(), cfg.clone());
-                std::thread::spawn(move || card_sound::run(c, s));
+                vi_translator_core::log::spawn_supervised("card-sound", move || card_sound::run(c.clone(), s.clone()));
             }
             {
                 // the game with its translations as a webcam (off unless turned on)
                 let (s, c) = (shared.clone(), cfg.clone());
-                std::thread::spawn(move || vcam::run(c, s));
+                vi_translator_core::log::spawn_supervised("vcam", move || vcam::run(c.clone(), s.clone()));
+            }
+            {
+                let s = shared.clone();
+                vi_translator_core::log::spawn_supervised("watch", move || watch_loop(s.clone()));
             }
             {
                 let (h, c, s) = (handle.clone(), cfg.clone(), shared.clone());
-                std::thread::spawn(move || preview_loop(h, c, s));
+                vi_translator_core::log::spawn_supervised("preview", move || preview_loop(h.clone(), c.clone(), s.clone()));
             }
             {
                 // the reading (and, in the core, its translator and presenter threads)
                 let ctx = engine::Context { cfg: cfg.clone(), live: shared.live.clone(), memory: memory.clone(), sink: sink.clone(), paths: paths() };
                 let (h, s) = (handle.clone(), shared.clone());
-                std::thread::spawn(move || ocr_loop(h, ctx, s));
+                vi_translator_core::log::spawn_supervised("reading", move || ocr_loop(h.clone(), ctx.clone(), s.clone()));
             }
             {
                 let (h, c, s) = (handle.clone(), cfg.clone(), shared.clone());
-                std::thread::spawn(move || overlay::position_loop(h, c, s));
+                vi_translator_core::log::spawn_supervised("overlays", move || overlay::position_loop(h.clone(), c.clone(), s.clone()));
             }
             {
                 let (h, c, s, sv) = (handle.clone(), cfg.clone(), shared.clone(), saver.clone());
-                std::thread::spawn(move || debug_frames::run(h, c, s, sv, frames_dir()));
+                vi_translator_core::log::spawn_supervised("frames", move || debug_frames::run(h.clone(), c.clone(), s.clone(), sv.clone(), frames_dir()));
             }
             {
                 let (k, c, m) = (sink.clone(), cfg.clone(), memory.clone());
-                std::thread::spawn(move || sync::run(k, c, m, paths()));
+                vi_translator_core::log::spawn_supervised("sync", move || sync::run(k.clone(), c.clone(), m.clone(), paths()));
             }
             Ok(())
         })
@@ -1934,5 +2006,21 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running VI Translator");
 
+}
+
+#[cfg(test)]
+mod stall_tests {
+    use super::stall_of;
+
+    #[test]
+    fn what_has_stalled() {
+        assert_eq!(stall_of(Some(0.5), Some(0.1), None), None);
+        assert_eq!(stall_of(Some(3.2), Some(4.0), None).as_deref(), Some("No new picture for 3 s: the source stopped sending"));
+        assert_eq!(stall_of(Some(0.1), Some(3.0), None).as_deref(), Some("The text hasn't been read for 3 s"));
+        // (no picture source: the reading isn't expected to run)
+        assert_eq!(stall_of(None, Some(30.0), None), None);
+        assert_eq!(stall_of(None, None, Some(6.0)).as_deref(), Some("The translator has been on one line for 6 s"));
+        assert_eq!(stall_of(None, None, Some(4.0)), None);
+    }
 }
 

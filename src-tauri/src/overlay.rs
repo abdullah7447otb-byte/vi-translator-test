@@ -127,7 +127,7 @@ pub fn position_loop(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared
         if tick % 13 == 0 {
             last_geom.clear(); // re-send geometry now and then, in case an overlay page (re)loaded
         }
-        let c = cfg.lock().unwrap().clone();
+        let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         // Only show the Arabic while the overlay window is the one in front (not over other apps), over
         // the part of it showing the game.
         let client = if c.overlays_enabled { capture::overlay_rect(&shared, true) } else { None };

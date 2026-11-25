@@ -21,7 +21,7 @@ static PERF: Mutex<Option<Perf>> = Mutex::new(None);
 const PERF_WINDOW: Duration = Duration::from_secs(60);
 
 pub fn perf_note(kind: PerfKind, ms: f64) {
-    let mut p = PERF.lock().unwrap();
+    let mut p = PERF.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let p = p.get_or_insert_with(|| Perf { started: Instant::now(), samples: Default::default() });
     let q = &mut p.samples[kind as usize];
     let now = Instant::now();
@@ -34,7 +34,7 @@ pub fn perf_note(kind: PerfKind, ms: f64) {
 /// {"minutes", "read", "translate", "ready"}, each {"avg", "max", "n"} in ms over the last minute
 /// (null before anything was read).
 pub fn perf_status() -> serde_json::Value {
-    let p = PERF.lock().unwrap();
+    let p = PERF.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(p) = p.as_ref() else { return serde_json::json!(null) };
     let now = Instant::now();
     let stat = |k: PerfKind| {
@@ -50,4 +50,23 @@ pub fn perf_status() -> serde_json::Value {
         "minutes": (now - p.started).as_secs() / 60,
         "read": stat(PerfKind::Read), "translate": stat(PerfKind::Translate), "ready": stat(PerfKind::Ready),
     })
+}
+
+/// When the last sample of this kind came (none yet: None): the reading has stalled when its last
+/// read is long ago.
+pub fn last(kind: PerfKind) -> Option<Instant> {
+    let p = PERF.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    p.as_ref().and_then(|p| p.samples[kind as usize].back().map(|(t, _)| *t))
+}
+
+static TRANSLATING: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// The translator started a line (`true`) or finished it (`false`).
+pub fn translating(on: bool) {
+    *TRANSLATING.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = on.then(Instant::now);
+}
+
+/// How long the translator has been on the line it's on (None: it's waiting for one).
+pub fn translating_for() -> Option<Duration> {
+    TRANSLATING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).map(|t| t.elapsed())
 }

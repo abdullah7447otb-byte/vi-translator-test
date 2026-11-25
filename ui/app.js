@@ -1906,6 +1906,15 @@ async function savePreview() {
   }
 }
 
+$("open-log").addEventListener("click", async () => {
+  try {
+    const dir = await invoke("open_log_folder");
+    log({ info: t("Opened {dir}", { dir }) });
+  } catch (e) {
+    log({ error: String(e) });
+  }
+});
+
 async function openFramesFolder() {
   try {
     const dir = await invoke("open_frames_folder");

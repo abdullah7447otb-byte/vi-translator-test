@@ -143,7 +143,7 @@ fn open(name: &str, pick: bool, big: bool) -> Result<(IMFSourceReader, u32, u32,
         if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
             let cur = reader.GetCurrentMediaType(STREAM)?;
             let (w, h) = size_of(&cur);
-            eprintln!("[device] pick {pick}: {w}x{h} @ {:.1} fps, subtype {:?}", fps_of(&cur), cur.GetGUID(&MF_MT_SUBTYPE));
+            vi_translator_core::vlog!("[device] pick {pick}: {w}x{h} @ {:.1} fps, subtype {:?}", fps_of(&cur), cur.GetGUID(&MF_MT_SUBTYPE));
         }
         let cur = reader.GetCurrentMediaType(STREAM)?;
         let (w, h) = size_of(&cur);
@@ -224,16 +224,26 @@ fn copy_rows(sample: &IMFSample, w: u32, h: u32, bpp: u32) -> Result<Vec<u8>> {
 /// A running device capture (a reader thread).
 pub struct DeviceCapture {
     stop: Arc<AtomicBool>,
-    handle: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
 }
 
 impl DeviceCapture {
     pub fn is_finished(&self) -> bool {
-        self.handle.is_finished()
+        self.handle.as_ref().is_none_or(|h| h.is_finished())
     }
-    pub fn stop(self) {
+    pub fn stop(mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        let _ = self.handle.join();
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+// (dropped without `stop` — its owner ended on an error — it still ends, rather than running on
+// beside the one started in its place)
+impl Drop for DeviceCapture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -268,13 +278,13 @@ pub fn start(name: String, shared: Arc<Shared>, big: bool) -> DeviceCapture {
             if why.contains("0xC00D3704") {
                 why = "another app is using it (OBS's Video Capture Device keeps it to itself) — pick the card's OBS source (📺) instead".into();
             }
-            *status.lock().unwrap() = format!("Capture device \"{name}\": {why}");
+            *status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = format!("Capture device \"{name}\": {why}");
             std::thread::sleep(Duration::from_secs(2)); // the manager retries after this
             return;
         };
-        *status.lock().unwrap() = format!("Capturing device \"{name}\" ({w}×{h})");
+        *status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = format!("Capturing device \"{name}\" ({w}×{h})");
         if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
-            eprintln!("[device] reading {w}x{h} as {out:?}");
+            vi_translator_core::vlog!("[device] reading {w}x{h} as {out:?}");
         }
         let ago = Instant::now() - Duration::from_secs(1);
         let (mut last, mut last_preview) = (ago, ago);
@@ -296,7 +306,7 @@ pub fn start(name: String, shared: Arc<Shared>, big: bool) -> DeviceCapture {
                     Err(e) => format!("{e}"),
                     Ok(()) => format!("flags {flags:#x}"),
                 };
-                *status.lock().unwrap() = format!("Capture device \"{name}\" stopped sending frames ({why})");
+                *status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = format!("Capture device \"{name}\" stopped sending frames ({why})");
                 break;
             }
             // The card changed its picture (the console switched resolution): follow it, or open the
@@ -305,10 +315,10 @@ pub fn start(name: String, shared: Arc<Shared>, big: bool) -> DeviceCapture {
                 match current(&reader) {
                     Some(now) => {
                         (w, h, out) = now;
-                        *status.lock().unwrap() = format!("Capturing device \"{name}\" ({w}×{h})");
+                        *status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = format!("Capturing device \"{name}\" ({w}×{h})");
                     }
                     None => {
-                        *status.lock().unwrap() = format!("Capture device \"{name}\" changed its picture: opening it again");
+                        *status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = format!("Capture device \"{name}\" changed its picture: opening it again");
                         break;
                     }
                 }
@@ -330,7 +340,7 @@ pub fn start(name: String, shared: Arc<Shared>, big: bool) -> DeviceCapture {
                         // A game running slower than the console's 60 Hz output (30 fps) arrives as
                         // each frame twice: an exact copy of the last one sent isn't sent again (the
                         // window has it already). The next frame is looked at right away.
-                        let copy = shared.preview_yuv.lock().unwrap().as_ref().is_some_and(|(_, f)| f.w == w && f.h == h && f.data == px);
+                        let copy = shared.preview_yuv.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|(_, f)| f.w == w && f.h == h && f.data == px);
                         if copy {
                             if debug {
                                 st.copy();
@@ -348,7 +358,7 @@ pub fn start(name: String, shared: Arc<Shared>, big: bool) -> DeviceCapture {
                         // (a card that sends MJPEG, decoded by Windows) as YUY2 for the window's GPU, full
                         // size: no JPEG on the way. An exact copy of the last frame isn't sent again.
                         let yuy2 = crate::capture::bgrx_to_yuy2(&px, w, h);
-                        let copy = shared.preview_yuv.lock().unwrap().as_ref().is_some_and(|(_, f)| f.w == w && f.h == h && f.data == yuy2);
+                        let copy = shared.preview_yuv.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|(_, f)| f.w == w && f.h == h && f.data == yuy2);
                         if copy {
                             if debug {
                                 st.copy();
@@ -377,7 +387,7 @@ pub fn start(name: String, shared: Arc<Shared>, big: bool) -> DeviceCapture {
             }
         }
     });
-    DeviceCapture { stop, handle }
+    DeviceCapture { stop, handle: Some(handle) }
 }
 
 /// Debugging numbers for the device loop, printed once a second.
@@ -407,7 +417,7 @@ impl DebugStats {
             // > 0 and growing: frames reach us later and later (a queue builds up somewhere)
             let behind_ms = t0.elapsed().as_millis() as i64 - (stamp - s0) / 10_000;
             let n = self.frames.max(1);
-            eprintln!(
+            vi_translator_core::vlog!(
                 "[device] {:.1} fps | wait for frame avg {:.1} ms max {:.1} | our work avg {:.1} ms max {:.1} | drift {behind_ms} ms | copies skipped {}",
                 self.frames as f64 / self.since.elapsed().as_secs_f64(),
                 self.read.as_secs_f64() * 1000.0 / n as f64,
@@ -438,7 +448,7 @@ pub fn grab_once(name: &str) -> Result<Arc<FrameData>> {
             break Ok(f);
         }
         if cap.is_finished() || t.elapsed() > Duration::from_secs(8) {
-            let s = shared.status.lock().unwrap().clone();
+            let s = shared.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
             break Err(anyhow!("no frame from the device: {s}"));
         }
         std::thread::sleep(Duration::from_millis(50));

@@ -60,6 +60,14 @@ impl WindowCapture {
     }
 }
 
+// (dropped without `stop` — its owner ended on an error — it still ends, rather than running on
+// beside the one started in its place)
+impl Drop for WindowCapture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn find(title: &str) -> Option<Window> {
     let all = Window::all().ok()?;

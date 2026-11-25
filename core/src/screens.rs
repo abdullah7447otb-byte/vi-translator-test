@@ -356,25 +356,25 @@ pub fn set_layout_words(game: &str, lang: &str, menu: Vec<(String, String)>, but
     let keep = |v: Vec<(String, String)>| -> Vec<(&'static str, &'static str)> {
         v.into_iter().map(|(e, a)| (&*Box::leak(e.into_boxed_str()), &*Box::leak(a.into_boxed_str()))).collect()
     };
-    *LAYOUT_WORDS.write().unwrap() = (format!("{game}/{lang}"), [keep(menu), keep(buttons), keep(tabs)]);
+    *LAYOUT_WORDS.write().unwrap_or_else(std::sync::PoisonError::into_inner) = (format!("{game}/{lang}"), [keep(menu), keep(buttons), keep(tabs)]);
 }
 
 /// The game and language in use now (the detection loop says so as they change).
 pub fn use_words_for(game: &str, lang: &str) {
     let tag = format!("{game}/{lang}");
-    if *WORDS_FOR.read().unwrap() != tag {
-        *WORDS_FOR.write().unwrap() = tag;
+    if *WORDS_FOR.read().unwrap_or_else(std::sync::PoisonError::into_inner) != tag {
+        *WORDS_FOR.write().unwrap_or_else(std::sync::PoisonError::into_inner) = tag;
     }
 }
 
 /// The language in use ("ar" from "gta6/ar"), for page scripts' own words.
 pub fn words_lang() -> String {
-    WORDS_FOR.read().unwrap().rsplit('/').next().unwrap_or("").to_string()
+    WORDS_FOR.read().unwrap_or_else(std::sync::PoisonError::into_inner).rsplit('/').next().unwrap_or("").to_string()
 }
 
 fn layout_words(i: usize) -> Vec<(&'static str, &'static str)> {
-    let w = LAYOUT_WORDS.read().unwrap();
-    if w.0 == *WORDS_FOR.read().unwrap() { w.1[i].clone() } else { Vec::new() }
+    let w = LAYOUT_WORDS.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if w.0 == *WORDS_FOR.read().unwrap_or_else(std::sync::PoisonError::into_inner) { w.1[i].clone() } else { Vec::new() }
 }
 
 fn menu_words() -> Vec<(&'static str, &'static str)> {

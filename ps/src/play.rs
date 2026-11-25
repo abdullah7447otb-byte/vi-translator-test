@@ -71,7 +71,7 @@ static VIRTUAL: Mutex<Option<(Pad, Instant)>> = Mutex::new(None);
 
 /// Presses `p` on the PS5 for `hold`, with whatever real controllers do meanwhile.
 pub fn press(p: Pad, hold: Duration) {
-    *VIRTUAL.lock().unwrap() = Some((p, Instant::now() + hold));
+    *VIRTUAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((p, Instant::now() + hold));
 }
 
 /// What the player has done so far (for the app's status line).
@@ -124,7 +124,7 @@ struct Inner {
 impl Handler for Inner {
     fn event(&self, e: Event) {
         if let Event::Rumble { left, right } = e {
-            let _ = self.to_sdl.lock().unwrap().send(ToSdl::Rumble { left, right });
+            let _ = self.to_sdl.lock().unwrap_or_else(std::sync::PoisonError::into_inner).send(ToSdl::Rumble { left, right });
         }
         self.screen.event(&e);
     }
@@ -133,7 +133,7 @@ impl Handler for Inner {
         if frames_lost > 0 {
             self.stats.net_lost.fetch_add(frames_lost as u64, Ordering::Relaxed);
         }
-        match self.to_decoder.lock().unwrap().try_send(frame.to_vec()) {
+        match self.to_decoder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).try_send(frame.to_vec()) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
                 self.stats.late.fetch_add(1, Ordering::Relaxed);
@@ -148,21 +148,21 @@ impl Handler for Inner {
     fn audio_header(&self, channels: u32, rate: u32) {
         let ch = if channels >= 2 { opus::Channels::Stereo } else { opus::Channels::Mono };
         match opus::Decoder::new(rate, ch) {
-            Ok(d) => *self.opus.lock().unwrap() = Some((d, channels.clamp(1, 2))),
+            Ok(d) => *self.opus.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((d, channels.clamp(1, 2))),
             Err(e) => self.screen.log(1, &format!("sound: {e}")),
         }
-        let _ = self.to_sdl.lock().unwrap().send(ToSdl::AudioFormat { channels: channels.clamp(1, 2), rate });
+        let _ = self.to_sdl.lock().unwrap_or_else(std::sync::PoisonError::into_inner).send(ToSdl::AudioFormat { channels: channels.clamp(1, 2), rate });
     }
 
     fn audio(&self, packet: &[u8]) {
-        let mut o = self.opus.lock().unwrap();
+        let mut o = self.opus.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some((dec, channels)) = o.as_mut() else { return };
         // (Opus packets are at most 120 ms: 5760 samples at 48 kHz)
         let mut pcm = vec![0i16; 5760 * *channels as usize];
         match dec.decode(packet, &mut pcm, false) {
             Ok(n) => {
                 pcm.truncate(n * *channels as usize);
-                let _ = self.to_sdl.lock().unwrap().send(ToSdl::Pcm(pcm));
+                let _ = self.to_sdl.lock().unwrap_or_else(std::sync::PoisonError::into_inner).send(ToSdl::Pcm(pcm));
             }
             Err(e) => self.screen.log(2, &format!("sound: {e}")),
         }
@@ -211,7 +211,7 @@ impl Player {
 
     /// The account's login passcode, when the PS5 asks for it.
     pub fn login_pin(&self, pin: &str) {
-        if let Some(s) = self.session.lock().unwrap().as_ref() {
+        if let Some(s) = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
             s.login_pin(pin);
         }
     }
@@ -224,7 +224,7 @@ impl Drop for Player {
             let _ = t.join();
         }
         // (ends the stream: chiaki's threads finish before the decoder goes)
-        let s = self.session.lock().unwrap().take();
+        let s = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         drop(s);
         if let Some(t) = self.decoder.take() {
             let _ = t.join();
@@ -249,7 +249,7 @@ fn decode_thread(
         if last_ask.elapsed() >= Duration::from_millis(500) {
             last_ask = Instant::now();
             screen.log(3, &format!("video: {why}, asking for a key frame"));
-            if let Some(s) = session.lock().unwrap().as_ref() {
+            if let Some(s) = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
                 s.request_key_frame();
             }
         }
@@ -344,7 +344,7 @@ fn sdl_thread(rx: Receiver<ToSdl>, session: Arc<Mutex<Option<Session>>>, stop: A
             }
         }
         // (and the app's own press, while it lasts)
-        if let Some((v, until)) = *VIRTUAL.lock().unwrap() {
+        if let Some((v, until)) = *VIRTUAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
             if Instant::now() < until {
                 p.buttons |= v.buttons;
                 p.l2 = p.l2.max(v.l2);
@@ -358,7 +358,7 @@ fn sdl_thread(rx: Receiver<ToSdl>, session: Arc<Mutex<Option<Session>>>, stop: A
         }
         // (sent when it changes, and every half second anyway)
         if p != last || last_sent.elapsed() > Duration::from_millis(500) {
-            if let Some(s) = session.lock().unwrap().as_ref() {
+            if let Some(s) = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
                 s.controller(p);
             }
             last = p;

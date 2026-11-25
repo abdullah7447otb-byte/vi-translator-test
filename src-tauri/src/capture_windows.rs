@@ -26,7 +26,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// capture loop on systems where Windows cannot create a GraphicsCaptureItem.
 /// GDI is only a compatibility fallback: covered/minimised windows and some
 /// exclusive-fullscreen/protected surfaces may not be readable with it.
-pub struct WindowCapture(CaptureMethod);
+pub struct WindowCapture(Option<CaptureMethod>);
 
 enum CaptureMethod {
     Native(CaptureControl<Handler, BoxError>),
@@ -36,26 +36,43 @@ enum CaptureMethod {
 impl WindowCapture {
     pub fn is_finished(&self) -> bool {
         match &self.0 {
-            CaptureMethod::Native(c) => c.is_finished(),
-            CaptureMethod::Gdi { thread, .. } => thread.as_ref().is_none_or(JoinHandle::is_finished),
+            Some(CaptureMethod::Native(c)) => c.is_finished(),
+            Some(CaptureMethod::Gdi { thread, .. }) => thread.as_ref().is_none_or(JoinHandle::is_finished),
+            None => true,
         }
     }
     /// Read from the screen's pixels (the compatibility capture), not by Windows Graphics Capture.
     pub fn is_compat(&self) -> bool {
-        matches!(self.0, CaptureMethod::Gdi { .. })
+        matches!(self.0, Some(CaptureMethod::Gdi { .. }))
     }
-    pub fn stop(self) {
-        match self.0 {
-            CaptureMethod::Native(c) => {
-                let _ = c.stop();
+    pub fn stop(mut self) {
+        if let Some(m) = self.0.take() {
+            end(m);
+        }
+    }
+}
+
+fn end(m: CaptureMethod) {
+    match m {
+        CaptureMethod::Native(c) => {
+            let _ = c.stop();
+        }
+        CaptureMethod::Gdi { stop, thread, shared } => {
+            stop.store(true, Ordering::Relaxed);
+            if let Some(thread) = thread {
+                let _ = thread.join();
             }
-            CaptureMethod::Gdi { stop, thread, shared } => {
-                stop.store(true, Ordering::Relaxed);
-                if let Some(thread) = thread {
-                    let _ = thread.join();
-                }
-                shared.compat_capture.store(false, Ordering::Relaxed);
-            }
+            shared.compat_capture.store(false, Ordering::Relaxed);
+        }
+    }
+}
+
+// (dropped without `stop` — its owner ended on an error — it still ends, rather than capturing on
+// beside the one started in its place)
+impl Drop for WindowCapture {
+    fn drop(&mut self) {
+        if let Some(m) = self.0.take() {
+            end(m);
         }
     }
 }
@@ -118,7 +135,7 @@ fn start_gdi(
         }
         s.compat_capture.store(false, Ordering::Relaxed);
     })?;
-    Ok(WindowCapture(CaptureMethod::Gdi { stop, thread: Some(thread), shared }))
+    Ok(WindowCapture(Some(CaptureMethod::Gdi { stop, thread: Some(thread), shared })))
 }
 
 /// Start capturing the window titled `title`; returns the capture and the window's handle.
@@ -139,13 +156,13 @@ pub fn start_window(title: &str, shared: Arc<Shared>) -> anyhow::Result<(WindowC
             shared.clone(),
         );
         match Handler::start_free_threaded(settings) {
-            Ok(c) => return Ok((WindowCapture(CaptureMethod::Native(c)), hwnd)),
+            Ok(c) => return Ok((WindowCapture(Some(CaptureMethod::Native(c))), hwnd)),
             Err(e) => last_err = format!("Capture failed: {e}"),
         }
     }
     // The native path failed for this window. Keep a working desktop-pixel
     // fallback rather than displaying ItemConvertFailed forever.
-    eprintln!("VI Translator: native window capture failed for {title:?}: {last_err}; trying GDI");
+    vi_translator_core::vlog!("VI Translator: native window capture failed for {title:?}: {last_err}; trying GDI");
     let alive = move || unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(HWND(hwnd as *mut _))).as_bool() };
     // (only while it's the window in front: what covers it is never read)
     match start_gdi(shared, alive, move || focused_client_rect(hwnd)) {
@@ -293,13 +310,13 @@ pub fn start_screen(id: &str, shared: Arc<Shared>) -> anyhow::Result<WindowCaptu
             shared.clone(),
         );
         match Handler::start_free_threaded(settings) {
-            Ok(c) => return Ok(WindowCapture(CaptureMethod::Native(c))),
+            Ok(c) => return Ok(WindowCapture(Some(CaptureMethod::Native(c)))),
             Err(e) => last_err = format!("Capture failed: {e}"),
         }
     }
     // On stripped-down Windows installations, WinRT's GraphicsCaptureItem
     // conversion can fail for *every* display. BitBlt needs no WinRT runtime.
-    eprintln!("VI Translator: native screen capture failed for {id:?}: {last_err}; trying GDI");
+    vi_translator_core::vlog!("VI Translator: native screen capture failed for {id:?}: {last_err}; trying GDI");
     let id_owned = id.to_string();
     let id_alive = id_owned.clone();
     start_gdi(shared, move || screen_rect(&id_alive).is_some(), move || screen_rect(&id_owned)).map_err(|e| {

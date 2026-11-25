@@ -47,7 +47,7 @@ pub fn info(c: &Config, live: &Live) -> LanInfo {
         let code = qrcode::QrCode::new(u.as_bytes()).ok()?;
         Some(code.render::<qrcode::render::svg::Color>().min_dimensions(180, 180).quiet_zone(true).build())
     });
-    let error = (c.lan_page && !running).then(|| live.lan_error.lock().unwrap().clone()).flatten();
+    let error = (c.lan_page && !running).then(|| live.lan_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()).flatten();
     LanInfo { enabled: c.lan_page, running, url, qr, error }
 }
 
@@ -62,15 +62,15 @@ impl LivePage {
             "/live.json" => {
                 let after: u64 = query.split('&').find_map(|kv| kv.strip_prefix("after=")).and_then(|v| v.parse().ok()).unwrap_or(0);
                 let lines: Vec<serde_json::Value> =
-                    shared.live_log.lock().unwrap().iter().filter(|l| l["id"].as_u64().unwrap_or(0) > after).cloned().collect();
+                    shared.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|l| l["id"].as_u64().unwrap_or(0) > after).cloned().collect();
                 let live = !shared.live_off.load(Ordering::Relaxed);
                 // ("run": new each time the app starts; line ids start again then, and the page with it)
                 let (snap, control, ui) = {
-                    let c = cfg.lock().unwrap();
+                    let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     (c.snap_lan, c.lan_control.then(|| self.controls(&c)), c.ui_lang.clone())
                 };
                 // ("ui": the app's own interface language, which the page takes for its buttons and notices)
-                let body = serde_json::json!({ "run": crate::net::build_id(), "lang": shared.live_lang.lock().unwrap().clone(), "lines": lines, "live": live, "snap": snap, "control": control, "ui": ui, "perf": crate::perf::perf_status() });
+                let body = serde_json::json!({ "run": crate::net::build_id(), "lang": shared.live_lang.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(), "lines": lines, "live": live, "snap": snap, "control": control, "ui": ui, "perf": crate::perf::perf_status() });
                 respond(s, "200 OK", "application/json; charset=utf-8", body.to_string().as_bytes());
             }
             "/common.js" => serve(s, "common.js"),
@@ -92,7 +92,7 @@ impl LivePage {
                     respond(s, "400 Bad Request", "text/plain", b"bad request");
                     return None;
                 };
-                let mut c = cfg.lock().unwrap();
+                let mut c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 if !c.lan_control {
                     respond(s, "403 Forbidden", "text/plain; charset=utf-8", b"Changes from this page are switched off in VI Translator.");
                     return None;
@@ -136,7 +136,7 @@ impl LivePage {
             // a snapshot (the whole picture translated), asked for by this page (a POST from its own
             // address: another website can't make one), when the app allows it
             "/snapshot" if req.method == "POST" && req.origin == format!("http://{}", req.host) => {
-                if !cfg.lock().unwrap().snap_lan {
+                if !cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).snap_lan {
                     respond(s, "403 Forbidden", "text/plain; charset=utf-8", b"Snapshots from this page are switched off in VI Translator.");
                     return None;
                 }

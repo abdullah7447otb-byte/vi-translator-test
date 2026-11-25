@@ -179,7 +179,7 @@ fn handle(cfg: &Mutex<Config>, live: &Live, page: Option<&LivePage>, s: TcpStrea
         return respond(s, "403 Forbidden", "text/plain", b"not allowed");
     }
     let Some(s) = route(&req, s, cfg, live, &serve_bundled) else { return };
-    let page = page.filter(|_| cfg.lock().unwrap().lan_page);
+    let page = page.filter(|_| cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).lan_page);
     let Some(s) = (match page {
         Some(p) => p.route(&req, s, &serve_bundled),
         None => Some(s),
@@ -207,14 +207,14 @@ impl TvServer {
         let listener = match TcpListener::bind(("0.0.0.0", port)) {
             Ok(l) => l,
             Err(e) => {
-                *live.lan_error.lock().unwrap() = Some(format!("port {port}: {e}"));
+                *live.lan_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("port {port}: {e}"));
                 live.lan_running.store(false, Ordering::Relaxed);
                 return Err(e);
             }
         };
         listener.set_nonblocking(true)?;
         let port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
-        *live.lan_error.lock().unwrap() = None;
+        *live.lan_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         live.lan_running.store(true, Ordering::Relaxed);
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
@@ -323,7 +323,7 @@ mod tests {
         let page = Arc::new(LivePage { cfg: cfg.clone(), live: live.clone(), paths, sink: Arc::new(crate::NoSink), snapshot: Box::new(|| anyhow::bail!("no picture")) });
         let server = TvServer::start(0, cfg.clone(), live.clone(), Some(page)).unwrap();
         assert!(get(server.port, "/live.json").0.starts_with("HTTP/1.1 404"), "off by default");
-        cfg.lock().unwrap().lan_page = true;
+        cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).lan_page = true;
         crate::live::push(&live, "subtitles", "Okay...", &[], &[("حسنًا...".into(), None)], 5);
         let (head, body) = get(server.port, "/live.json?after=0");
         assert!(head.starts_with("HTTP/1.1 200"), "{head}");

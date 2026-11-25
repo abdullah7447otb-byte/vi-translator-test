@@ -64,6 +64,9 @@ pub struct Shared {
     pub sound_status: Mutex<String>,
     pub seq: AtomicU64,
     pub status: Mutex<String>,
+    /// What has stalled, when something has (no new picture, no reading, the translator stuck): shown
+    /// in the status line instead of `status` while it lasts (see main.rs watch_loop).
+    pub stall: Mutex<Option<String>>,
     /// Live preview, separate from the full frames read for text: a frame (≤ PREVIEW_W wide) at
     /// the preview rate, made only while someone watches (see `watching`), and its JPEG.
     pub preview_raw: Mutex<Option<Arc<FrameData>>>,
@@ -183,7 +186,7 @@ fn app_ms() -> u64 {
 
 impl Shared {
     pub fn latest(&self) -> Option<Arc<FrameData>> {
-        self.frame.lock().unwrap().clone()
+        self.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
     /// Time for the next full frame (the one text is read from)?
     pub fn full_due(&self, last: Instant) -> bool {
@@ -217,7 +220,7 @@ impl Shared {
         if w == 0 || h == 0 || rgba.len() < w as usize * h as usize * 4 {
             return;
         }
-        let crop = *self.source_crop.lock().unwrap();
+        let crop = *self.source_crop.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (w, h, rgba) = match crop {
             Some(c) => match crop_rgba(&rgba, w, h, c) {
                 Some(f) => f,
@@ -226,11 +229,11 @@ impl Shared {
             None => (w, h, rgba),
         };
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
-        *self.frame.lock().unwrap() = Some(Arc::new(FrameData { w, h, rgba, seq }));
+        *self.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(FrameData { w, h, rgba, seq }));
     }
     /// Store a preview frame (small RGBA; the preview thread turns it into JPEG).
     pub fn put_preview(&self, f: FrameData) {
-        let crop = *self.source_crop.lock().unwrap();
+        let crop = *self.source_crop.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let f = match crop {
             Some(c) => match crop_rgba(&f.rgba, f.w, f.h, c) {
                 Some((w, h, rgba)) => FrameData { w, h, rgba, seq: f.seq },
@@ -238,21 +241,21 @@ impl Shared {
             },
             None => f,
         };
-        *self.preview_raw.lock().unwrap() = Some(Arc::new(f));
+        *self.preview_raw.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(f));
     }
     /// Store a raw YUY2 preview frame (a capture card's own picture).
     #[cfg_attr(not(windows), allow(dead_code))] // (the Windows capture card reader's)
     pub fn put_preview_yuv(&self, f: YuvFrame) {
         let seq = self.preview_seq.fetch_add(1, Ordering::Relaxed) + 1;
-        *self.preview_yuv.lock().unwrap() = Some((seq, Arc::new(f)));
+        *self.preview_yuv.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((seq, Arc::new(f)));
     }
     /// Store a ready-made preview JPEG (OBS sends one).
     pub fn put_preview_jpeg(&self, jpeg: Vec<u8>) {
         let seq = self.preview_seq.fetch_add(1, Ordering::Relaxed) + 1;
-        *self.preview_jpeg.lock().unwrap() = Some((seq, Arc::new(jpeg)));
+        *self.preview_jpeg.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((seq, Arc::new(jpeg)));
     }
     pub fn set_status(&self, s: impl Into<String>) {
-        *self.status.lock().unwrap() = s.into();
+        *self.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = s.into();
     }
 }
 
@@ -291,12 +294,12 @@ pub fn crop_screen_rect(r: (i32, i32, i32, i32), c: Option<[f64; 4]>) -> (i32, i
 /// `front_only`, only while that window is the one in front (not over other apps).
 pub fn overlay_rect(shared: &Shared, front_only: bool) -> Option<(i32, i32, i32, i32)> {
     // a whole screen: always there (it has no "in front")
-    if let Some(r) = *shared.overlay_screen.lock().unwrap() {
-        return Some(crop_screen_rect(r, *shared.overlay_crop.lock().unwrap()));
+    if let Some(r) = *shared.overlay_screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        return Some(crop_screen_rect(r, *shared.overlay_crop.lock().unwrap_or_else(std::sync::PoisonError::into_inner)));
     }
     let hwnd = shared.overlay_hwnd.load(Ordering::Relaxed);
     let r = if front_only { focused_client_rect(hwnd) } else { client_rect(hwnd) }?;
-    Some(crop_screen_rect(r, *shared.overlay_crop.lock().unwrap()))
+    Some(crop_screen_rect(r, *shared.overlay_crop.lock().unwrap_or_else(std::sync::PoisonError::into_inner)))
 }
 
 /// Shrink a 4-byte-per-pixel image (rows `pitch` bytes apart) to ≤ PREVIEW_W wide, averaging 2×2
@@ -378,7 +381,7 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
     let (mut awake, mut pictured) = (None, (0u64, None::<Instant>));
     loop {
         let (want, obs_port, obs_password, source_crop, overlay_window, overlay_crop, picture_4k) = {
-            let c = cfg.lock().unwrap();
+            let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             shared.capture_ms.store(1000 / c.capture_fps.clamp(1, 60) as u64, Ordering::Relaxed);
             shared.preview_ms.store(1000 / c.preview_fps.clamp(1, 60) as u64, Ordering::Relaxed);
             PREVIEW_MAX.store(if c.picture_4k { PREVIEW_W_4K } else { PREVIEW_W }, Ordering::Relaxed);
@@ -397,21 +400,21 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
         let is_window = !want.starts_with(crate::obs::PREFIX) && !want.starts_with(crate::device::PREFIX) && !want.starts_with(crate::ps5::PREFIX);
         shared.reading_screen.store(screen.is_some(), Ordering::Relaxed);
         // (a part of the picture only for a window or a screen: a card's or OBS's picture is the game already)
-        *shared.source_crop.lock().unwrap() = if is_window { source_crop } else { None };
+        *shared.source_crop.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = if is_window { source_crop } else { None };
         // The overlays' window or screen: the one the player chose, else the source's (none for a
         // card or OBS)
         if overlay_window.is_empty() {
             shared.overlay_hwnd.store(if is_window { shared.hwnd.load(Ordering::Relaxed) } else { 0 }, Ordering::Relaxed);
-            *shared.overlay_screen.lock().unwrap() = screen.as_deref().and_then(screen_rect);
-            *shared.overlay_crop.lock().unwrap() = if is_window { source_crop } else { None };
+            *shared.overlay_screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = screen.as_deref().and_then(screen_rect);
+            *shared.overlay_crop.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = if is_window { source_crop } else { None };
         } else if let Some(id) = overlay_window.strip_prefix(SCREEN_PREFIX) {
             shared.overlay_hwnd.store(0, Ordering::Relaxed);
-            *shared.overlay_screen.lock().unwrap() = screen_rect(id);
-            *shared.overlay_crop.lock().unwrap() = overlay_crop;
+            *shared.overlay_screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = screen_rect(id);
+            *shared.overlay_crop.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = overlay_crop;
         } else {
             shared.overlay_hwnd.store(find_window(&overlay_window).unwrap_or(0), Ordering::Relaxed);
-            *shared.overlay_screen.lock().unwrap() = None;
-            *shared.overlay_crop.lock().unwrap() = overlay_crop;
+            *shared.overlay_screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            *shared.overlay_crop.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = overlay_crop;
         }
         // An OBS source ("obs:<name>"): OBS hands us snapshots of it
         if let Some(name) = want.strip_prefix(crate::obs::PREFIX) {
@@ -430,7 +433,7 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
                     o.stop();
                 }
                 shared.hwnd.store(0, Ordering::Relaxed);
-                *shared.frame.lock().unwrap() = None;
+                *shared.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 shared.set_status(format!("Connecting to OBS for \"{name}\" ..."));
                 obs = Some((key, crate::obs::start(name.to_string(), obs_port, obs_password, shared.clone())));
             }
@@ -439,7 +442,7 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
         }
         if let Some((_, o)) = obs.take() {
             o.stop();
-            *shared.frame.lock().unwrap() = None;
+            *shared.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
         // The PS5 in the app ("ps5:"): chiaki-ng's stream, decoded here
         if want.starts_with(crate::ps5::PREFIX) {
@@ -454,7 +457,7 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
                     p.stop();
                 }
                 shared.hwnd.store(0, Ordering::Relaxed); // no window: the Arabic goes to the preview / OBS / the TV
-                *shared.frame.lock().unwrap() = None;
+                *shared.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 ps5 = Some(crate::ps5::start(shared.clone()));
             }
             std::thread::sleep(Duration::from_secs(1));
@@ -462,7 +465,7 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
         }
         if let Some(p) = ps5.take() {
             p.stop();
-            *shared.frame.lock().unwrap() = None;
+            *shared.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
         // A capture card / video device ("device:<name>") instead of a window
         if let Some(name) = want.strip_prefix(crate::device::PREFIX) {
@@ -477,7 +480,7 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
                     d.stop();
                 }
                 shared.hwnd.store(0, Ordering::Relaxed); // no window: the Arabic goes to OBS / the preview
-                *shared.frame.lock().unwrap() = None;
+                *shared.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 shared.set_status(format!("Opening capture device \"{name}\" ..."));
                 device = Some((key, crate::device::start(name.to_string(), shared.clone(), picture_4k)));
             }
@@ -486,7 +489,7 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
         }
         if let Some((_, d)) = device.take() {
             d.stop();
-            *shared.frame.lock().unwrap() = None;
+            *shared.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
         // A whole screen ("screen:<id>")
         if let Some(id) = &screen {
@@ -497,7 +500,7 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
                     let _ = c.stop();
                 }
                 shared.hwnd.store(0, Ordering::Relaxed);
-                *shared.frame.lock().unwrap() = None;
+                *shared.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 match platform::start_screen(id, shared.clone()) {
                     Ok(c) => {
                         shared.set_status(if c.is_compat() {
@@ -520,7 +523,7 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
                 let _ = c.stop();
             }
             shared.hwnd.store(0, Ordering::Relaxed);
-            *shared.frame.lock().unwrap() = None;
+            *shared.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
             match platform::start_window(&want, shared.clone()) {
                 Ok((c, hwnd)) => {
                     shared.hwnd.store(hwnd, Ordering::Relaxed);
@@ -578,7 +581,7 @@ mod crop_tests {
     #[test]
     fn frames_keep_only_the_game_part() {
         let s = Shared::default();
-        *s.source_crop.lock().unwrap() = Some([0.25, 0.0, 0.5, 1.0]);
+        *s.source_crop.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some([0.25, 0.0, 0.5, 1.0]);
         s.put_full(4, 2, vec![9; 32]);
         let f = s.latest().unwrap();
         assert_eq!((f.w, f.h, f.rgba.len()), (2, 2, 16));

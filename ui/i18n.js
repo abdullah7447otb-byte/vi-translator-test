@@ -99,6 +99,9 @@ window.I18N = (() => {
       "Loading the translation model ...",
       "Free local translator ready.",
       "OCR unavailable: {error}",
+      "No new picture for {s} s: the source stopped sending",
+      "The text hasn't been read for {s} s",
+      "The translator has been on one line for {s} s",
       "Playing on {name} ({pads} controller(s)) · {fps} fps · lost on the network: {net} · too late to decode: {late} (last 10 s)"
   ];
   const MSG_RE = MSGS.map((m) => {

@@ -83,7 +83,7 @@ pub fn push(live: &Live, area: &str, en: &str, en_segments: &[(String, Option<St
         return;
     }
     let id = live.live_seq.fetch_add(1, Ordering::Relaxed) + 1;
-    let mut log = live.live_log.lock().unwrap();
+    let mut log = live.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     // the same line sent again with the game's colours (same area and start): the first goes
     log.retain(|l| !(l["area"] == area && l["at"] == at_ms));
     log.push_back(serde_json::json!({ "id": id, "at": at_ms, "area": area, "en": en, "text": text.trim(), "en_segs": en_segments, "segs": segments }));
@@ -98,11 +98,11 @@ pub fn push(live: &Live, area: &str, en: &str, en_segments: &[(String, Option<St
 /// taken out before a page is shown).
 pub fn overlay_state(cfg: &Mutex<crate::config::Config>, live: &Live) -> serde_json::Value {
     let (areas, style, profile_opts, overlays, lang) = {
-        let c = cfg.lock().unwrap();
+        let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         (c.areas.clone(), c.style.clone(), c.profile_opts.clone(), c.overlays_enabled, c.target_lang.clone())
     };
     // (each area's effects as they apply: the player's own, else the game's default)
-    let area_fx = cfg.lock().unwrap().fx_all();
+    let area_fx = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fx_all();
     serde_json::json!({
         "build": crate::net::build_id(),
         "areas": areas,
@@ -111,12 +111,12 @@ pub fn overlay_state(cfg: &Mutex<crate::config::Config>, live: &Live) -> serde_j
         // the header's Overlays switch: off = draw nothing
         "overlays": overlays,
         "lang": lang,
-        "shown": live.shown.lock().unwrap().clone(),
-        "covers": live.covers.lock().unwrap().clone(),
-        "phone": live.phone.lock().unwrap().clone(),
+        "shown": live.shown.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+        "covers": live.covers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+        "phone": live.phone.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
         "area_fx": area_fx,
-        "screen": live.screen.lock().unwrap().clone(),
-        "reason": live.screen_reason.lock().unwrap().clone(),
+        "screen": live.screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+        "reason": live.screen_reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
     })
 }
 
@@ -134,7 +134,7 @@ mod tests {
         let en_icon = [("Press ".into(), None), (String::new(), Some("icon:data:x".into()))];
         push(&live, "help", "Press 🎮", &en_icon, &[("اضغط ".into(), None), (String::new(), Some("icon:data:x".into()))], 9);
         push(&live, "help", "nothing", &[], &[(" ".into(), None)], 10); // blank: not kept
-        let log = live.live_log.lock().unwrap();
+        let log = live.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(log.len(), KEEP);
         assert_eq!(log.back().unwrap()["text"], "اضغط 🎮");
         // the icons themselves too, for the page to draw them in both lines

@@ -167,13 +167,21 @@ pub fn clean_up() {
 }
 
 /// Background check: on start (after a minute) and every hour; tells the window when an update exists.
+/// A test build (built with VIT_TEST_BUILD set, as test-build.yml does): it never looks for the
+/// official version, which would replace it.
+pub const TEST_BUILD: bool = option_env!("VIT_TEST_BUILD").is_some();
+
 pub fn run(app: AppHandle, cfg: Arc<Mutex<Config>>, found: Arc<Mutex<Option<Update>>>) {
     clean_up();
+    if TEST_BUILD {
+        vi_translator_core::vlog!("[update] off: this is a test build");
+        return;
+    }
     std::thread::sleep(Duration::from_secs(60));
     loop {
-        if cfg.lock().unwrap().update_check {
+        if cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).update_check {
             if let Ok(Some(u)) = check() {
-                *found.lock().unwrap() = Some(u.clone());
+                *found.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(u.clone());
                 let _ = app.emit("update-available", &u);
             }
         }

@@ -33,14 +33,14 @@ static REPORTS: Mutex<Option<HashMap<String, serde_json::Value>>> = Mutex::new(N
 
 /// A page's answer to an /eval (the `dev_report` command: dev builds only).
 pub fn report(id: String, value: serde_json::Value) {
-    REPORTS.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, value);
+    REPORTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(HashMap::new).insert(id, value);
 }
 
 pub fn run(app: AppHandle, shared: Arc<Shared>, data: PathBuf, out: PathBuf) {
     let listener = match TcpListener::bind(("127.0.0.1", PORT)) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[dev-debug] port {PORT}: {e}");
+            vi_translator_core::vlog!("[dev-debug] port {PORT}: {e}");
             return;
         }
     };
@@ -48,12 +48,12 @@ pub fn run(app: AppHandle, shared: Arc<Shared>, data: PathBuf, out: PathBuf) {
     let info = serde_json::json!({ "url": format!("http://127.0.0.1:{PORT}"), "token": token, "out": out });
     let _ = std::fs::create_dir_all(&data);
     let _ = std::fs::write(data.join("dev-debug.json"), serde_json::to_string_pretty(&info).unwrap_or_default());
-    eprintln!("[dev-debug] http://127.0.0.1:{PORT} (token in {})", data.join("dev-debug.json").display());
+    vi_translator_core::vlog!("[dev-debug] http://127.0.0.1:{PORT} (token in {})", data.join("dev-debug.json").display());
     for s in listener.incoming().flatten() {
         let (app, shared, out, token) = (app.clone(), shared.clone(), out.clone(), token.clone());
         std::thread::spawn(move || {
             if let Err(e) = handle(s, &app, &shared, &out, &token) {
-                eprintln!("[dev-debug] {e}");
+                vi_translator_core::vlog!("[dev-debug] {e}");
             }
         });
     }
@@ -114,11 +114,11 @@ fn answer(path: &str, q: &HashMap<String, String>, app: &AppHandle, shared: &Sha
             Ok(serde_json::json!({ "file": file, "w": f.w, "h": f.h }))
         }
         "/state" => Ok(serde_json::json!({
-            "phone": shared.phone.lock().unwrap().clone(),
+            "phone": shared.phone.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
             "phone_active": shared.phone_active.load(std::sync::atomic::Ordering::Relaxed),
-            "screen": shared.screen.lock().unwrap().clone(),
-            "screen_reason": shared.screen_reason.lock().unwrap().clone(),
-            "covers": shared.covers.lock().unwrap().clone(),
+            "screen": shared.screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+            "screen_reason": shared.screen_reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+            "covers": shared.covers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
         })),
         "/pad" => {
             use vi_translator_ps::buttons as b;
@@ -171,7 +171,7 @@ fn answer(path: &str, q: &HashMap<String, String>, app: &AppHandle, shared: &Sha
             ww.eval(&wrapped).map_err(|e| e.to_string())?;
             let until = Instant::now() + Duration::from_secs(5);
             while Instant::now() < until {
-                if let Some(v) = REPORTS.lock().unwrap().as_mut().and_then(|m| m.remove(&id)) {
+                if let Some(v) = REPORTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut().and_then(|m| m.remove(&id)) {
                     return Ok(v);
                 }
                 std::thread::sleep(Duration::from_millis(30));

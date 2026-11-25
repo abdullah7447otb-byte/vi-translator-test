@@ -121,7 +121,7 @@ pub fn save_from_layout(data_dir: &Path, game: &str, layout: &serde_json::Value,
             return None;
         }
         if !signed(script, sig) {
-            eprintln!("[pages] a {game} script in the layout update is not signed by VI Translator: ignored");
+            crate::vlog!("[pages] a {game} script in the layout update is not signed by VI Translator: ignored");
             return None;
         }
         Some((script, sig))
@@ -321,7 +321,7 @@ impl Pages {
                 Some(p)
             }
             Err(e) => {
-                eprintln!("[pages] {game} script ({origin}) failed to load: {e:#}");
+                crate::vlog!("[pages] {game} script ({origin}) failed to load: {e:#}");
                 // a broken download must not take the app's own pages away
                 (origin == "downloaded").then(|| own.and_then(|o| Pages::load(o).ok())).flatten()
             }
@@ -442,14 +442,14 @@ impl Pages {
         match out {
             Ok(json) if json.len() > MAX_RESULT_BYTES => {
                 if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
-                    eprintln!("[pages] {id}.{func}: a result of {} bytes: ignored", json.len());
+                    crate::vlog!("[pages] {id}.{func}: a result of {} bytes: ignored", json.len());
                 }
                 serde_json::Value::Null
             }
             Ok(json) => serde_json::from_str(&json).unwrap_or(serde_json::Value::Null),
             Err(e) => {
                 if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
-                    eprintln!("[pages] {id}.{func}: {e:#}");
+                    crate::vlog!("[pages] {id}.{func}: {e:#}");
                 }
                 serde_json::Value::Null
             }
@@ -477,7 +477,7 @@ impl Pages {
             Ok(l) => l,
             Err(e) => {
                 if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
-                    eprintln!("[pages] {id}.{func}: not a layout: {e}");
+                    crate::vlog!("[pages] {id}.{func}: not a layout: {e}");
                 }
                 return None;
             }
@@ -485,7 +485,7 @@ impl Pages {
         crate::screens::limit(&mut l);
         if crate::screens::is_blank(&l) {
             if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
-                eprintln!("[pages] {id}.{func}: a layout with nothing to show: ignored");
+                crate::vlog!("[pages] {id}.{func}: a layout with nothing to show: ignored");
             }
             return None;
         }
@@ -970,7 +970,7 @@ fn image_add(images: &Images, png_b64: &str) -> String {
     let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(png_b64.trim()) else { return String::new() };
     let key = format!("{:x}", sha2::Sha256::digest(&bytes));
     {
-        let all = images.lock().unwrap();
+        let all = images.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if all.iter().any(|(k, _)| *k == key) {
             return key;
         }
@@ -989,7 +989,7 @@ fn image_add(images: &Images, png_b64: &str) -> String {
     if g.width() == 0 || g.height() == 0 {
         return String::new();
     }
-    let mut all = images.lock().unwrap();
+    let mut all = images.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if !all.iter().any(|(k, _)| *k == key) {
         all.push((key.clone(), Arc::new(Gray { w: g.width(), h: g.height(), px: g.into_raw() })));
     }
@@ -1013,7 +1013,7 @@ struct FindOpts {
 /// is smaller than the picture.
 fn helper_find(images: &Images, rect: &str, key: &str, opts: &str) -> String {
     let (Ok(r), Ok(o)) = (serde_json::from_str::<PxRect>(rect), serde_json::from_str::<FindOpts>(opts)) else { return "null".into() };
-    let Some(tpl) = images.lock().unwrap().iter().find(|(k, _)| k == key).map(|(_, g)| g.clone()) else { return "null".into() };
+    let Some(tpl) = images.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|(k, _)| k == key).map(|(_, g)| g.clone()) else { return "null".into() };
     with_frame(|f, _| {
         let Some((x0, y0, x1, y1)) = clamp_rect(&r, f.w, f.h) else { return "null".to_string() };
         let (rw, rh) = (x1 - x0, y1 - y0);
@@ -1632,7 +1632,7 @@ mod tests {
 pub fn options_for(game: &str, data_dir: &Path) -> Vec<OptionInfo> {
     static CACHE: std::sync::Mutex<Option<(String, u64, Vec<OptionInfo>)>> = std::sync::Mutex::new(None);
     let generation = GENERATION.load(Ordering::Relaxed);
-    let mut cache = CACHE.lock().unwrap();
+    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((g, n, list)) = cache.as_ref() {
         if g == game && *n == generation {
             return list.clone();

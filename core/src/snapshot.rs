@@ -52,13 +52,13 @@ static SNAP_TR: std::sync::Mutex<Option<Translator>> = std::sync::Mutex::new(Non
 /// snapshot service (the reviewed translations of the memory first), `private` covered.
 pub fn now(frame: &FrameData, private: &[[f64; 4]], c: &Config, memory: &std::sync::Mutex<crate::memory::Memory>, paths: &crate::Paths, ocr: &dyn Fn() -> Result<Ocr>, id: String) -> Result<Snapshot> {
     let Some(_busy) = Busy::take() else { bail!("a snapshot is already being translated") };
-    let mut slot = SNAP_TR.lock().unwrap();
+    let mut slot = SNAP_TR.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let tr = slot.get_or_insert_with(|| Translator::new(paths.model_dir()));
     let lang = c.target_lang.clone();
     // (the reviewed translations only: the memory's own lines come from whatever service was in use, and
     // the snapshot has its own; looked at line by line, not held while a translator is asked)
     let lookup = |en: &str| -> Option<Segments> {
-        let m = memory.lock().unwrap();
+        let m = memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         m.get(en, &[], &[]).filter(|(_, src)| src == "reviewed").map(|(segs, _)| crate::translate::polite(&lang, segs))
     };
     make(frame, private, Tools { cfg: c, tr, memory: &lookup, ocr }, id)
@@ -152,7 +152,7 @@ pub fn make(frame: &FrameData, private: &[[f64; 4]], tools: Tools, id: String) -
         .collect();
     if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
         for w in &words {
-            eprintln!("[snapshot] {:?} {:?}", w.text, w.rect);
+            crate::vlog!("[snapshot] {:?} {:?}", w.text, w.rect);
         }
     }
     let mut blocks: Vec<Block> = Vec::new();
@@ -205,13 +205,13 @@ pub fn make(frame: &FrameData, private: &[[f64; 4]], tools: Tools, id: String) -
             let segs = match (tools.memory)(&b.en).or_else(|| (tools.memory)(&plain)) {
                 Some(s) => {
                     if debug {
-                        eprintln!("[snapshot] memory: {}", b.en);
+                        crate::vlog!("[snapshot] memory: {}", b.en);
                     }
                     s
                 }
                 None => {
                     if debug {
-                        eprintln!("[snapshot] {}: {plain}", c.engine);
+                        crate::vlog!("[snapshot] {}: {plain}", c.engine);
                     }
                     tools.tr.translate(&c, &plain, &[], &[], &|_| {})?
                 }

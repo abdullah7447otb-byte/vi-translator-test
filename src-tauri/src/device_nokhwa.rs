@@ -80,6 +80,14 @@ impl DeviceCapture {
     }
 }
 
+// (dropped without `stop` — its owner ended on an error — it still ends, rather than running on
+// beside the one started in its place)
+impl Drop for DeviceCapture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 /// One frame as RGBA: width, height, pixels.
 type Frame = (u32, u32, Vec<u8>);
 /// What the card's reader hands over: `None` once the card is open, then its frames.
@@ -233,7 +241,7 @@ mod tests {
         take_frames(&rx, "Card", &shared, &AtomicBool::new(false), Duration::from_millis(100));
         assert!(t.elapsed() < Duration::from_secs(2), "it waited for a frame that never comes");
         assert_eq!(shared.latest().map(|f| (f.w, f.h)), Some((2, 1)), "the frame it did send is kept");
-        assert_eq!(*shared.status.lock().unwrap(), "Capture device \"Card\" stopped sending frames (none for 0 s)");
+        assert_eq!(*shared.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner), "Capture device \"Card\" stopped sending frames (none for 0 s)");
         drop(tx);
     }
 
@@ -278,6 +286,6 @@ mod tests {
         tx.send(Err(anyhow!("gone"))).unwrap();
         let shared = Shared::default();
         take_frames(&rx, "Card", &shared, &AtomicBool::new(false), Duration::from_secs(5));
-        assert_eq!(*shared.status.lock().unwrap(), "Capture device \"Card\" stopped: gone");
+        assert_eq!(*shared.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner), "Capture device \"Card\" stopped: gone");
     }
 }

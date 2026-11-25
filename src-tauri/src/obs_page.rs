@@ -32,12 +32,12 @@ fn state_json(cfg: &Mutex<Config>, shared: &Shared) -> Vec<u8> {
     let mut v = overlay_state(cfg, shared);
     let extra = serde_json::json!({
         // for troubleshooting
-        "status": shared.status.lock().unwrap().clone(),
+        "status": shared.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
         "frame": shared.latest().map(|f| [f.w, f.h, f.seq as u32]),
         "preview": {
             "clients": shared.preview_clients.load(std::sync::atomic::Ordering::Relaxed),
             "paused": shared.preview_paused.load(std::sync::atomic::Ordering::Relaxed),
-            "raw": shared.preview_raw.lock().unwrap().as_ref().map(|f| [f.w, f.h]),
+            "raw": shared.preview_raw.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map(|f| [f.w, f.h]),
             "jpeg_seq": shared.preview_seq.load(std::sync::atomic::Ordering::Relaxed),
         },
     });
@@ -84,8 +84,8 @@ fn preview_frame(shared: &Shared, mut s: TcpStream, query: &str, origin: Option<
     let start = std::time::Instant::now();
     loop {
         shared.mark_preview_pulled();
-        let jpeg = shared.preview_jpeg.lock().unwrap().clone();
-        let yuv = shared.preview_yuv.lock().unwrap().clone();
+        let jpeg = shared.preview_jpeg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let yuv = shared.preview_yuv.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         // the newer of the two (the source may have changed from one kind to the other)
         let yuv_newer = match (&jpeg, &yuv) {
             (Some((j, _)), Some((y, _))) => y > j,
@@ -169,11 +169,11 @@ pub(crate) fn serve_asset(app: &AppHandle, s: TcpStream, path: &str) {
 }
 
 pub fn run(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared>) {
-    let port = cfg.lock().unwrap().obs_page_port;
+    let port = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).obs_page_port;
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("OBS page: port {port} unavailable: {e}");
+            vi_translator_core::vlog!("OBS page: port {port} unavailable: {e}");
             return;
         }
     };

@@ -15,6 +15,7 @@ pub mod game_icons;
 pub mod lan_page;
 pub mod langs;
 pub mod live;
+pub mod log;
 pub mod memory;
 pub mod net;
 pub mod ocr;

@@ -15,12 +15,12 @@ static EXTRA: RwLock<(String, String, Vec<(String, String)>)> = RwLock::new((Str
 
 /// The phrases a layout update brings for this game and language (`"phrases": {"ar": {"Press {1} to …": "…"}}`).
 pub fn set_extra(game: &str, lang: &str, phrases: Vec<(String, String)>) {
-    *EXTRA.write().unwrap() = (game.to_string(), lang.to_string(), phrases);
+    *EXTRA.write().unwrap_or_else(std::sync::PoisonError::into_inner) = (game.to_string(), lang.to_string(), phrases);
 }
 
 /// The hand-written translation of a line for this game and language, if its layout update has one.
 pub fn find(game: &str, lang: &str, line: &str, icons: &[String]) -> Option<Segments> {
-    let extra = EXTRA.read().unwrap();
+    let extra = EXTRA.read().unwrap_or_else(std::sync::PoisonError::into_inner);
     if extra.0 != game || extra.1 != lang || extra.2.is_empty() {
         return None;
     }

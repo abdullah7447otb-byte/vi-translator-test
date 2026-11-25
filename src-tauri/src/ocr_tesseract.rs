@@ -32,7 +32,7 @@ impl Engine {
     /// Words in a dark-on-light image (4 bytes per pixel; the prepared image is grey, so the
     /// channel order doesn't matter), with their line numbers and boxes (image pixels).
     pub fn read(&self, bgra: &[u8], w: u32, h: u32) -> Result<Vec<RawWord>> {
-        let mut slot = self.tess.lock().unwrap();
+        let mut slot = self.tess.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let t = match slot.take() {
             Some(t) => t,
             None => create()?,

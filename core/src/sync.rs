@@ -82,14 +82,14 @@ pub fn run(sink: Arc<dyn Sink>, cfg: Arc<Mutex<Config>>, memory: Arc<Mutex<Memor
     let mut next_download = Instant::now();
     let mut last = (String::new(), String::new()); // game, language
     loop {
-        let c = cfg.lock().unwrap().clone();
+        let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         // what was downloaded before works offline; another game or language: its own downloads
         if let Some(g) = game(&c) {
             if last != (g.clone(), c.target_lang.clone()) {
                 // (give the app a moment to switch its memory to the new language first)
                 std::thread::sleep(Duration::from_secs(2));
                 // (the game or language as they are now: they may have changed again meanwhile)
-                let now = cfg.lock().unwrap().clone();
+                let now = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
                 last = (now.game(), now.target_lang.clone());
                 load_cached(&*sink, &cfg, &memory, &paths, &last.0, &last.1);
                 next_download = Instant::now();
@@ -100,7 +100,7 @@ pub fn run(sink: Arc<dyn Sink>, cfg: Arc<Mutex<Config>>, memory: Arc<Mutex<Memor
             std::thread::sleep(Duration::from_secs(20)); // let the app start first
         }
         // (the settings as they are after the waits)
-        let c = cfg.lock().unwrap().clone();
+        let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         if let (Some(url), Some(g)) = (server(&c), game(&c)) {
             if Instant::now() >= next_download {
                 next_download = Instant::now() + DOWNLOAD_EVERY;
@@ -127,7 +127,7 @@ fn download(
     let _ = std::fs::create_dir_all(&paths.data);
     // translations: only what changed since the version this app has
     if let Some(entries) = download_pack(http, url, paths, &mut st, game, lang) {
-        memory.lock().unwrap().set_shared(lang, entries);
+        memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_shared(lang, entries);
     }
     // the games the server adds (published like a layout, under the name "games")
     let k = "layout/games".to_string();
@@ -149,7 +149,7 @@ fn download(
             if crate::config::write_atomic(&paths.layout(game), &bytes).is_ok() {
                 st.versions.insert(k, tag.clone());
             }
-            let id = cfg.lock().unwrap().install_id.clone();
+            let id = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).install_id.clone();
             if crate::pagescript::save_from_layout(&paths.data, game, &layout, &id) {
                 sink.emit("pages", serde_json::Value::Null);
             }
@@ -310,7 +310,7 @@ fn load_cached(sink: &dyn Sink, cfg: &Arc<Mutex<Config>>, memory: &Arc<Mutex<Mem
         }
     }
     if let Some(entries) = kept_pack(paths, &st, game, lang) {
-        memory.lock().unwrap().set_shared(lang, entries);
+        memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_shared(lang, entries);
     }
     // (another game: the last one's extra words, phrases and OCR fixes no longer apply)
     crate::screens::set_layout_words(game, lang, Vec::new(), Vec::new(), Vec::new());
@@ -319,7 +319,7 @@ fn load_cached(sink: &dyn Sink, cfg: &Arc<Mutex<Config>>, memory: &Arc<Mutex<Mem
     if let (Ok(bytes), Some(tag)) = (std::fs::read(paths.layout(game)), st.versions.get(&format!("layout/{game}"))) {
         if let Ok(layout) = serde_json::from_slice::<serde_json::Value>(&bytes) {
             // (test versions turned on or off: the script that's for this install now)
-            let id = cfg.lock().unwrap().install_id.clone();
+            let id = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).install_id.clone();
             if crate::pagescript::save_from_layout(&paths.data, game, &layout, &id) {
                 sink.emit("pages", serde_json::Value::Null);
             }
@@ -331,7 +331,7 @@ fn load_cached(sink: &dyn Sink, cfg: &Arc<Mutex<Config>>, memory: &Arc<Mutex<Mem
 /// A new list of games from the server: the games it changed get their saved layout again.
 fn apply_games(sink: &dyn Sink, cfg: &Arc<Mutex<Config>>, paths: &Paths, st: &State, list: &serde_json::Value, version: u32, lang: &str) {
     let changed = {
-        let mut c = cfg.lock().unwrap();
+        let mut c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let changed = c.apply_games(list, version);
         if changed.is_empty() {
             return;
@@ -437,7 +437,7 @@ fn apply_layout(sink: &dyn Sink, cfg: &Arc<Mutex<Config>>, config_path: &PathBuf
             .map(|m| m.iter().filter_map(|(en, ar)| Some((en.clone(), ar.as_str()?.to_string()))).collect())
             .unwrap_or_default()
     };
-    let mut c = cfg.lock().unwrap();
+    let mut c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     // (the game and language in use: a download that began before the player switched doesn't count)
     if game == c.game() && lang == c.target_lang {
         crate::screens::set_layout_words(game, lang, words("menu"), words("buttons"), words("tabs"));
@@ -544,7 +544,7 @@ mod tests {
         let cfg = Arc::new(Mutex::new(c));
         let layout = serde_json::json!({"fx": {"subtitles": {"fade_ms": 120}, "help": {"fade_ms": 99999}, "": {"fade_ms": 5}}});
         apply_layout(&crate::NoSink, &cfg, &dir.join("config.json"), &layout, 1, "ar", "gta6");
-        let c = cfg.lock().unwrap();
+        let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(c.fx("subtitles").fade_ms, Some(120));
         assert_eq!(c.fx("help").fade_ms, Some(2000), "kept to what the app allows");
         assert_eq!(c.fx("instructions").fade_ms, Some(0));

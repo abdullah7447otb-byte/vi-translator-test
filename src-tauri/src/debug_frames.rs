@@ -34,7 +34,7 @@ impl SaverState {
         SaverEvent {
             on,
             count: self.count.load(Ordering::Relaxed),
-            folder: self.folder.lock().unwrap().as_ref().map(|p| p.display().to_string()),
+            folder: self.folder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map(|p| p.display().to_string()),
         }
     }
 }
@@ -72,7 +72,7 @@ pub fn run(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared>, state: 
     loop {
         std::thread::sleep(Duration::from_millis(50));
         let (on, interval) = {
-            let c = cfg.lock().unwrap();
+            let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             (c.debug_save_frames, Duration::from_millis(c.debug_frame_interval_ms.max(100)))
         };
         if on && !was_on {
@@ -81,7 +81,7 @@ pub fn run(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared>, state: 
                 let _ = app.emit("status-msg", format!("Can't create frames folder: {e}"));
                 continue; // try again next tick
             }
-            *state.folder.lock().unwrap() = Some(folder);
+            *state.folder.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(folder);
             state.count.store(0, Ordering::Relaxed);
             started = Instant::now();
             last_seq = 0;
@@ -100,7 +100,7 @@ pub fn run(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared>, state: 
         }
         last_seq = frame.seq;
         last_save = Instant::now();
-        let Some(folder) = state.folder.lock().unwrap().clone() else { continue };
+        let Some(folder) = state.folder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() else { continue };
         let n = state.count.load(Ordering::Relaxed) + 1;
         // frame_00012_0011500ms.png = 12th frame, 11.5 s after recording started
         let stem = format!("frame_{n:05}_{:07}ms", started.elapsed().as_millis());
@@ -142,15 +142,15 @@ fn save_with_translation(shared: &Shared, folder: &Path, stem: &str, n: u64) {
         "frame_file": format!("{stem}.png"),
         "overlay_file": overlay_file,
         "overlay_note": if active { "screen copy with the Arabic overlays" } else { "game window was not active: overlays hidden, no screen copy" },
-        "areas": shared.on_screen.lock().unwrap().clone(),
-        "page": shared.screen.lock().unwrap().clone().map(|mut l| {
+        "areas": shared.on_screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+        "page": shared.screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().map(|mut l| {
             // icons are large base64 images; keep the note readable
             if let Some(bs) = l.get_mut("buttons").and_then(|b| b.as_array_mut()) {
                 for b in bs { b["icon"] = serde_json::Value::Null; }
             }
             l
         }),
-        "page_reason_ar": shared.screen_reason.lock().unwrap().clone(),
+        "page_reason_ar": shared.screen_reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
     });
     let _ = std::fs::write(folder.join(format!("{stem}.json")), serde_json::to_string_pretty(&note).unwrap_or_default());
 }

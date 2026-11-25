@@ -65,7 +65,7 @@ impl Engine {
             }
         }
         if std::env::var_os("VIT_DISK_DEBUG").is_some() && angle.abs() > 0.2 {
-            eprintln!("[ocr] text angle {angle:.2}°");
+            vi_translator_core::vlog!("[ocr] text angle {angle:.2}°");
         }
         Ok(words)
     }

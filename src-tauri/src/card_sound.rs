@@ -83,7 +83,7 @@ pub fn run(cfg: Arc<Mutex<Config>>, shared: Arc<Shared>) {
     let mut running: Option<(Want, platform::Playing)> = None;
     loop {
         let want = {
-            let c = cfg.lock().unwrap();
+            let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             c.window_title.strip_prefix(crate::device::PREFIX).filter(|_| c.card_sound).map(|card| Want {
                 card: card.to_string(),
                 input: c.card_sound_input.clone(),
@@ -92,8 +92,8 @@ pub fn run(cfg: Arc<Mutex<Config>>, shared: Arc<Shared>) {
         };
         match (&want, &running) {
             (None, _) => {
-                if running.take().is_some() || !shared.sound_status.lock().unwrap().is_empty() {
-                    *shared.sound_status.lock().unwrap() = String::new();
+                if running.take().is_some() || !shared.sound_status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty() {
+                    *shared.sound_status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = String::new();
                 }
             }
             (Some(w), Some((r, p))) if r.card == w.card && r.input == w.input && p.alive() => {
@@ -108,14 +108,14 @@ pub fn run(cfg: Arc<Mutex<Config>>, shared: Arc<Shared>) {
                 match match_input(&w.card, &w.input, &inputs) {
                     None => {
                         // (statuses are "what|detail": the window words them in its language)
-                        *shared.sound_status.lock().unwrap() = if w.input.is_empty() { "none".into() } else { format!("missing|{}", w.input) };
+                        *shared.sound_status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = if w.input.is_empty() { "none".into() } else { format!("missing|{}", w.input) };
                     }
                     Some(name) => match platform::play(name, w.volume) {
                         Ok(p) => {
-                            *shared.sound_status.lock().unwrap() = format!("playing|{name}");
+                            *shared.sound_status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = format!("playing|{name}");
                             running = Some((w.clone(), p));
                         }
-                        Err(e) => *shared.sound_status.lock().unwrap() = format!("error|{e}"),
+                        Err(e) => *shared.sound_status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = format!("error|{e}"),
                     },
                 }
             }
@@ -212,7 +212,7 @@ mod platform {
             c_in.0.fetch_add(data.len() as u64, Ordering::Relaxed);
             out.clear();
             convert(data, in_ch, in_rate, out_ch, out_rate, phase, last, out);
-            let mut r = r_in.lock().unwrap();
+            let mut r = r_in.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             r.buf.extend(out.iter().copied());
             let over = r.buf.len().saturating_sub(r.max);
             r.buf.drain(..over - over % out_ch);
@@ -243,7 +243,7 @@ mod platform {
         // wait until a little sound has gathered (so short gaps don't crackle), then keep playing
         let mut primed = false;
         let mut pull = move |data: &mut [f32]| {
-            let mut r = r_out.lock().unwrap();
+            let mut r = r_out.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let v = f32::from_bits(v_out.load(Ordering::Relaxed));
             if !primed && r.buf.len() >= out_rate as usize * out_ch * 3 / 100 {
                 primed = true;

@@ -19,7 +19,7 @@ const FPS: u64 = 30;
 
 /// What the camera is doing, for the Show on tab.
 pub fn status(shared: &Shared) -> String {
-    shared.vcam_status.lock().unwrap().clone()
+    shared.vcam_status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
 pub fn run(cfg: Arc<Mutex<Config>>, shared: Arc<Shared>) {
@@ -27,7 +27,7 @@ pub fn run(cfg: Arc<Mutex<Config>>, shared: Arc<Shared>) {
     let frame_time = Duration::from_nanos(1_000_000_000 / FPS);
     let mut nv12 = Vec::new();
     loop {
-        let on = cfg.lock().unwrap().virtual_camera;
+        let on = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).virtual_camera;
         if !on {
             queue = None; // (OBS's camera goes back to its own picture)
             set(&shared, "");
@@ -59,7 +59,7 @@ pub fn run(cfg: Arc<Mutex<Config>>, shared: Arc<Shared>) {
 }
 
 fn set(shared: &Shared, s: &str) {
-    *shared.vcam_status.lock().unwrap() = s.to_string();
+    *shared.vcam_status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = s.to_string();
 }
 
 fn now_100ns() -> u64 {

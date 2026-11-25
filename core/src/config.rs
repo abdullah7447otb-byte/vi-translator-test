@@ -953,9 +953,9 @@ impl Config {
             let aside = path.with_extension(format!("broken-{}.json", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)));
             let mut d = Self::default();
             match std::fs::rename(path, &aside) {
-                Ok(()) => eprintln!("[config] {} could not be read ({why}); kept as {}", path.display(), aside.display()),
+                Ok(()) => crate::vlog!("[config] {} could not be read ({why}); kept as {}", path.display(), aside.display()),
                 Err(e) => {
-                    eprintln!("[config] {} could not be read ({why}) nor kept aside ({e}): not saved over this time", path.display());
+                    crate::vlog!("[config] {} could not be read ({why}) nor kept aside ({e}): not saved over this time", path.display());
                     d.unreadable = true;
                 }
             }

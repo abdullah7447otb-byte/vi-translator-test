@@ -40,7 +40,7 @@ pub async fn save(webview: &tauri::Webview, area: Area, base: &Path) -> Result<P
     }
     let cut = img.crop_imm(x, y, w, h);
     let dir = {
-        let mut f = FOLDER.lock().unwrap();
+        let mut f = FOLDER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         f.get_or_insert_with(|| base.join(crate::debug_frames::timestamp())).clone()
     };
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

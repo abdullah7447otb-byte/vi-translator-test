@@ -102,7 +102,7 @@ pub fn identify(c: &Picture, r: (u32, u32, u32, u32)) -> Option<&'static str> {
     }
     scores.sort_by(|a, b| b.1.total_cmp(&a.1));
     if std::env::var("VIT_ICON_DEBUG").is_ok() {
-        eprintln!("ICONDBG {:?} -> {:?}", (x, y, w, h), &scores[..scores.len().min(3)]);
+        crate::vlog!("ICONDBG {:?} -> {:?}", (x, y, w, h), &scores[..scores.len().min(3)]);
     }
     match scores.as_slice() {
         [(name, best), rest @ ..] if *best >= 0.7 && rest.first().is_none_or(|(_, next)| best - next >= 0.05) => Some(name),
@@ -293,7 +293,7 @@ mod tests {
                 crate::ocr::Crop { w: img.width(), h: img.height(), rgba: img.into_raw() }
             });
             if std::env::var("VIT_ICON_DEBUG").is_ok() {
-                eprintln!("WANT {want}");
+                crate::vlog!("WANT {want}");
             }
             match identify(&(&*c).into(), (x, y, w, h)) {
                 Some(n) if n == want => right += 1,

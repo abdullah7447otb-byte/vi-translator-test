@@ -520,10 +520,10 @@ mod tests {
     fn finds_the_playstations_on_this_network() {
         let found = Arc::new(std::sync::Mutex::new(Vec::new()));
         let f = found.clone();
-        let d = Discovery::start(&[], move |h| *f.lock().unwrap() = h, Arc::new(|l, t| eprintln!("[chiaki {l}] {t}"))).unwrap();
+        let d = Discovery::start(&[], move |h| *f.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = h, Arc::new(|l, t| eprintln!("[chiaki {l}] {t}"))).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(4));
         drop(d);
-        let found = found.lock().unwrap();
+        let found = found.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         eprintln!("{found:#?}");
         assert!(!found.is_empty(), "no PlayStation answered");
     }

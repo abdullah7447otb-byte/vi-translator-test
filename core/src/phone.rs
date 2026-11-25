@@ -991,9 +991,9 @@ fn read_screen_at(ocr: &Ocr, rgba: &[u8], fw: u32, fh: u32, screen: (u32, u32, u
     }
     let angle = lines_angle(&words);
     if std::env::var_os("VIT_DISK_DEBUG").is_some() {
-        eprintln!("[phone] lines turned {angle:.2}°");
+        crate::vlog!("[phone] lines turned {angle:.2}°");
         for w in &words {
-            eprintln!("[word] {:?} line {} at {:?}", w.text, w.line, w.rect);
+            crate::vlog!("[word] {:?} line {} at {:?}", w.text, w.line, w.rect);
         }
     }
     // (a line the screen's edge cuts — scrolled half out: "pln her riee from tho" — is no text to translate)
@@ -1400,7 +1400,7 @@ pub fn disk_from(rgba: &[u8], fw: u32, fh: u32, from_x: u32, cy: u32, bg: [u8; 3
     let (bx0, bx1) = (run(mx as i32, my, true, -1, expect as i32), run(mx as i32, my, true, 1, expect as i32));
     let (w, h) = ((bx1 - bx0 + 1) as u32, (y1 - y0 + 1) as u32);
     if std::env::var_os("VIT_DISK_DEBUG").is_some() {
-        eprintln!("[disk] from {from_x},{cy} expect {expect}: x1 {x1} x0 {x0} y {y0}..{y1} x {bx0}..{bx1} -> {w}x{h}");
+        crate::vlog!("[disk] from {from_x},{cy} expect {expect}: x1 {x1} x0 {x0} y {y0}..{y1} x {bx0}..{bx1} -> {w}x{h}");
     }
     // (round: no wider than tall; and about the size a row's picture is)
     if w > h * 5 / 4 || h * 2 < expect || h > expect * 2 || ((x1 - x0 + 1) as u32) > h * 5 / 4 {

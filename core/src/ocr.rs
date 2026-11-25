@@ -153,7 +153,7 @@ impl Ocr {
         };
         if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
             let txt = |w: &[Word]| w.iter().map(|x| x.text.as_str()).collect::<Vec<_>>().join(" ");
-            eprintln!("[ocr] pass1 {:?} (score {}) | pass2 {:?} (score {})", txt(&first), score(&first), txt(&second), score(&second));
+            crate::vlog!("[ocr] pass1 {:?} (score {}) | pass2 {:?} (score {})", txt(&first), score(&first), txt(&second), score(&second));
         }
         // The second reading must clearly win: a 1-character edge is usually a misread ("time" for "the").
         // (a pass that read nothing never replaces one that read something: "nothing" scores 0, which
@@ -177,7 +177,7 @@ impl Ocr {
         if unsure || best.is_empty() || quality(&best).1 > 0 || words_out_of_order(&best) {
             let third = drop_junk(self.recognize_with(crop, Prep::Outlined)?);
             if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
-                eprintln!("[ocr] pass3 {:?} (score {})", txt(&third), score(&third));
+                crate::vlog!("[ocr] pass3 {:?} (score {})", txt(&third), score(&third));
             }
             // (and only with as many words the other passes read too: "tix myeleg" scores as plain
             // letters, but no other pass saw those words)
@@ -870,7 +870,7 @@ pub fn speaker_lines(c: &Crop, words: &[Word]) -> Vec<(String, f64)> {
 /// ("bjlwg"), six consonants in a row, or a capital in the middle of lowercase ("ulnJiJl").
 /// Acronyms ("LSPD", "FIB") and the usual vowel-less words ("Mr", "hmm", "shh") are fine.
 pub fn looks_like_words(text: &str) -> bool {
-    let fixes = FIXES_EXTRA.read().unwrap();
+    let fixes = FIXES_EXTRA.read().unwrap_or_else(std::sync::PoisonError::into_inner);
     const NO_VOWEL_OK: [&str; 16] = ["mr", "mrs", "ms", "dr", "st", "jr", "hmm", "hm", "mm", "shh", "sh", "psst", "pst", "brr", "grr", "pfft"];
     let plausible = |w: &str| {
         let lower = w.to_lowercase();
@@ -1020,7 +1020,7 @@ pub struct Fixes {
 static FIXES_EXTRA: std::sync::RwLock<Fixes> = std::sync::RwLock::new(Fixes { words: Vec::new(), junk: Vec::new(), ok: Vec::new() });
 
 pub fn set_fixes(f: Fixes) {
-    *FIXES_EXTRA.write().unwrap() = f;
+    *FIXES_EXTRA.write().unwrap_or_else(std::sync::PoisonError::into_inner) = f;
 }
 
 /// Read a layout's `"ocr"` block.
@@ -1057,7 +1057,7 @@ pub fn fix_contractions(text: &str) -> String {
         let lower = core.to_lowercase();
         let mut fixed = FIXES.iter().find(|(k, _)| *k == lower).map(|(_, v)| v.to_string());
         if fixed.is_none() {
-            fixed = FIXES_EXTRA.read().unwrap().words.iter().find(|(k, _)| *k == lower).map(|(_, v)| v.clone());
+            fixed = FIXES_EXTRA.read().unwrap_or_else(std::sync::PoisonError::into_inner).words.iter().find(|(k, _)| *k == lower).map(|(_, v)| v.clone());
         }
         if fixed.is_none() && lower == "were" {
             let next_ing = words
@@ -1555,7 +1555,7 @@ pub fn text_with_icons(c: &Crop, words: &[Word]) -> (String, Vec<String>, Option
                 continue;
             }
             if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
-                eprintln!("[icons] line bg {bg} thr {thr} mh {mh:.0}: blob x {s}-{e} y {ty}-{by} ({w}x{h})");
+                crate::vlog!("[icons] line bg {bg} thr {thr} mh {mh:.0}: blob x {s}-{e} y {ty}-{by} ({w}x{h})");
             }
             if (h as f64) < 0.55 * mh || (h as f64) > 2.5 * mh || !square(w, h) {
                 continue;
@@ -1566,7 +1566,7 @@ pub fn text_with_icons(c: &Crop, words: &[Word]) -> (String, Vec<String>, Option
             }
             let fill = count as f64 / (w * h) as f64;
             if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
-                eprintln!("[icons] line bg {bg} thr {thr} mh {mh:.0}: candidate x {s}-{e} y {ty}-{by} ({w}x{h}) fill {fill:.2}");
+                crate::vlog!("[icons] line bg {bg} thr {thr} mh {mh:.0}: candidate x {s}-{e} y {ty}-{by} ({w}x{h}) fill {fill:.2}");
             }
             // icons are solid shapes (≥ ~0.45, e.g. R2's white box with dark letters); stray letter strokes ~0.3
             if !(0.42..=0.95).contains(&fill) {
@@ -1578,7 +1578,7 @@ pub fn text_with_icons(c: &Crop, words: &[Word]) -> (String, Vec<String>, Option
             let inner = ((ix1 - ix0 + 1) * (iy1 - iy0 + 1)).max(1) as f64;
             let dark = (iy0..=iy1).flat_map(|y| (ix0..=ix1).map(move |x| (x, y))).filter(|&(x, y)| lum(x, y) < 110).count();
             if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
-                eprintln!("[icons]    dark symbol share {:.2}", dark as f64 / inner);
+                crate::vlog!("[icons]    dark symbol share {:.2}", dark as f64 / inner);
             }
             // (inside GTA's solid black box a bright solid shape can only be an icon — e.g. the touchpad,
             // a light bar with faint lines; over see-through scenery it could be a lamp)
@@ -1595,7 +1595,7 @@ pub fn text_with_icons(c: &Crop, words: &[Word]) -> (String, Vec<String>, Option
             let right_gap = line_words.iter().filter(|w| w.0 >= e).map(|w| w.0 - e).min().unwrap_or(u32::MAX);
             let overlaps_word = line_words.iter().any(|w| w.0 < e && w.1 > s);
             if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
-                eprintln!("[icons]    gaps left {left_gap} right {right_gap} (need {min_gap}), overlaps word {overlaps_word}");
+                crate::vlog!("[icons]    gaps left {left_gap} right {right_gap} (need {min_gap}), overlaps word {overlaps_word}");
             }
             if overlaps_word || left_gap < min_gap || right_gap < min_gap {
                 continue;
