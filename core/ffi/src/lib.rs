@@ -594,7 +594,7 @@ impl Engine {
                 snapshot_of(&c, &l, &m, &p, &r, &frame)
             }
         };
-        let page = Arc::new(LivePage { cfg: self.cfg.clone(), live: self.live.clone(), paths: self.paths.clone(), sink: self.sink.clone(), snapshot: Box::new(snap) });
+        let page = Arc::new(LivePage { cfg: self.cfg.clone(), live: self.live.clone(), paths: self.paths.clone(), sink: self.sink.clone(), snapshot: Box::new(snap), memory: Some(self.memory.clone()) });
         let s = TvServer::start(port, self.cfg.clone(), self.live.clone(), Some(page)).map_err(failed)?;
         let port = s.port;
         *slot = Some(s);

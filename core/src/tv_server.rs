@@ -320,7 +320,7 @@ mod tests {
         let live = Arc::new(Live::default());
         let dir = std::env::temp_dir().join(format!("vit-livepage-{}", uuid::Uuid::new_v4().simple()));
         let paths = crate::Paths { data: dir.clone(), db: dir.clone(), config: dir.join("config.json") };
-        let page = Arc::new(LivePage { cfg: cfg.clone(), live: live.clone(), paths, sink: Arc::new(crate::NoSink), snapshot: Box::new(|| anyhow::bail!("no picture")) });
+        let page = Arc::new(LivePage { cfg: cfg.clone(), live: live.clone(), paths, sink: Arc::new(crate::NoSink), snapshot: Box::new(|| anyhow::bail!("no picture")), memory: None });
         let server = TvServer::start(0, cfg.clone(), live.clone(), Some(page)).unwrap();
         assert!(get(server.port, "/live.json").0.starts_with("HTTP/1.1 404"), "off by default");
         cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).lan_page = true;

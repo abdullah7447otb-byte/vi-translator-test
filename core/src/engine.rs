@@ -1502,10 +1502,10 @@ impl Reader {
                                 // (a chat list's row shows only its message's start, cut to fit: "Hey Jason. You
                                 // good? I saw": the whole line it starts, the row cutting it to one line again; a
                                 // reviewed whole line before a machine translation of the cut start)
-                                let whole = if p.avatar.is_some() && exact.as_ref().is_none_or(|(_, src)| src != "reviewed") { m.starting_with(&p.en) } else { None };
-                                let reviewed_now = matches!(&whole, Some((_, _, src)) if src == "reviewed") || matches!(&exact, Some((_, src)) if src == "reviewed");
+                                let whole = if p.avatar.is_some() && exact.as_ref().is_none_or(|(_, src)| !crate::memory::trusted(src)) { m.starting_with(&p.en) } else { None };
+                                let reviewed_now = matches!(&whole, Some((_, _, src)) if crate::memory::trusted(src)) || matches!(&exact, Some((_, src)) if crate::memory::trusted(src));
                                 let ar = match (exact, whole) {
-                                    (_, Some((_, ar, src))) if src == "reviewed" => Some(ar),
+                                    (_, Some((_, ar, src))) if crate::memory::trusted(&src) => Some(ar),
                                     (Some((ar, _)), _) => Some(ar),
                                     (None, Some((_, ar, _))) => Some(ar),
                                     (None, None) => None,
@@ -1659,13 +1659,13 @@ impl Reader {
                             let plain = b.en.split_whitespace().filter(|w| !w.starts_with('⟦')).collect::<Vec<_>>().join(" ");
                             // (a message the game cut off: the whole line it's the start of, cut as the game cut
                             // it; a reviewed whole line before a machine translation of the cut start)
-                            let whole = if b.cut() && exact.as_ref().is_none_or(|(_, src)| src != "reviewed") {
+                            let whole = if b.cut() && exact.as_ref().is_none_or(|(_, src)| !crate::memory::trusted(src)) {
                                 m.starting_with(&b.en).map(|(en, ar, src)| (crate::chat::cut_like(&ar, &b.en, &en), src))
                             } else {
                                 None
                             };
                             let ar = match (exact, whole) {
-                                (_, Some((ar, src))) if src == "reviewed" => Some(ar),
+                                (_, Some((ar, src))) if crate::memory::trusted(&src) => Some(ar),
                                 (Some((ar, _)), _) => Some(ar),
                                 (None, Some((ar, _))) => Some(ar),
                                 (None, None) => None,
@@ -1919,7 +1919,7 @@ impl Reader {
                         let at_hand = || {
                             let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             if reviewed_only {
-                                let reviewed = |l: &str| m.get(l, &[], &[]).is_some_and(|(_, src)| src == "reviewed");
+                                let reviewed = |l: &str| m.get(l, &[], &[]).is_some_and(|(_, src)| crate::memory::trusted(&src));
                                 return reviewed(&text) || (!iconed.is_empty() && reviewed(&iconed)) || speaker::without_name(&text).is_some_and(|r| reviewed(r));
                             }
                             let knows = |l: &str| m.knows(l) || speaker::without_name(l).is_some_and(|rest| m.knows(rest)) || m.knows(&speaker::sentence_of(l));
@@ -2018,7 +2018,7 @@ impl Reader {
                     let allowed = !reviewed_only || {
                         let iconed = crop.as_ref().map(|cr| ocr::text_with_icons(cr, &words).0).unwrap_or_default();
                         let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let reviewed = |l: &str| m.get(l, &[], &[]).is_some_and(|(_, src)| src == "reviewed");
+                        let reviewed = |l: &str| m.get(l, &[], &[]).is_some_and(|(_, src)| crate::memory::trusted(&src));
                         reviewed(&st.candidate) || (!iconed.is_empty() && reviewed(&iconed)) || speaker::without_name(&st.candidate).is_some_and(|r| reviewed(r))
                     };
                     // (a line not let through with its black box up — it went up for a reading that was: no empty box stays)
@@ -2069,7 +2069,7 @@ impl Reader {
                         // "Hold L2 to …" took the place of the reviewed "Hold ⟦1⟧ to …")
                         let plain_known = !icons_found.is_empty() && {
                             let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                            let has = |l: &str| if reviewed_only { m.get(l, &[], &[]).is_some_and(|(_, src)| src == "reviewed") } else { m.knows(l) };
+                            let has = |l: &str| if reviewed_only { m.get(l, &[], &[]).is_some_and(|(_, src)| crate::memory::trusted(&src)) } else { m.knows(l) };
                             has(&st.current) || speaker::without_name(&st.current).is_some_and(|r| has(r))
                         };
                         let (en, icons) = if icons_found.is_empty() || stacks || plain_known { (st.current.clone(), Vec::new()) } else { (en_icons, icons_found) };
@@ -2484,7 +2484,7 @@ fn reviewed_name(memory: &Arc<Mutex<memory::Memory>>, c: &Config, name: &str) ->
     if m.lang() != c.target_lang {
         return None;
     }
-    m.get(name, &[], &[]).filter(|(_, src)| src == "reviewed").map(|(segs, _)| segs.iter().map(|s| s.0.as_str()).collect())
+    m.get(name, &[], &[]).filter(|(_, src)| crate::memory::trusted(src)).map(|(segs, _)| segs.iter().map(|s| s.0.as_str()).collect())
 }
 
 fn translate_line(
@@ -2508,7 +2508,7 @@ fn translate_line(
     }
     // A hand-written phrasebook line beats a machine translation remembered earlier (only an
     // reviewed line ranks above it).
-    if remembered.as_ref().is_some_and(|(_, src)| src != "reviewed" && src != "phrasebook") {
+    if remembered.as_ref().is_some_and(|(_, src)| !crate::memory::trusted(src) && src != "phrasebook") {
         if phrasebook::find(&c.game(), &c.target_lang, en, icons).is_some() {
             remembered = None; // the translator below answers from the phrasebook, and memory is updated
         }

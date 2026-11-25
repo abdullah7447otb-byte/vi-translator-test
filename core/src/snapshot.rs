@@ -59,7 +59,7 @@ pub fn now(frame: &FrameData, private: &[[f64; 4]], c: &Config, memory: &std::sy
     // the snapshot has its own; looked at line by line, not held while a translator is asked)
     let lookup = |en: &str| -> Option<Segments> {
         let m = memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        m.get(en, &[], &[]).filter(|(_, src)| src == "reviewed").map(|(segs, _)| crate::translate::polite(&lang, segs))
+        m.get(en, &[], &[]).filter(|(_, src)| crate::memory::trusted(src)).map(|(segs, _)| crate::translate::polite(&lang, segs))
     };
     make(frame, private, Tools { cfg: c, tr, memory: &lookup, ocr }, id)
 }

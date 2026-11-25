@@ -26,7 +26,12 @@ pub struct LivePage {
     pub paths: Paths,
     pub sink: Arc<dyn Sink>,
     pub snapshot: Box<dyn Fn() -> anyhow::Result<Snapshot> + Send + Sync>,
+    /// the translation memory, for a line corrected on the page (none: no corrections there)
+    pub memory: Option<Arc<Mutex<crate::memory::Memory>>>,
 }
+
+/// How long a `live.json?wait=1` waits for a new line before answering with none.
+const LONG_POLL: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[derive(Serialize, Clone, Debug)]
 pub struct LanInfo {
@@ -52,6 +57,49 @@ pub fn info(c: &Config, live: &Live) -> LanInfo {
 }
 
 impl LivePage {
+    /// The line `id` of the list is `ar`: into the memory as the player's, in the list, and on screen
+    /// if it's still up there. The line as the list now has it (None: no such line any more).
+    fn correct(&self, id: u64, ar: &str) -> Option<serde_json::Value> {
+        let (area, en) = {
+            let log = self.live.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let l = log.iter().find(|l| l["id"].as_u64() == Some(id))?;
+            (l["area"].as_str()?.to_string(), l["en"].as_str()?.to_string())
+        };
+        let segs: crate::translate::Segments = vec![(ar.to_string(), None)];
+        if let Some(m) = &self.memory {
+            let lang = self.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).target_lang.clone();
+            let mut m = m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if m.lang() == lang {
+                m.put(&en, &segs, "player");
+            }
+        }
+        crate::vlog!("[lan] corrected: {en:?} -> {ar:?}");
+        // the list: this line, and any other line of the same English
+        let mut out = None;
+        for l in self.live.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter_mut() {
+            if l["en"].as_str() == Some(en.as_str()) {
+                l["text"] = serde_json::json!(ar);
+                l["segs"] = serde_json::json!([[ar, null]]);
+                l["corrected"] = serde_json::json!(true);
+                if l["id"].as_u64() == Some(id) {
+                    out = Some(l.clone());
+                }
+            }
+        }
+        // on screen now: shown corrected at once (the overlays, the TV and OBS pages)
+        let shown = {
+            let mut shown = self.live.shown.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            shown.get_mut(&area).filter(|ev| ev["en"].as_str() == Some(en.as_str())).map(|ev| {
+                ev["segments"] = serde_json::json!([[ar, null]]);
+                ev.clone()
+            })
+        };
+        if let Some(ev) = shown {
+            self.sink.emit("translation", ev);
+        }
+        out
+    }
+
     /// The page's routes (after the host check, and the TV routes). `serve` answers with one of the
     /// page's files by name ("live.html"). The stream back when the request is for something else.
     pub fn route(&self, req: &Request, s: TcpStream, serve: &dyn Fn(TcpStream, &str)) -> Option<TcpStream> {
@@ -61,8 +109,20 @@ impl LivePage {
             "/" | "/live" => serve(s, "live.html"),
             "/live.json" => {
                 let after: u64 = query.split('&').find_map(|kv| kv.strip_prefix("after=")).and_then(|v| v.parse().ok()).unwrap_or(0);
-                let lines: Vec<serde_json::Value> =
-                    shared.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|l| l["id"].as_u64().unwrap_or(0) > after).cloned().collect();
+                // (`wait=1`: answered as soon as a new line is there, or after LONG_POLL with none — the
+                // page then has each line the moment it's ready, not up to 700 ms later)
+                let wait = query.split('&').any(|kv| kv == "wait=1");
+                let newer = || -> Vec<serde_json::Value> {
+                    shared.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|l| l["id"].as_u64().unwrap_or(0) > after).cloned().collect()
+                };
+                let started = std::time::Instant::now();
+                let mut lines = newer();
+                // (a line id below `after`: the app started again, its ids with it — answered at once)
+                let restarted = shared.live_seq.load(Ordering::Relaxed) < after;
+                while wait && lines.is_empty() && !restarted && started.elapsed() < LONG_POLL {
+                    std::thread::sleep(std::time::Duration::from_millis(40));
+                    lines = newer();
+                }
                 let live = !shared.live_off.load(Ordering::Relaxed);
                 // ("run": new each time the app starts; line ids start again then, and the page with it)
                 let (snap, control, ui) = {
@@ -132,6 +192,25 @@ impl LivePage {
                 );
                 self.sink.emit("config", serde_json::to_value(c.redacted()).unwrap_or_default());
                 respond(s, "200 OK", "application/json; charset=utf-8", self.controls(&c).to_string().as_bytes())
+            }
+            // a line corrected on this page (a POST from its own address, when the app allows changes
+            // from it): {"id": <the line's id>, "ar": "the right translation"}. It goes into the
+            // translation memory as the player's own (above every other translation, never replaced),
+            // and on screen at once if the line is still up.
+            "/correct" if req.method == "POST" && req.origin == format!("http://{}", req.host) => {
+                if !cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).lan_control {
+                    respond(s, "403 Forbidden", "text/plain; charset=utf-8", b"Changes from this page are switched off in VI Translator.");
+                    return None;
+                }
+                let v: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
+                let (Some(id), Some(ar)) = (v["id"].as_u64(), v["ar"].as_str().map(str::trim).filter(|a| !a.is_empty() && a.chars().count() <= 500)) else {
+                    respond(s, "400 Bad Request", "text/plain", b"bad request");
+                    return None;
+                };
+                match self.correct(id, ar) {
+                    Some(line) => respond(s, "200 OK", "application/json; charset=utf-8", line.to_string().as_bytes()),
+                    None => respond(s, "404 Not Found", "text/plain; charset=utf-8", b"That line isn't in the list any more."),
+                }
             }
             // a snapshot (the whole picture translated), asked for by this page (a POST from its own
             // address: another website can't make one), when the app allows it

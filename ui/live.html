@@ -40,6 +40,24 @@
       .paused { padding: 10px 14px; background: #2a2147; color: var(--accent); font-size: 14px; text-align: center;
         border-bottom: 1px solid #3a3063; font-family: "Segoe UI", system-ui, sans-serif; }
       .paused[hidden] { display: none; }
+      header .grow { flex: 1; }
+      .line.corrected .text::after { content: " ✓"; color: var(--accent); font-size: .6em; }
+      body.can-fix .line { cursor: pointer; }
+      /* the current line alone, big and centred, like film subtitles */
+      body.big main { display: flex; flex-direction: column; justify-content: center; }
+      body.big .line { display: none; border: 0; text-align: center; }
+      body.big .line.current { display: block; }
+      body.big .line.current .text { font-size: calc(var(--size) * 1.8); text-align: center; }
+      body.big .line.current .meta { justify-content: center; }
+      body.big .empty { margin-top: 0; }
+      .line.hide { display: none !important; }
+      #fixer { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: grid; place-items: center; padding: 16px; z-index: 9; }
+      #fixer[hidden] { display: none; }
+      #fixer .box { background: var(--panel); border-radius: 14px; padding: 14px; width: min(560px, 100%); display: grid; gap: 10px; }
+      #fixer textarea { width: 100%; min-height: 90px; font: inherit; font-size: 20px; background: #2a2147; color: var(--text);
+        border: 1px solid #3a3063; border-radius: 10px; padding: 8px; unicode-bidi: plaintext; }
+      #fixer .row { display: flex; gap: 8px; justify-content: flex-end; }
+      #nosleep { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
     </style>
   </head>
   <body>
@@ -48,6 +66,14 @@
       <b>VI Translator</b>
       <button id="snap" title="Translate the whole picture" data-i18n-title hidden>📷</button>
       <button id="ctl" title="Switches" data-i18n-title hidden>⚙</button>
+      <select id="filter" title="Show" data-i18n-title aria-label="Show">
+        <option value="all" data-i18n>Everything</option>
+        <option value="dialogue" data-i18n>Dialogue</option>
+        <option value="other" data-i18n>Instructions</option>
+      </select>
+      <button id="big" title="The current line, big" data-i18n-title>⛶</button>
+      <button id="awake" title="Keep the screen on" data-i18n-title>🔆</button>
+      <button id="save" title="Save this session" data-i18n-title>💾</button>
       <button id="en" class="on" title="Show the English" data-i18n-title>EN</button>
       <button id="smaller" title="Smaller text" data-i18n-title>A−</button>
       <button id="bigger" title="Bigger text" data-i18n-title>A+</button>
@@ -57,6 +83,16 @@
     <div class="ctl" id="ctl-panel" hidden></div>
     <div class="paused" id="paused" hidden data-i18n>Paused: Live translations are switched off in VI Translator.</div>
     <main id="list"><div class="empty" id="empty" data-i18n>Waiting for translations…</div></main>
+    <!-- a line corrected here: into the app's translation memory as the player's own -->
+    <div id="fixer" hidden><div class="box">
+      <div class="en" id="fix-en"></div>
+      <textarea id="fix-ar" dir="auto"></textarea>
+      <div class="err" id="fix-err" hidden></div>
+      <div class="row"><button id="fix-cancel" data-i18n>Cancel</button><button id="fix-ok" class="on" data-i18n>Save the correction</button></div>
+    </div></div>
+    <!-- keeps the screen on (a silent looping video, as NoSleep.js does: MIT, Rich Tibbett) — the page is
+         plain http on the home network, where Safari's Wake Lock isn't available -->
+    <video id="nosleep" playsinline muted loop src="data:video/mp4;base64,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"></video>
     <script src="i18n.js"></script>
     <script src="snapshot.js"></script>
     <script>
@@ -129,10 +165,93 @@
 
       let last = 0;
       let run = null;
+      // every line of this session (the list keeps the newest 200 on screen), for "Save this session"
+      const session = new Map();
+      let canFix = false;
+      let filter = store("filter") || "all";
+      $("filter").value = filter;
+      const isDialogue = (area) => area === "subtitles";
+      const shows = (area) => filter === "all" || (filter === "dialogue") === isDialogue(area);
+      const applyFilter = () => {
+        for (const el of $("list").querySelectorAll(".line")) el.classList.toggle("hide", !shows(el.dataset.area));
+        markCurrent();
+      };
+      // the newest line the filter lets through: the one the big view shows
+      function markCurrent() {
+        const all = [...$("list").querySelectorAll(".line")];
+        all.forEach((e) => e.classList.remove("current"));
+        const cur = all.reverse().find((e) => !e.classList.contains("hide"));
+        if (cur) cur.classList.add("current");
+      }
+      $("filter").onchange = () => { filter = $("filter").value; store("filter", filter); applyFilter(); };
+      const setBig = (on) => { document.body.classList.toggle("big", on); $("big").classList.toggle("on", on); store("big", on ? "1" : "0"); };
+      setBig(store("big") === "1");
+      $("big").onclick = () => setBig(!document.body.classList.contains("big"));
+      // keep the screen on: the video plays only after a tap (iOS asks for one), and again when the
+      // page comes back to the front
+      let awake = store("awake") === "1";
+      const vid = $("nosleep");
+      const applyAwake = () => {
+        $("awake").classList.toggle("on", awake);
+        if (awake) vid.play().catch(() => {}); else vid.pause();
+      };
+      $("awake").onclick = () => { awake = !awake; store("awake", awake ? "1" : "0"); applyAwake(); };
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) applyAwake(); });
+      document.addEventListener("click", () => { if (awake && vid.paused) vid.play().catch(() => {}); }, { once: true });
+      applyAwake();
+      // "Save this session": the whole session's lines as a text file
+      $("save").onclick = () => {
+        const rows = [...session.values()].sort((a, b) => a.id - b.id).map((l) => {
+          const when = l.at ? new Date(l.at).toLocaleTimeString([], { hour12: false }) : "";
+          return `${when}\n${l.en}\n${l.text}\n`;
+        });
+        const blob = new Blob([rows.join("\n")], { type: "text/plain;charset=utf-8" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `vi-translator_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      };
+      // a tap on a line (when the app allows changes from this page): correct its translation
+      let fixing = null;
+      $("list").addEventListener("click", (e) => {
+        const el = e.target.closest(".line");
+        if (!el || !canFix) return;
+        const l = session.get(Number(el.dataset.id));
+        if (!l) return;
+        fixing = l;
+        $("fix-en").textContent = l.en;
+        $("fix-ar").value = l.text;
+        $("fix-err").hidden = true;
+        $("fixer").hidden = false;
+        $("fix-ar").focus();
+      });
+      $("fix-cancel").onclick = () => { $("fixer").hidden = true; fixing = null; };
+      $("fix-ok").onclick = async () => {
+        if (!fixing) return;
+        const ar = $("fix-ar").value.trim();
+        if (!ar) return;
+        try {
+          const r = await fetch("correct", { method: "POST", cache: "no-store", body: JSON.stringify({ id: fixing.id, ar }) });
+          if (!r.ok) throw new Error(await r.text());
+          // every line of the same English shows the correction
+          for (const l of session.values()) if (l.en === fixing.en) { l.text = ar; l.segs = [[ar, null]]; }
+          for (const el of $("list").querySelectorAll(".line")) {
+            const l = session.get(Number(el.dataset.id));
+            if (l && l.en === fixing.en) { el.querySelector(".text").textContent = ar; el.classList.add("corrected"); }
+          }
+          $("fixer").hidden = true;
+          fixing = null;
+        } catch (err) {
+          $("fix-err").hidden = false;
+          $("fix-err").textContent = t("Could not change it: {e}", { e: err.message || err });
+        }
+      };
       const atBottom = () => { const m = $("list"); return m.scrollHeight - m.scrollTop - m.clientHeight < 80; };
       async function poll() {
         try {
-          const r = await fetch(`live.json?after=${last}`, { cache: "no-store" });
+          const r = await fetch(`live.json?after=${last}&wait=1`, { cache: "no-store" });
           const d = await r.json();
           // the app started again: its line ids start again too
           if (run !== null && d.run !== run) last = 0;
@@ -144,6 +263,8 @@
           if (want !== uiLang) useUiLang(want);
           $("snap").hidden = d.snap !== true;
           showControls(d.control || null);
+          canFix = !!d.control;
+          document.body.classList.toggle("can-fix", canFix);
           const rtl = !!(d.lang && d.lang.rtl);
           if (d.lang && d.lang.code) document.documentElement.lang = d.lang.code;
           if (d.lines.length) {
@@ -151,8 +272,11 @@
             $("empty")?.remove();
             for (const l of d.lines) {
               last = Math.max(last, l.id);
+              session.set(l.id, l);
               const el = document.createElement("div");
-              el.className = "line";
+              el.className = "line" + (l.corrected ? " corrected" : "") + (shows(l.area) ? "" : " hide");
+              el.dataset.id = l.id;
+              el.dataset.area = l.area || "";
               const t = l.at ? new Date(l.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : "";
               el.innerHTML = `<div class="meta"><span class="when">${t}</span><span class="en">${l.en_segs?.length ? segs(l.en_segs) : esc(l.en)}</span></div>
                 <div class="text" dir="${rtl ? "rtl" : "ltr"}">${l.segs?.length ? segs(l.segs) : esc(l.text)}</div>`;
@@ -164,12 +288,17 @@
               else $("list").appendChild(el);
             }
             while ($("list").children.length > 200) $("list").firstElementChild.remove();
+            markCurrent();
             if (stick) $("list").scrollTop = $("list").scrollHeight;
           }
         } catch {
           $("dot").classList.remove("on");
+          // (the app isn't reachable: tried again in a moment, not at once)
+          setTimeout(poll, 1000);
+          return;
         }
-        setTimeout(poll, 700);
+        // (the next question at once: the app answers it when the next line is there)
+        setTimeout(poll, 0);
       }
       poll();
     </script>

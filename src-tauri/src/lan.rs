@@ -36,6 +36,7 @@ pub fn run(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared>, memory:
             live: shared.live.clone(),
             paths: crate::paths(),
             sink,
+            memory: Some(memory.clone()),
             snapshot: Box::new(move || crate::snapshot_now(&c, &sh, &memory)),
         })
     };

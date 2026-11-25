@@ -445,4 +445,11 @@ I18N.add("ar", {
   "Sharpness": "الحدّة",
   "Hold to compare": "اضغط مطوّلاً للمقارنة",
   "Only how the picture looks here: the text is read from the picture as it comes.": "يغيّر شكل الصورة هنا بس: النص ينقرأ من الصورة الأصلية.",
+  "Everything": "الكل",
+  "Dialogue": "الحوار",
+  "Instructions": "التعليمات",
+  "The current line, big": "السطر الحالي بخط كبير",
+  "Keep the screen on": "خلّ الشاشة شغالة",
+  "Save this session": "احفظ هالجلسة",
+  "Save the correction": "احفظ التصحيح",
 });

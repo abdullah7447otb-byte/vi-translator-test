@@ -73,6 +73,8 @@ const NEAR_TRIES: usize = 600;
 /// How much we trust each source: a better translation is never replaced by a worse one.
 fn rank(source: &str) -> u8 {
     match source {
+        // the player's own correction (the phone page's): above everything, never replaced
+        "player" => 7,
         "reviewed" => 6,
         "phrasebook" => 5,
         "claude" | "openai" => 4,
@@ -115,6 +117,11 @@ fn icons_apart(line: &str) -> String {
 
 /// Lower-case words; icons "⟦n⟧" -> "{n}" (renumbered in order, each a word of its own even stuck to
 /// text); punctuation dropped.
+/// A translation a person checked: reviewed for the game, or corrected by the player.
+pub fn trusted(source: &str) -> bool {
+    source == "reviewed" || source == "player"
+}
+
 pub fn key_of(line: &str) -> String {
     let line = &icons_apart(line);
     let mut out = Vec::new();
