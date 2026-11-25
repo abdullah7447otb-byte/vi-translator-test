@@ -332,6 +332,10 @@ pub struct Config {
     /// How hard the app works: "auto" (lowers the reading's and the picture's rates while the
     /// computer can't keep up, see the desktop app's load.rs), "light" (always low), "full" (never lowered).
     pub perf_mode: String,
+    /// The app's picture per source (its `window_title`): {"preset": "default" | "dark" | "vivid" |
+    /// "custom", "bright", "contrast", "gamma", "shadows", "sat", "sharp"}. Only how the app shows the
+    /// picture (ui/app.js PICTURE_GLSL): never the frames the text is read from.
+    pub picture: serde_json::Value,
     /// macOS: the player was told once that the bare program can't reach the home network (main.rs)
     pub bare_mac_noticed: bool,
     /// Threads of the free offline translator (0: as many as suit this computer: 2 on 8 cores or
@@ -803,6 +807,7 @@ impl Default for Config {
             perf_mode: "auto".into(),
             ort_threads: 0,
             bare_mac_noticed: false,
+            picture: serde_json::Value::Null,
             snap_service: String::new(),
             snap_azure_endpoint: String::new(),
             snap_azure_key: String::new(),

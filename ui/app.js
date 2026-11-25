@@ -2024,6 +2024,111 @@ $("clear-log").addEventListener("click", () => ($("log").innerHTML = ""));
 
 // ------------------------------------------------------------------------------------- events + init
 
+// ---- Picture controls: what the app's picture looks like (never what is read: the frames the text is
+// read from don't pass through here). Per source; presets for dark scenes and a livelier picture.
+const PICTURE_PRESETS = {
+  default: { bright: 0, contrast: 1, gamma: 1, shadows: 0, sat: 1, sharp: 0 },
+  dark: { bright: 0.02, contrast: 1, gamma: 1.25, shadows: 0.6, sat: 1.05, sharp: 0.3 },
+  vivid: { bright: 0, contrast: 1.12, gamma: 1, shadows: 0.1, sat: 1.3, sharp: 0.35 },
+};
+const PICTURE_UNIFORMS = ["pSize", "pBright", "pContrast", "pGamma", "pShadows", "pSat", "pSharp"];
+// (after a shader's own `vec3 rgbAt(ivec2 p)`: contrast-adaptive sharpening as AMD's FidelityFX CAS
+// does it, from the four neighbours, then brightness, contrast, shadow lift, gamma and saturation)
+const PICTURE_GLSL = `
+    uniform ivec2 pSize;
+    uniform float pBright, pContrast, pGamma, pShadows, pSat, pSharp;
+    out vec4 color;
+    vec3 at(ivec2 p) { return rgbAt(clamp(p, ivec2(0), pSize - 1)); }
+    void main() {
+      ivec2 p = ivec2(gl_FragCoord.xy);
+      vec3 c = at(p);
+      if (pSharp > 0.0) {
+        vec3 a = at(p + ivec2(0, 1)), b = at(p + ivec2(-1, 0)), d = at(p + ivec2(1, 0)), e = at(p + ivec2(0, -1));
+        vec3 mn = min(c, min(min(a, b), min(d, e))), mx = max(c, max(max(a, b), max(d, e)));
+        vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(1e-4)), 0.0, 1.0));
+        vec3 w = amp * mix(-0.125, -0.2, pSharp);
+        c = clamp((c + (a + b + d + e) * w) / (1.0 + 4.0 * w), 0.0, 1.0);
+      }
+      c = c + pBright;
+      c = (c - 0.5) * pContrast + 0.5;
+      c = clamp(c, 0.0, 1.0);
+      // shadow lift: the dark parts brighter, the bright ones hardly touched
+      c = 1.0 - pow(1.0 - c, vec3(1.0 + pShadows));
+      c = pow(c, vec3(1.0 / pGamma));
+      float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+      c = mix(vec3(l), c, pSat);
+      color = vec4(clamp(c, 0.0, 1.0), 1.0);
+    }`;
+let pictureCompare = false; // "hold to compare": the picture as it comes, while held
+function pictureNow() {
+  const saved = cfg?.picture?.[cfg?.window_title || ""];
+  const p = saved && saved.preset !== "custom" ? PICTURE_PRESETS[saved.preset] : saved;
+  return pictureCompare || !p ? PICTURE_PRESETS.default : { ...PICTURE_PRESETS.default, ...p };
+}
+function pictureUniforms(gl, u, w, h) {
+  const p = pictureNow();
+  gl.uniform2i(u.pSize, w, h);
+  gl.uniform1f(u.pBright, p.bright);
+  gl.uniform1f(u.pContrast, p.contrast);
+  gl.uniform1f(u.pGamma, Math.max(0.2, p.gamma));
+  gl.uniform1f(u.pShadows, Math.max(0, p.shadows));
+  gl.uniform1f(u.pSat, p.sat);
+  gl.uniform1f(u.pSharp, p.sharp);
+  pictureImg(p);
+}
+// a window's JPEG picture: the closest CSS filters (no sharpening there)
+function pictureImg(p = pictureNow()) {
+  const plain = p.bright === 0 && p.contrast === 1 && p.gamma === 1 && p.shadows === 0 && p.sat === 1;
+  const f = plain ? "" : `brightness(${((1 + p.bright) * (1 + p.shadows * 0.25) * p.gamma ** 0.35).toFixed(3)}) contrast(${p.contrast}) saturate(${p.sat})`;
+  const img = $("frame");
+  if (img.style.filter !== f) img.style.filter = f;
+}
+// The Picture panel (Play): a preset, the sliders, and "hold to compare".
+function renderPicture() {
+  const panel = $("pic-panel");
+  if (!cfg) return;
+  const key = cfg.window_title || "";
+  const saved = cfg.picture?.[key] || { preset: "default" };
+  const cur = saved.preset === "custom" ? { ...PICTURE_PRESETS.default, ...saved } : { ...PICTURE_PRESETS[saved.preset] || PICTURE_PRESETS.default };
+  const keep = (v) => {
+    cfg.picture = { ...(cfg.picture || {}), [key]: v };
+    save(false);
+    pictureImg();
+  };
+  const presets = [["default", t("Default")], ["dark", t("Dark scenes")], ["vivid", t("Vivid")], ["custom", t("Custom")]];
+  const sliders = [["bright", t("Brightness"), -0.3, 0.3, 0.01], ["contrast", t("Contrast"), 0.5, 1.5, 0.01], ["gamma", t("Gamma"), 0.6, 1.8, 0.01],
+    ["shadows", t("Shadow lift"), 0, 1.5, 0.05], ["sat", t("Saturation"), 0, 2, 0.01], ["sharp", t("Sharpness"), 0, 1, 0.05]];
+  panel.innerHTML = `<div class="pic-head"><b>${AS.esc(t("Picture"))}</b>
+      <select id="pic-preset">${presets.map(([v, l]) => `<option value="${v}" ${(saved.preset || "default") === v ? "selected" : ""}>${AS.esc(l)}</option>`).join("")}</select></div>
+    ${sliders.map(([k, l, mn, mx, st]) => `<label class="pic-row"><span>${AS.esc(l)}</span><input type="range" data-k="${k}" min="${mn}" max="${mx}" step="${st}" value="${cur[k]}"/><span class="v">${(+cur[k]).toFixed(2)}</span></label>`).join("")}
+    <button class="btn" id="pic-compare" type="button">${AS.esc(t("Hold to compare"))}</button>
+    <div class="muted small">${AS.esc(t("Only how the picture looks here: the text is read from the picture as it comes."))}</div>`;
+  panel.querySelector("#pic-preset").addEventListener("change", (e) => {
+    const v = e.target.value;
+    keep(v === "custom" ? { preset: "custom", ...cur } : { preset: v });
+    renderPicture();
+  });
+  for (const r of panel.querySelectorAll("input[type=range]")) {
+    r.addEventListener("input", () => {
+      const v = { ...cur, preset: "custom" };
+      for (const x of panel.querySelectorAll("input[type=range]")) v[x.dataset.k] = +x.value;
+      r.nextElementSibling.textContent = (+r.value).toFixed(2);
+      panel.querySelector("#pic-preset").value = "custom";
+      Object.assign(cur, v);
+      keep(v);
+    });
+  }
+  const cmp = panel.querySelector("#pic-compare");
+  const hold = (on) => { pictureCompare = on; pictureImg(); };
+  for (const ev of ["pointerdown"]) cmp.addEventListener(ev, () => hold(true));
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) cmp.addEventListener(ev, () => hold(false));
+}
+$("pic-btn").addEventListener("click", () => {
+  const panel = $("pic-panel");
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) renderPicture();
+});
+
 // A capture card's own YUY2 frames, drawn on the GPU the way OBS does: the frame goes up as a texture
 // as it is (each texel = two pixels: Y0 U Y1 V) and a shader turns it into color per pixel. No JPEG
 // encoding or decoding on the way, full quality.
@@ -2049,19 +2154,18 @@ function yuvInit() {
     uniform highp sampler2D tex;
     uniform int height;
     uniform float yOff, yScale, cScale, kr, kgu, kgv, kb;
-    out vec4 color;
-    void main() {
-      ivec2 p = ivec2(gl_FragCoord.xy);
+    vec3 rgbAt(ivec2 p) {
       vec4 s = texelFetch(tex, ivec2(p.x >> 1, height - 1 - p.y), 0) * 255.0; // Y0 U Y1 V
       float y = ((p.x & 1) == 0 ? s.r : s.b);
       y = (y - yOff) * yScale;
       float u = (s.g - 128.0) * cScale, v = (s.a - 128.0) * cScale;
-      color = vec4(clamp(vec3(y + kr * v, y - kgu * u - kgv * v, y + kb * u) / 255.0, 0.0, 1.0), 1.0);
-    }`));
+      return clamp(vec3(y + kr * v, y - kgu * u - kgv * v, y + kb * u) / 255.0, 0.0, 1.0);
+    }
+    ${PICTURE_GLSL}`));
   gl.linkProgram(prog);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
   gl.useProgram(prog);
-  for (const n of ["tex", "height", "yOff", "yScale", "cScale", "kr", "kgu", "kgv", "kb"]) YUV.u[n] = gl.getUniformLocation(prog, n);
+  for (const n of ["tex", "height", "yOff", "yScale", "cScale", "kr", "kgu", "kgv", "kb", ...PICTURE_UNIFORMS]) YUV.u[n] = gl.getUniformLocation(prog, n);
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
   for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
@@ -2096,6 +2200,7 @@ function yuvDraw(data, w, h, bt709, fullRange) {
   gl.uniform1f(u.yScale, fullRange ? 1 : 255 / 219);
   gl.uniform1f(u.cScale, fullRange ? 1 : 255 / 224);
   for (const [n, v] of [["kr", kr], ["kgu", kgu], ["kgv", kgv], ["kb", kb]]) gl.uniform1f(u[n], v);
+  pictureUniforms(gl, u, w, h);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   return true;
 }
@@ -2123,9 +2228,7 @@ function i420Init() {
     uniform highp sampler2D ty, tu, tv;
     uniform int height, stretch;
     uniform float yOff, yScale, cScale, kr, kgu, kgv, kb;
-    out vec4 color;
-    void main() {
-      ivec2 p = ivec2(gl_FragCoord.xy);
+    vec3 rgbAt(ivec2 p) {
       int row = height - 1 - p.y;
       float Y = texelFetch(ty, ivec2(p.x, row), 0).r * 255.0;
       float U = texelFetch(tu, ivec2(p.x >> 1, row >> 1), 0).r * 255.0;
@@ -2138,11 +2241,12 @@ function i420Init() {
       }
       float y = (Y - yOff) * yScale;
       float u = (U - 128.0) * cScale, v = (V - 128.0) * cScale;
-      color = vec4(clamp(vec3(y + kr * v, y - kgu * u - kgv * v, y + kb * u) / 255.0, 0.0, 1.0), 1.0);
-    }`));
+      return clamp(vec3(y + kr * v, y - kgu * u - kgv * v, y + kb * u) / 255.0, 0.0, 1.0);
+    }
+    ${PICTURE_GLSL}`));
   gl.linkProgram(prog);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-  for (const n of ["ty", "tu", "tv", "height", "stretch", "yOff", "yScale", "cScale", "kr", "kgu", "kgv", "kb"]) I420.u[n] = gl.getUniformLocation(prog, n);
+  for (const n of ["ty", "tu", "tv", "height", "stretch", "yOff", "yScale", "cScale", "kr", "kgu", "kgv", "kb", ...PICTURE_UNIFORMS]) I420.u[n] = gl.getUniformLocation(prog, n);
   I420.tex = [0, 1, 2].map(() => {
     const t = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, t);
@@ -2188,6 +2292,7 @@ function i420Draw(data, w, h, bt709, fullRange, stretch) {
   gl.uniform1f(u.yScale, fullRange ? 1 : 255 / 219);
   gl.uniform1f(u.cScale, fullRange ? 1 : 255 / 224);
   for (const [n, v] of [["kr", kr], ["kgu", kgu], ["kgv", kgv], ["kb", kb]]) gl.uniform1f(u[n], v);
+  pictureUniforms(gl, u, w, h);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.activeTexture(gl.TEXTURE0);
   return true;
@@ -2282,6 +2387,7 @@ async function pullPreview(url, run) {
       await next.decode().catch(() => {}); // decoded off-screen first: no flicker when it's swapped in
       if (run !== pullRun) { URL.revokeObjectURL(blobUrl); break; }
       img.src = blobUrl;
+      pictureImg();
       frameShown();
       img.hidden = false;
       canvas.hidden = true;
