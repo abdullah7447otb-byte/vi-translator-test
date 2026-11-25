@@ -248,11 +248,13 @@ body.no-fps .fps-badge { display: none !important; }
 /* Play: the Picture button, left of the snapshot one, and its panel above them */
 .fs-btn.pic-btn { right: 102px; }
 .pic-btn svg path:last-child { fill: currentColor; }
-.pic-panel { position: absolute; right: 10px; bottom: 56px; z-index: 7; width: 280px; padding: 12px; border-radius: 12px;
-  background: rgba(20, 14, 32, .92); color: #f1ebf8; display: grid; gap: 8px; font-size: 13px; }
+.pic-panel { position: absolute; right: 10px; bottom: 56px; z-index: 7; width: 300px; box-sizing: border-box; overflow-x: hidden; padding: 12px; border-radius: 12px;
+  background: rgba(20, 14, 32, .98); color: #f1ebf8; display: grid; gap: 8px; font-size: 13px; box-shadow: 0 8px 28px rgba(0, 0, 0, .45); }
 .pic-panel[hidden] { display: none; }
 .pic-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.pic-row { display: grid; grid-template-columns: 90px 1fr 38px; align-items: center; gap: 6px; }
+.pic-row { display: grid; grid-template-columns: 90px minmax(0, 1fr) 38px; align-items: center; gap: 6px; }
+.pic-row input[type=range], .pic-row select { min-width: 0; width: 100%; }
+.pic-head select { min-width: 0; flex: 1 1 auto; }
 .pic-row .v { font-variant-numeric: tabular-nums; text-align: end; opacity: .8; }
 .snap-btn.busy { pointer-events: none; opacity: 1; background: var(--sunset); }
 .snap-btn.busy svg { animation: snap-pulse 1s ease-in-out infinite; }

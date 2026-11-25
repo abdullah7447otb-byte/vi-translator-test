@@ -2139,8 +2139,24 @@ function renderPicture() {
 $("pic-btn").addEventListener("click", () => {
   const panel = $("pic-panel");
   panel.hidden = !panel.hidden;
-  if (!panel.hidden) renderPicture();
+  if (!panel.hidden) { renderPicture(); placePicture(); }
 });
+// The panel is placed by the button on the screen itself, not inside the preview: in Play the preview
+// can be small, and its frame would cut the panel off.
+function placePicture() {
+  const panel = $("pic-panel");
+  if (panel.hidden) return;
+  const b = $("pic-btn").getBoundingClientRect();
+  Object.assign(panel.style, { position: "fixed", right: "auto", bottom: "auto", maxHeight: `${innerHeight - 16}px`, overflowY: "auto" });
+  const w = panel.offsetWidth;
+  const h = panel.offsetHeight;
+  let top = b.top - h - 8;
+  if (top < 8) top = Math.max(8, Math.min(b.bottom + 8, innerHeight - h - 8));
+  const left = Math.max(8, Math.min(b.right - w, innerWidth - w - 8));
+  Object.assign(panel.style, { top: `${top}px`, left: `${left}px` });
+}
+addEventListener("resize", placePicture);
+document.addEventListener("fullscreenchange", () => setTimeout(placePicture, 100));
 
 // A capture card's own YUY2 frames, drawn on the GPU the way OBS does: the frame goes up as a texture
 // as it is (each texel = two pixels: Y0 U Y1 V) and a shader turns it into color per pixel. No JPEG
