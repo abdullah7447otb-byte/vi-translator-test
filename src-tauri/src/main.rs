@@ -1020,6 +1020,23 @@ fn anchor_loop(app: AppHandle, shared: Arc<Shared>) {
     }
 }
 
+/// The ChatGPT engine's server as set (a local model, or OpenAI's): one short line translated, its answer —
+/// the Translator tab's "Test connection".
+#[tauri::command]
+async fn test_llm_server(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let c = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let http = reqwest::blocking::Client::builder().timeout(Duration::from_secs(60)).build().map_err(|e| e.to_string())?;
+        let base = if c.openai_url.trim().is_empty() { "https://api.openai.com/v1".to_string() } else { c.openai_url.trim().to_string() };
+        if c.openai_url.trim().is_empty() && c.openai_key.trim().is_empty() {
+            return Err("Enter your OpenAI API key, or a server address.".to_string());
+        }
+        translate::chat_completions(&http, &base, c.openai_key.trim(), c.openai_model.trim(), "Translate the user's line into Arabic. Answer with the translation only.", "Mission passed.", 60).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// How the app keeps up, over the last minute (see vi_translator_core::perf).
 #[tauri::command]
 fn perf_status() -> serde_json::Value {
@@ -2011,7 +2028,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(hotkey::plugin())
         .manage(AppState { cfg: cfg.clone(), shared: shared.clone(), saver: saver.clone(), memory: memory.clone(), update: update.clone() })
-        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin])
+        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, test_llm_server, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin])
         .setup(move |app| {
             if let Some(w) = app.get_webview_window("main") {
                 let test = if updater::TEST_BUILD { " (test build · updates off)" } else { "" };

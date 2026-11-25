@@ -279,6 +279,10 @@ pub struct Config {
     /// ChatGPT (OpenAI API)
     pub openai_key: String,
     pub openai_model: String,
+    /// An OpenAI-compatible server for the ChatGPT engine instead of OpenAI's (a local model: Ollama
+    /// `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`); empty: OpenAI. Its key is optional.
+    #[serde(default)]
+    pub openai_url: String,
     /// Claude only: msa | egyptian | gulf | levantine
     pub dialect: String,
     pub interval_ms: u64,
@@ -778,6 +782,7 @@ impl Default for Config {
             claude_model: "claude-haiku-5-5".into(),
             openai_key: String::new(),
             openai_model: "gpt-6-luna".into(),
+            openai_url: String::new(),
             dialect: "msa".into(),
             interval_ms: DEFAULT_TIMING.interval_ms,
             stable_ms: DEFAULT_TIMING.stable_ms,

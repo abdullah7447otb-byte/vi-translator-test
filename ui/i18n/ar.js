@@ -507,4 +507,10 @@ I18N.add("ar", {
   "Stream quality": "جودة البث",
   "1080p reads small text best; 720p for a slower home network.": "1080p يقرأ النص الصغير أفضل، و720p للشبكة البطيئة.",
   "Controllers connected to this PC play on the PS5. Use Play to play full screen.": "أيادي التحكم الموصولة بهذا الجهاز تلعب على PS5. اضغط «اللعب» للعب بملء الشاشة.",
+  "Server address (a model on this computer: leave empty for OpenAI)": "عنوان الخادم (نموذج على هذا الجهاز؛ اتركه فاضي لـ OpenAI)",
+  "Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1. Free and offline; no key needed. On a 16 GB Mac: gemma4:12b-it-qat, about 0.5–1.5 s a line while you play. A smaller model is smoother, a bigger one translates better.": "Ollama: ‏http://localhost:11434/v1 · LM Studio: ‏http://localhost:1234/v1. مجاني وبدون نت، وما يحتاج مفتاح. على ماك ذاكرته 16 قيقا: gemma4:12b-it-qat، تقريباً 0.5 إلى 1.5 ثانية لكل سطر وأنت تلعب. النموذج الأصغر أسلس، والأكبر ترجمته أحسن.",
+  "Test connection": "جرّب الاتصال",
+  "Asking the server…": "جارٍ سؤال الخادم…",
+  "It answered: {text}": "ردّ: {text}",
+  "Enter your OpenAI API key, or a server address.": "اكتب مفتاح OpenAI، أو عنوان خادم.",
 });

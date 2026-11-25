@@ -298,6 +298,38 @@ fn openai_text(v: &Value) -> Option<String> {
     Some(parts.iter().filter(|p| p["type"] == "output_text").filter_map(|p| p["text"].as_str()).collect())
 }
 
+/// One answer from an OpenAI-compatible server's Chat Completions API (`<base>/chat/completions`): Ollama,
+/// LM Studio, llama.cpp's server and the rest all speak it. `key` may be empty (a local server needs none).
+pub fn chat_completions(http: &reqwest::blocking::Client, base: &str, key: &str, model: &str, system: &str, prompt: &str, max_tokens: u32) -> Result<String> {
+    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+    let body = json!({
+        "model": model,
+        "messages": [{ "role": "system", "content": system }, { "role": "user", "content": prompt }],
+        "temperature": 0.2,
+        "max_tokens": max_tokens,
+        "stream": false,
+    });
+    let mut req = http.post(&url).json(&body).timeout(std::time::Duration::from_secs(60));
+    if !key.is_empty() {
+        req = req.bearer_auth(key);
+    }
+    let resp = req.send().with_context(|| format!("no answer from {base}: is the server running?"))?;
+    let code = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if !code.is_success() {
+        let snippet: String = text.chars().take(200).collect();
+        bail!("{base} answered HTTP {code}: {snippet}");
+    }
+    let v: Value = serde_json::from_str(&text).with_context(|| format!("{base} didn't answer in the OpenAI format"))?;
+    let content = v["choices"][0]["message"]["content"].as_str().ok_or_else(|| anyhow!("{base}: no message in the answer"))?;
+    // (a reasoning model's thinking, <think>…</think>, before its answer: not the translation)
+    let content = match content.rfind("</think>") {
+        Some(i) => &content[i + "</think>".len()..],
+        None => content,
+    };
+    Ok(content.trim().to_string())
+}
+
 /// The offline translator's threads: the setting's (1–8), or for 0 as suits this computer: 2 on
 /// 8 cores or fewer, 4 on more.
 pub fn ort_threads(setting: u32) -> usize {
@@ -810,6 +842,13 @@ impl Translator {
     /// ChatGPT: the OpenAI Responses API, with the same prompt as Claude. The lines aren't stored at
     /// OpenAI (`store: false`), and the small models answer without reasoning (fast, cheap).
     fn openai(&mut self, cfg: &Config, line: &str, phrases: &[(String, String)], icons: &[String]) -> Result<Segments> {
+        // (a server of the player's own — a local model in Ollama or LM Studio: the Chat Completions API every
+        // one of them speaks, no key needed, nothing paid)
+        if !cfg.openai_url.trim().is_empty() {
+            let (system, prompt, colors) = self.llm_prompt(cfg, line, phrases, icons);
+            let ar = chat_completions(&self.http, cfg.openai_url.trim(), cfg.openai_key.trim(), cfg.openai_model.trim(), &system, &prompt, 400)?;
+            return Ok(self.llm_reply(&ar, &colors, icons, line));
+        }
         need(&cfg.openai_key, "OpenAI API key")?;
         let (system, prompt, colors) = self.llm_prompt(cfg, line, phrases, icons);
         let model = cfg.openai_model.trim();
@@ -862,7 +901,10 @@ impl Translator {
         );
         let list: Vec<String> = blocks.iter().map(|(n, en)| format!("{n}: {en}")).collect();
         let prompt = format!("Text blocks:\n{}", list.join("\n"));
-        let text = if cfg.engine == "openai" {
+        let text = if cfg.engine == "openai" && !cfg.openai_url.trim().is_empty() {
+            // (a local model: the text blocks only — most local models see no pictures)
+            chat_completions(&self.http, cfg.openai_url.trim(), cfg.openai_key.trim(), cfg.openai_model.trim(), &system, &prompt, 4000)?
+        } else if cfg.engine == "openai" {
             need(&cfg.openai_key, "OpenAI API key")?;
             let model = cfg.openai_model.trim();
             let effort = if model.contains("luna") || model.contains("terra") { "none" } else { "low" };
@@ -1461,6 +1503,63 @@ mod term_tests {
 pub fn keeps_terms(en: &str, ar: &str) -> bool {
     let ar = ar.replace(['\u{2066}', '\u{2069}'], "");
     protect_terms(en).1.iter().all(|t| ar.contains(t.as_str()))
+}
+
+#[cfg(test)]
+mod local_server_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    /// A one-request server answering `reply` with `code`; returns its address and the request it got.
+    fn serve(code: u16, reply: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = format!("http://{}/v1", l.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut buf = vec![0u8; 65536];
+            let mut got = Vec::new();
+            loop {
+                let n = s.read(&mut buf).unwrap();
+                got.extend_from_slice(&buf[..n]);
+                let t = String::from_utf8_lossy(&got).to_string();
+                if let Some(i) = t.find("\r\n\r\n") {
+                    let len = t.lines().find_map(|l| l.to_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap())).unwrap_or(0);
+                    if got.len() >= i + 4 + len {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            tx.send(String::from_utf8_lossy(&got).to_string()).unwrap();
+            let _ = write!(s, "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len());
+        });
+        (addr, rx)
+    }
+
+    #[test]
+    fn a_local_server_is_asked_in_the_chat_format_without_a_key() {
+        let (addr, rx) = serve(200, r#"{"choices":[{"message":{"role":"assistant","content":"<think>hmm</think> مرحبا"}}]}"#);
+        let http = reqwest::blocking::Client::new();
+        let got = chat_completions(&http, &addr, "", "gemma4:12b-it-qat", "sys", "Hello", 50).unwrap();
+        assert_eq!(got, "مرحبا");
+        let req = rx.recv().unwrap();
+        assert!(req.starts_with("POST /v1/chat/completions"), "{req}");
+        assert!(!req.to_lowercase().contains("authorization:"), "no key, no header: {req}");
+        assert!(req.contains("\"stream\":false") && req.contains("gemma4:12b-it-qat"));
+    }
+
+    #[test]
+    fn a_server_s_error_and_a_missing_server_are_said_plainly() {
+        let (addr, _rx) = serve(404, r#"{"error":"model not found"}"#);
+        let http = reqwest::blocking::Client::new();
+        let e = chat_completions(&http, &addr, "k", "nope", "s", "p", 10).unwrap_err().to_string();
+        assert!(e.contains("404") && e.contains("model not found"), "{e}");
+        let e = chat_completions(&http, "http://127.0.0.1:9/v1", "", "m", "s", "p", 10).unwrap_err().to_string();
+        assert!(e.contains("is the server running"), "{e}");
+    }
 }
 
 #[cfg(test)]

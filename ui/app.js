@@ -1104,6 +1104,7 @@ const ENGINE_FIELDS = {
     ["dialect", "Arabic variety", "select", null, [["msa", "Modern Standard (الفصحى)"], ["egyptian", "Egyptian (مصري)"], ["gulf", "Gulf (خليجي)"], ["levantine", "Levantine (شامي)"]]],
   ],
   openai: [
+    ["openai_url", "Server address (a model on this computer: leave empty for OpenAI)", "text", "Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1. Free and offline; no key needed. On a 16 GB Mac: gemma4:12b-it-qat, about 0.5–1.5 s a line while you play. A smaller model is smoother, a bigger one translates better."],
     ["openai_key", "OpenAI API key", "password"],
     ["openai_model", "Model", "select", null, [["gpt-6-luna", "GPT-6 Luna — cheapest, fast"], ["gpt-6.1-terra", "GPT-6.1 Terra — better"], ["gpt-6.2-sol", "GPT-6.2 Sol — best, ~20× Luna's price"]]],
     ["dialect", "Arabic variety", "select", null, [["msa", "Modern Standard (الفصحى)"], ["egyptian", "Egyptian (مصري)"], ["gulf", "Gulf (خليجي)"], ["levantine", "Levantine (شامي)"]]],
@@ -1160,7 +1161,13 @@ function renderEngines() {
     f.className = "field";
     f.innerHTML = `<label>${t(label)}</label>`;
     let input;
-    if (type === "select") {
+    // (a local server's model is the player's own: its name typed, not chosen from OpenAI's)
+    if (key === "openai_model" && (cfg.openai_url || "").trim()) {
+      input = document.createElement("input");
+      input.type = "text";
+      input.spellcheck = false;
+      input.placeholder = "gemma4:12b-it-qat";
+    } else if (type === "select") {
       input = document.createElement("select");
       for (const [v, txt] of options) input.add(new Option(t(txt), v));
     } else {
@@ -1170,9 +1177,31 @@ function renderEngines() {
     }
     input.value = cfg[key] ?? "";
     input.addEventListener("input", () => { cfg[key] = input.value.trim(); save(false); });
+    // (the server address changes what the model field is: drawn again when it's left)
+    if (key === "openai_url") input.addEventListener("change", () => renderEngines());
     f.appendChild(input);
     if (help) f.insertAdjacentHTML("beforeend", `<div class="muted small" style="margin:4px 0 0">${t(help)}</div>`);
     form.appendChild(f);
+  }
+  if (cfg.engine === "openai") {
+    const row = document.createElement("div");
+    row.className = "row";
+    const btn = document.createElement("button");
+    btn.className = "btn";
+    btn.textContent = t("Test connection");
+    const out = document.createElement("span");
+    out.className = "muted small";
+    btn.addEventListener("click", async () => {
+      out.textContent = t("Asking the server…");
+      try {
+        const r = await invoke("test_llm_server");
+        out.textContent = t("It answered: {text}", { text: r });
+      } catch (e) {
+        out.textContent = t(String(e));
+      }
+    });
+    row.append(btn, out);
+    form.appendChild(row);
   }
   box.appendChild(form);
 }
