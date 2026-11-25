@@ -10,3 +10,4 @@
 .vscode/
 *.part
 src-tauri/apple/build/
+__pycache__/
