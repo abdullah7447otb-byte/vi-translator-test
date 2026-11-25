@@ -12,6 +12,7 @@ pub mod config;
 pub mod engine;
 pub mod frame;
 pub mod game_icons;
+pub mod glossary;
 pub mod lan_page;
 pub mod langs;
 pub mod live;

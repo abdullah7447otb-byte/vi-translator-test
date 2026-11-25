@@ -336,6 +336,9 @@ pub struct Config {
     /// "custom", "bright", "contrast", "gamma", "shadows", "sat", "sharp"}. Only how the app shows the
     /// picture (ui/app.js PICTURE_GLSL): never the frames the text is read from.
     pub picture: serde_json::Value,
+    /// The player's own glossary for the free offline translator into Arabic: "English = Arabic"
+    /// lines (core/src/glossary.rs), before the built-in ones.
+    pub glossary: String,
     /// macOS: the player was told once that the bare program can't reach the home network (main.rs)
     pub bare_mac_noticed: bool,
     /// Threads of the free offline translator (0: as many as suit this computer: 2 on 8 cores or
@@ -807,6 +810,7 @@ impl Default for Config {
             perf_mode: "auto".into(),
             ort_threads: 0,
             bare_mac_noticed: false,
+            glossary: String::new(),
             picture: serde_json::Value::Null,
             snap_service: String::new(),
             snap_azure_endpoint: String::new(),

@@ -390,7 +390,34 @@ impl Translator {
         if !terms.is_empty() && rest.is_empty() {
             return Ok(vec![(format!("\u{2066}{line}\u{2069}"), None)]);
         }
+        // The free offline model into Arabic: the glossary's whole lines as they are, its names as
+        // "[n]" (put back in Arabic below), and its Arabic tidied (crate::glossary)
+        let offline_ar = cfg.engine == "local" && cfg.target_lang == "ar";
+        if offline_ar && icons.is_empty() && phrases.is_empty() {
+            if let Some(ar) = crate::glossary::whole_line(&cfg.glossary, line) {
+                return Ok(vec![(ar, None)]);
+            }
+        }
+        let (protected, glossed) = if offline_ar { crate::glossary::protect(&cfg.glossary, &protected, terms.len()) } else { (protected, Vec::new()) };
         let mut segs = self.translate_inner(cfg, &protected, phrases, icons, status)?;
+        if !glossed.is_empty() {
+            const AR_DIGITS: [char; 10] = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+            for seg in segs.iter_mut().filter(|s| !is_icon(s)) {
+                for (i, ar) in glossed.iter().enumerate() {
+                    let n = (terms.len() + i + 1).to_string();
+                    let an: String = n.chars().map(|c| AR_DIGITS[c.to_digit(10).unwrap_or(0) as usize]).collect();
+                    for form in [format!("[{n}]"), format!("]{n}["), format!("[{an}]"), format!("]{an}[")] {
+                        seg.0 = seg.0.replace(&form, ar);
+                    }
+                }
+            }
+        }
+        if offline_ar {
+            for seg in segs.iter_mut().filter(|s| !is_icon(s)) {
+                seg.0 = crate::glossary::tidy(line, &seg.0);
+            }
+            segs.retain(|s| is_icon(s) || !s.0.is_empty());
+        }
         // (the phrasebook's hand-written lines carry no colours, and the translator may have missed one)
         segs = self.recolor(cfg, segs, phrases, status);
         if !terms.is_empty() {
@@ -442,7 +469,9 @@ impl Translator {
             LineContext::Given(t) if is_llm(&cfg.engine) => t.as_str(),
             _ => "",
         };
-        let key = format!("{}\u{1}{}\u{1}{}\u{1}{}\u{1}{:?}\u{1}{icon_sig}\u{1}{around}", cfg.engine, cfg.target_lang, cfg.dialect, line, phrases);
+        // (the player's glossary changes the offline model's answer: a new one is a new key)
+        let glossary = if cfg.engine == "local" { cfg.glossary.as_str() } else { "" };
+        let key = format!("{}\u{1}{}\u{1}{}\u{1}{}\u{1}{:?}\u{1}{icon_sig}\u{1}{around}\u{1}{glossary}", cfg.engine, cfg.target_lang, cfg.dialect, line, phrases);
         if let Some(s) = self.cache.get(&key) {
             return Ok(s.clone());
         }

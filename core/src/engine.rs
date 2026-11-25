@@ -920,6 +920,7 @@ impl Reader {
                 mc.lang = c.target_lang.clone();
                 mc.clear();
             }
+            ctx.live.menu_steady.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
             ctx.live.menu_failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
             if screen.is_some() {
                 hide_screen(&*ctx.sink, &ctx.live, &latest, &mut screen);
@@ -933,7 +934,9 @@ impl Reader {
             let _ = present.send(PMsg::ClearAll { upto: seq_counter });
         }
         // pause-menu text the translator failed on: asked again when it's read again (every 30 s at most)
-        if menu_retry_at.elapsed() >= Duration::from_secs(30) {
+        // (every 5 s while the translator has nothing to do: a failed word is asked again sooner)
+        let retry_after = if crate::perf::translating_for().is_none() { Duration::from_secs(5) } else { Duration::from_secs(30) };
+        if menu_retry_at.elapsed() >= retry_after {
             menu_retry_at = Instant::now();
             for en in std::mem::take(&mut *ctx.live.menu_failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner)) {
                 menu_asked.remove(&en);
@@ -1188,7 +1191,16 @@ impl Reader {
                             }
                         }
                         let built_in = screens::menu_word(&m.en).map(String::from);
-                        match built_in.or_else(cached).or_else(remembered) {
+                        // (the layout's own word first; then what this item showed before, while it reads the same)
+                        let steady = || ctx.live.menu_steady.lock().unwrap_or_else(std::sync::PoisonError::into_inner).similar(&m.en);
+                        let found = built_in.or_else(steady).or_else(cached).or_else(remembered);
+                        if let Some(ar) = &found {
+                            let mut st = ctx.live.menu_steady.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if st.similar(&m.en).is_none() {
+                                st.insert(m.en.clone(), ar.clone());
+                            }
+                        }
+                        match found {
                             // a switcher "< Michael >" keeps its arrows
                             Some(ar) if m.en.trim().starts_with('<') && m.en.trim().ends_with('>') => m.ar = format!("< {ar} >"),
                             Some(ar) => m.ar = ar,
@@ -1269,7 +1281,17 @@ impl Reader {
                             let _ = jobs.send(Job { area: MENU_TEXT.into(), seq: seq_counter, en: en.to_string(), phrases: Vec::new(), icons: Vec::new(), line_h: 0.0, en_start: Instant::now(), text_box: None, game_box: None, parts: Vec::new(), context: None });
                         }
                     };
-                    screen_missing = localize_screen(layout, &cache.map, &mut ask);
+                    // (this session's translations, else the memory's: a page seen before shows translated
+                    // at once after the app starts again, not word by word as the translator answers)
+                    let remembered = |k: &str| -> Option<String> {
+                        let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if m.lang() != c.target_lang {
+                            return None;
+                        }
+                        m.get(k, &[], &[]).map(|(segs, _)| segs.iter().map(|s| s.0.as_str()).collect::<String>().trim().to_string()).filter(|a| !a.is_empty() && translate::keeps_terms(k, a))
+                    };
+                    let look = |k: &str| cache.map.get(k).cloned().or_else(|| remembered(k));
+                    screen_missing = localize_screen(layout, &look, &mut ask);
                     drop(cache);
                 } else if found.is_some() {
                     screen_missing = false;
@@ -2516,7 +2538,15 @@ fn translate_line(
     let hit = remembered.is_some();
     let result = match remembered {
         // (coloured here when the remembered line has no colours but the game highlights a word)
-        Some((segs, _)) => Ok(translate::polite(&c.target_lang, tr.recolor(c, segs, phrases, status))),
+        Some((segs, src)) => {
+            // (a line the offline model translated before this tidy-up existed: tidied now too)
+            let segs = if src == "local" && c.engine == "local" && c.target_lang == "ar" {
+                segs.into_iter().map(|(t, col)| if col.as_deref().is_some_and(|c| c.starts_with("icon:")) { (t, col) } else { (crate::glossary::tidy(en, &t), col) }).filter(|(t, col)| col.is_some() || !t.is_empty()).collect()
+            } else {
+                segs
+            };
+            Ok(translate::polite(&c.target_lang, tr.recolor(c, segs, phrases, status)))
+        }
         None => tr.translate(c, en, phrases, icons, status),
     };
     if let (false, Ok(segs)) = (hit, &result) {
@@ -2695,7 +2725,7 @@ mod english_icon_tests {
 /// the translator (via `cache`, filled by MENU_TEXT jobs; `ask` queues one). Until translated, tabs,
 /// buttons and the name block keep the English, and no title is drawn. Returns true while any is
 /// missing.
-fn localize_screen(l: &mut screens::ScreenLayout, cache: &HashMap<String, String>, ask: &mut dyn FnMut(&str)) -> bool {
+fn localize_screen(l: &mut screens::ScreenLayout, cache: &dyn Fn(&str) -> Option<String>, ask: &mut dyn FnMut(&str)) -> bool {
     // "MAP", "MONDAY 05:00": translated as ordinary words ("Map"), not shouted letters
     let words = |en: &str| -> String {
         if en.chars().any(|c| c.is_lowercase()) {
@@ -2712,7 +2742,7 @@ fn localize_screen(l: &mut screens::ScreenLayout, cache: &HashMap<String, String
     let mut missing = false;
     let mut get = |en: &str, missing: &mut bool| -> Option<String> {
         let key = words(en);
-        let hit = cache.get(&key).cloned();
+        let hit = cache(&key);
         if hit.is_none() {
             ask(&key);
             *missing = true;

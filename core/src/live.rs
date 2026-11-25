@@ -91,6 +91,9 @@ pub struct Live {
     pub chat_read: Mutex<Option<(Vec<u8>, (u32, u32, u32, u32), Option<crate::chat::Bubble>)>>,
     /// Pause-menu text translated by the translator this session: English -> translation, in one language.
     pub menu_cache: Mutex<MenuCache>,
+    /// A page's words as they were first shown, by their English (as OCR spells it, near enough): kept
+    /// while it reads the same, so an item doesn't flip between two translations from one read to the next.
+    pub menu_steady: Mutex<MenuCache>,
     /// …and the menu text it couldn't translate (asked again later).
     pub menu_failed: Mutex<Vec<String>>,
     /// Recent translations for the home-network page, newest last, and their ids.
