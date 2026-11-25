@@ -84,6 +84,9 @@ pub struct Live {
     pub phone_seen: Mutex<Option<std::time::Instant>>,
     /// The phone's pieces as read before (see phone::steady).
     pub phone_pieces: Mutex<Vec<crate::phone::Seen>>,
+    /// The phone's screen corners now, followed every frame ({gen, quad} or {gen, lost}; see phone_anchor):
+    /// for the pages that poll the state (TV, OBS).
+    pub phone_anchor: Mutex<Option<serde_json::Value>>,
     /// The phone's translations are up (its overlay window shows).
     pub phone_active: AtomicBool,
     /// GTA VI's message bubble at the bottom right as last read (see chat.rs): the picture of its box
@@ -162,6 +165,7 @@ pub fn overlay_state(cfg: &Mutex<crate::config::Config>, live: &Live) -> serde_j
         "shown": live.shown.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
         "covers": live.covers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
         "phone": live.phone.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+        "phone_anchor": live.phone_anchor.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
         "area_fx": area_fx,
         "screen": live.screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
         "reason": live.screen_reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),

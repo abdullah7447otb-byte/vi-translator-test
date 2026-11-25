@@ -2571,6 +2571,8 @@ listen("config", (e) => {
 // GTA VI's phone held up: its translations beside it, on the picture here too
 let phoneNow = null;
 listen("phone", (e) => { phoneNow = e.payload; drawLayer(); });
+// (the phone's screen followed every frame: its Arabic moves with it, nothing redrawn — see AS.phoneAnchor)
+listen("phone-anchor", (e) => AS.phoneAnchor(e.payload));
 listen("screen", (e) => {
   const was = !!screen.layout;
   screen.layout = e.payload;

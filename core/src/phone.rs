@@ -527,6 +527,61 @@ pub fn on_screen(q: [(f64, f64); 4], r: (u32, u32, u32, u32)) -> Option<[f64; 4]
 }
 
 pub fn read_screen_any(ocr: &Ocr, rgba: &[u8], fw: u32, fh: u32, screen: (u32, u32, u32, u32)) -> Read {
+    read_screen_with(ocr, rgba, fw, fh, screen, None)
+}
+
+/// `read_screen_any`, with the screen's corners from the phone's pose (phone_pose::Pose::screen_quad) for when
+/// they aren't found by brightness — a tilted phone. Upright readings take the corners of the screen measured
+/// upright first (its own edges), turned back into the frame.
+pub fn read_screen_with(ocr: &Ocr, rgba: &[u8], fw: u32, fh: u32, screen: (u32, u32, u32, u32), pose: Option<crate::phone_pose::Pose>) -> Read {
+    let mut r = read_screen_measured(ocr, rgba, fw, fh, screen);
+    // (the screen's corners from the pose turned to the lines' slant — see phone_pose::Pose::screen_quad_turned)
+    let turn = (r.angle.abs() >= 1.0).then_some(r.angle);
+    let pose_quad = pose.map(|p| {
+        let t = turn.filter(|t| (t - p.tilt(fw, fh)).abs() < 8.0);
+        p.screen_quad_turned(fw, fh, t.or(Some(p.tilt(fw, fh))))
+    });
+    // (corners found by brightness that slant unlike the screen's lines — a corner taken from the phone's body
+    // or the hand, 3° or more off — are not the screen's: the layer drawn on them was turned against the text)
+    if let (Some(q), Some(_)) = (r.quad, pose) {
+        let slant = |a: (f64, f64), b: (f64, f64)| (b.1 - a.1).atan2(b.0 - a.0).to_degrees();
+        let edges = (slant(q[0], q[1]) + slant(q[3], q[2])) / 2.0;
+        let lines = turn.unwrap_or(0.0);
+        if (edges - lines).abs() >= 3.0 {
+            r.quad = None;
+            r.quad_in_pieces = None;
+        }
+    }
+    if r.quad.is_none() {
+        let (ccx, ccy) = (screen.0 as f64 + screen.2 as f64 / 2.0, screen.1 as f64 + screen.3 as f64 / 2.0);
+        match (&r.upright, r.screen) {
+            // (read upright: the screen's own edges there are the corners in the pieces' frame; turned by the
+            // angle back, the corners in the frame — upright() took each point from c + R(angle)(p − c))
+            (Some(_), Some(e)) => {
+                let (x, y, w, h) = (e.0 as f64, e.1 as f64, e.2 as f64, e.3 as f64);
+                let qi = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)];
+                let (sin, cos) = r.angle.to_radians().sin_cos();
+                r.quad = Some(qi.map(|(px, py)| (ccx + (px - ccx) * cos - (py - ccy) * sin, ccy + (px - ccx) * sin + (py - ccy) * cos)));
+                r.quad_in_pieces = Some(qi);
+            }
+            _ => {
+                if let Some(q) = pose_quad {
+                    r.quad = Some(q);
+                    r.quad_in_pieces = match r.upright {
+                        Some(_) => {
+                            let (sin, cos) = (-r.angle).to_radians().sin_cos();
+                            Some(q.map(|(x, y)| (ccx + (x - ccx) * cos - (y - ccy) * sin, ccy + (x - ccx) * sin + (y - ccy) * cos)))
+                        }
+                        None => Some(q),
+                    };
+                }
+            }
+        }
+    }
+    r
+}
+
+fn read_screen_measured(ocr: &Ocr, rgba: &[u8], fw: u32, fh: u32, screen: (u32, u32, u32, u32)) -> Read {
     let quad = screen_quad(rgba, fw, fh, screen);
     let (pieces, angle) = read_screen_at(ocr, rgba, fw, fh, screen);
     if angle.abs() < 1.0 || angle.abs() > 35.0 {
@@ -1594,11 +1649,32 @@ pub fn pieces(words: &[Word], crop_w: u32, crop_h: u32) -> Vec<Piece> {
         let y1 = ws.iter().map(|w| w.rect.1 + w.rect.3).max().unwrap_or(0);
         (x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
     };
+    // (a chat's header — the contact's name alone at the screen's top — is a piece of its own: the message
+    // scrolled up under the header bar sits right below it, and was read as one piece with it, "Donnie TO MY
+    // TRAILER! Comprendo?"; and that message's line cut by the bar — less than 0.6 of a line's height showing
+    // — is no line to translate. As CouchSubs' PhoneChat: edgeCut, cutHeight)
+    let header = lines.first().is_some_and(|l| {
+        let (_, y, _, _) = span(l);
+        y < crop_h / 8 && l.len() <= 4
+    });
+    if header {
+        let (_, hy, _, hh) = span(&lines[0]);
+        let below = hy + hh;
+        lines = lines
+            .into_iter()
+            .enumerate()
+            .filter(|(i, l)| {
+                let (_, y, _, h) = span(l);
+                *i == 0 || !(y < below + lh * 2 && h * 10 < lh * 6)
+            })
+            .map(|(_, l)| l)
+            .collect();
+    }
     // lines into pieces: a gap of more than a line's height between them starts the next
     let mut groups: Vec<Vec<Vec<&Word>>> = Vec::new();
-    for mut l in lines {
+    for (i, mut l) in lines.into_iter().enumerate() {
         l.sort_by_key(|w| w.rect.0);
-        let starts_new = groups.last().and_then(|g| g.last()).is_none_or(|prev| {
+        let starts_new = (header && i == 1) || groups.last().and_then(|g| g.last()).is_none_or(|prev| {
             let (_, py, _, ph) = span(prev);
             let (_, y, _, _) = span(&l);
             y.saturating_sub(py + ph) > lh * 4 / 5
@@ -1872,6 +1948,21 @@ mod tests {
         // another message in that place (scrolled): new
         let other = steady(&mut seen, vec![p("Whatever you say.", 748)], (700, 490, 402, 420), t + std::time::Duration::from_millis(1100));
         assert_eq!(other[0].en, "Whatever you say.");
+    }
+
+    #[test]
+    fn a_chat_s_header_is_its_own_piece_and_a_line_cut_by_it_is_dropped() {
+        // "Donnie" in the header bar; under it the last line of a message cut by the bar (half its height),
+        // then that message's last line, then the next bubble
+        let words = vec![
+            w("Donnie", 150, 20, 90),
+            Word { text: "TO".into(), rect: (20, 52, 30, 9), line: 0 },
+            Word { text: "TRAILER!".into(), rect: (60, 52, 90, 9), line: 0 },
+            w("Comprendo?", 20, 70, 120),
+            w("Dropped", 120, 160, 80), w("that", 205, 160, 40), w("stuff", 250, 160, 50),
+        ];
+        let p = pieces(&words, 400, 700);
+        assert_eq!(p.iter().map(|p| (p.en.as_str(), p.title)).collect::<Vec<_>>(), vec![("Donnie", true), ("Comprendo?", false), ("Dropped that stuff", false)]);
     }
 
     #[test]

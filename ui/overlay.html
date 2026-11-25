@@ -91,6 +91,7 @@
       if (PHONE) {
         invoke("get_phone").then((p) => { phone = p; draw(); }).catch(() => {});
         listen("phone", (e) => { phone = e.payload; draw(); });
+        listen("phone-anchor", (e) => AS.phoneAnchor(e.payload));
       }
       listen("cover", (e) => {
         if (e.payload.cover) seenAll[e.payload.area] = e.payload.cover; else delete seenAll[e.payload.area];

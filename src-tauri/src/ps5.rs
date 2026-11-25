@@ -483,7 +483,9 @@ impl ToShared {
     /// Time for the next frame read for text: as the timing says, and with smooth play no more than
     /// once every SMOOTH_READ.
     fn full_due(&self, last: Instant) -> bool {
-        self.shared.full_due(last) && (!g().smooth.load(Ordering::Relaxed) || last.elapsed() >= SMOOTH_READ)
+        // (the phone's anchor follows its screen on every frame while it's up: full frames at the capture rate
+        // then, else the Arabic on the phone would move in steps of SMOOTH_READ)
+        self.shared.full_due(last) && (!g().smooth.load(Ordering::Relaxed) || last.elapsed() >= SMOOTH_READ || vi_translator_core::phone_anchor::with(|a| a.is_set()))
     }
 }
 

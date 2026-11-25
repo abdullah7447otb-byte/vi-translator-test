@@ -59,11 +59,12 @@
           }
         }
         AS.renderScreen(screenEl, state.screen, state.reason || [], state.profile_opts);
-        // (GTA VI's phone held up: its translations beside it)
+        // (GTA VI's phone held up: its Arabic drawn inside its screen, moved by the anchor)
         if (!state.screen && state.phone) {
           const ph = document.createElement("div");
           Object.assign(ph.style, { position: "absolute", left: "0", top: "0", width: W + "px", height: H + "px" });
           areasEl.appendChild(ph);
+          AS.phoneAnchor(state.phone_anchor || null);
           AS.renderPhone(ph, state.phone);
         }
       }

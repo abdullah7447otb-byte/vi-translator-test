@@ -56,6 +56,9 @@ jobs:
           # (the real-frame test must have run, not skipped)
           cargo test --release --target ${{ matrix.target }} -p vi-translator-core --test phone_frames -- --nocapture 2>&1 | tee phone-frames.txt
           grep -q "test result: ok" phone-frames.txt && ! grep -q "skipped" phone-frames.txt
+          # (the anchor on a shaken, turning 30 s clip made from the real phone frames)
+          cargo test --release --target ${{ matrix.target }} -p vi-translator-core --test phone_stress -- --nocapture 2>&1 | tee phone-stress.txt
+          grep -q "frames tracked" phone-stress.txt
 
       - name: Build (Windows)
         if: matrix.os == 'windows'
@@ -73,6 +76,27 @@ jobs:
           npx --yes @tauri-apps/cli@2.12.5 build --target universal-apple-darwin
           mkdir -p ../out
           cp ../target/universal-apple-darwin/release/bundle/dmg/*.dmg ../out/VI-Translator-macos.dmg
+
+      # The app's own reading (Apple Vision, the offline translator) on CouchSubs' real GTA VI phone frames,
+      # drawn by the app's own code in headless Chrome, and checked (tools/phone_render.py): every message's
+      # Arabic inside its own bubble on the game's phone, one text size, turned as the phone is, no English
+      # left in a translated bubble. The renders are an artifact.
+      - name: Phone renders (macOS)
+        if: matrix.os == 'macos'
+        run: |
+          APP=target/universal-apple-darwin/release/vi-translator
+          F="$VIT_FRAMES"
+          mkdir -p phone-renders
+          "$APP" --probe-phone phone-renders/probe.json "$F/gta6-telefon-sohbet-1.jpg" "$F/gta6-telefon-sohbet-2.jpg" "$F/gta6-telefon-ana-1.jpg" "$F/gta6-telefon-ana-2.jpg" "$F/gta6-n4-bildirim.jpg"
+          python3 -m pip install --quiet --break-system-packages playwright==1.63.0 || python3 -m pip install --quiet playwright==1.63.0
+          python3 tools/phone_render.py phone-renders/probe.json ui phone-renders --app "$APP"
+
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.os == 'macos'
+        with:
+          name: phone-renders
+          path: phone-renders/*
+          if-no-files-found: warn
 
       - uses: actions/upload-artifact@v4
         with:

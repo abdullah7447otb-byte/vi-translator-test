@@ -48,6 +48,34 @@ impl Pose {
         let w = h * 225.0 / 400.0 * 0.25;
         Region { top: self.top_y + h * 0.012, bottom: self.bottom_y - h * 0.015, left: self.top_x.min(self.bottom_x) - w, right: self.top_x.max(self.bottom_x) + w }
     }
+    /// The phone's screen's four corners in a `fw`×`fh` frame (top left, top right, bottom right, bottom
+    /// left, pixels), from the pose alone: along the phone's axis from its earpiece to its home bar, the screen
+    /// from 3 % to 97.5 % of the way, as wide as 0.54 of that length (GTA VI's phone, measured on CouchSubs'
+    /// frames). For a tilted phone whose screen edges aren't found by brightness.
+    pub fn screen_quad(&self, fw: u32, fh: u32) -> [(f64, f64); 4] {
+        self.screen_quad_turned(fw, fh, None)
+    }
+
+    /// `screen_quad`, turned to `turn` degrees clockwise (the screen's text lines' own slant, when it is read:
+    /// a phone tilted in the hand towards the camera leans its edges more than its lines, and the Arabic follows
+    /// the lines), about the phone's middle.
+    pub fn screen_quad_turned(&self, fw: u32, fh: u32, turn: Option<f64>) -> [(f64, f64); 4] {
+        let (tx0, ty0) = (self.top_x * fw as f64, self.top_y * fh as f64);
+        let (bx0, by0) = (self.bottom_x * fw as f64, self.bottom_y * fh as f64);
+        let len = ((bx0 - tx0).powi(2) + (by0 - ty0).powi(2)).sqrt().max(1.0);
+        let (mx, my) = ((tx0 + bx0) / 2.0, (ty0 + by0) / 2.0);
+        // (the axis from the earpiece to the home bar: turned clockwise by θ, (−sin θ, cos θ))
+        let theta = turn.unwrap_or_else(|| self.tilt(fw, fh)).to_radians();
+        let (ux, uy) = (-theta.sin(), theta.cos());
+        let (tx, ty) = (mx - ux * len / 2.0, my - uy * len / 2.0);
+        // (the axis turned a quarter counter-clockwise points to the screen's left: −x for an upright phone)
+        let (nx, ny) = (-uy, ux);
+        let half = 0.27 * len;
+        let _ = (bx0, by0);
+        let at = |t: f64, side: f64| (tx + ux * t * len + nx * side * half, ty + uy * t * len + ny * side * half);
+        [at(0.03, 1.0), at(0.03, -1.0), at(0.975, -1.0), at(0.975, 1.0)]
+    }
+
     /// The phone's lean in the frame, degrees clockwise (its bottom to the right of its top: positive),
     /// measured in pixels of a `fw`×`fh` frame.
     pub fn tilt(&self, fw: u32, fh: u32) -> f64 {
@@ -430,6 +458,11 @@ impl Tracker {
         (self.shown, change)
     }
 
+    /// The phone as shown now.
+    pub fn shown(&self) -> Option<Pose> {
+        self.shown
+    }
+
     pub fn reset(&mut self) {
         *self = Tracker { miss_grace: self.miss_grace, ..Default::default() };
     }
@@ -483,6 +516,15 @@ mod tests {
         let mut t = Tracker::default();
         t.sample(Some(full), 1920, 1080);
         assert_eq!(t.sample(Some(full), 1920, 1080).0, None);
+    }
+
+    #[test]
+    fn an_upright_phone_s_screen_corners_go_round_clockwise() {
+        let p = Pose { top_x: 0.70, top_y: 0.20, bottom_x: 0.70, bottom_y: 0.86 };
+        let q = p.screen_quad(1920, 1080);
+        // top left, top right, bottom right, bottom left
+        assert!(q[0].0 < q[1].0 && q[3].0 < q[2].0 && q[0].1 < q[3].1 && q[1].1 < q[2].1, "{q:?}");
+        assert!(((q[1].0 - q[0].0) - 0.54 * 0.66 * 1080.0).abs() < 1.0);
     }
 
     #[test]

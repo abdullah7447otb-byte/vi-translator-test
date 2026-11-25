@@ -17,6 +17,7 @@ mod ocr_engine;
 mod overlay;
 mod picture_find;
 mod preview_shot;
+mod probe;
 #[cfg(debug_assertions)]
 mod dev_debug;
 mod lan;
@@ -994,6 +995,31 @@ fn ocr_loop(app: AppHandle, ctx: engine::Context, shared: Arc<Shared>) {
     }
 }
 
+/// GTA VI's phone screen followed on every captured frame while its anchor is set (a reading set it up:
+/// vi_translator_core::phone_anchor): its corners now go to the window and overlays as `phone-anchor`
+/// events, and to the TV and OBS pages in the state.
+fn anchor_loop(app: AppHandle, shared: Arc<Shared>) {
+    use vi_translator_core::phone_anchor;
+    vi_translator_core::perf::lower_this_thread();
+    let mut last = 0u64;
+    loop {
+        if !phone_anchor::with(|a| a.is_set()) {
+            std::thread::sleep(Duration::from_millis(15));
+            continue;
+        }
+        let Some(f) = shared.latest().filter(|f| f.seq != last) else {
+            std::thread::sleep(Duration::from_millis(2));
+            continue;
+        };
+        last = f.seq;
+        let (moved, generation) = phone_anchor::with(|a| (a.feed(&f.rgba, f.w, f.h, f.seq), a.generation));
+        if let Some(ev) = phone_anchor::event(generation, &moved, f.w, f.h) {
+            let _ = app.emit("phone-anchor", ev.clone());
+            *shared.live.phone_anchor.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ev);
+        }
+    }
+}
+
 /// How the app keeps up, over the last minute (see vi_translator_core::perf).
 #[tauri::command]
 fn perf_status() -> serde_json::Value {
@@ -1842,6 +1868,29 @@ fn main() {
         }
         return;
     }
+    // `--probe-phone <out.json> <frame>…`: the phone read and translated in still frames (see probe.rs)
+    if let Some(i) = args.iter().position(|a| a == "--probe-phone") {
+        let (Some(out), files) = (args.get(i + 1), args.get(i + 2..).unwrap_or(&[])) else {
+            vi_translator_core::vlog!("usage: --probe-phone <out.json> <frame>…");
+            std::process::exit(2);
+        };
+        if let Err(e) = probe::probe_phone(out, files) {
+            vi_translator_core::vlog!("probe-phone: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--ocr-boxes") {
+        let (Some(pic), Some(boxes)) = (args.get(i + 1), args.get(i + 2)) else {
+            vi_translator_core::vlog!("usage: --ocr-boxes <picture> <boxes.json>");
+            std::process::exit(2);
+        };
+        if let Err(e) = probe::ocr_boxes(pic, boxes) {
+            vi_translator_core::vlog!("ocr-boxes: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--translate-frames") {
         let (Some(video), Some(times), Some(out)) = (args.get(i + 1), args.get(i + 2), args.get(i + 3)) else {
             vi_translator_core::vlog!("usage: --translate-frames <video> <times file> <out dir>");
@@ -2054,6 +2103,10 @@ fn main() {
                 let ctx = engine::Context { cfg: cfg.clone(), live: shared.live.clone(), memory: memory.clone(), sink: sink.clone(), paths: paths() };
                 let (h, s) = (handle.clone(), shared.clone());
                 vi_translator_core::log::spawn_supervised("reading", move || ocr_loop(h.clone(), ctx.clone(), s.clone()));
+            }
+            {
+                let (h, s) = (handle.clone(), shared.clone());
+                vi_translator_core::log::spawn_supervised("phone-anchor", move || anchor_loop(h.clone(), s.clone()));
             }
             {
                 let (h, c, s) = (handle.clone(), cfg.clone(), shared.clone());

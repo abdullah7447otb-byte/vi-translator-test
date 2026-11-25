@@ -456,6 +456,13 @@ window.AS = (() => {
 
   function renderPhone(root, P, fit, again) {
     root.innerHTML = "";
+    // (the Arabic inside the game's phone: see renderPhoneInPlace. The second phone beside it, below, only
+    // with the hidden legacy switch)
+    if (!(typeof window !== "undefined" && window.VIT_SIDE_PHONE)) {
+      if (P && P.chat) renderChatInPlace(root, P.chat);
+      if (P && P.pieces && P.pieces.length) renderPhoneInPlace(root, P);
+      return;
+    }
     if (P && P.chat) renderChat(root, P.chat);
     // (the phone not read for a moment — a frame it wasn't found in: the last one drawn stays up a little)
     // (`replay`: the last phone drawn again — its text's size and everything as a reading's, only nothing measured
@@ -1833,5 +1840,172 @@ window.AS = (() => {
   // An area's text style: its own, else the profile's (areas from before had none of their own).
   const styleOf = (area, base) => (area && area.style) || base;
 
-  return { _phone: { PHONE_BOX: PHONE_BOX, PHONE_FIT: PHONE_FIT, PHONE_QUAD: PHONE_QUAD }, STEADY, steady, setLang, styleOf, esc, segHtml, rectFor, alignOf, anchor, renderBox, renderScreen, matchedPx, placeUnderText, atText, placeAtText, look, COVER, fxOf, coverLook, drawLine, ridePlace, measureBox, renderPhone };
+
+  // ---- GTA VI's phone, its Arabic drawn inside its own screen ------------------------------------
+  // Ported from CouchSubs (AGPL-3.0, (C) 2026 Sinan Yorulmaz), commit bc54ff7: the idea and rules of
+  // core/Sources/CouchSubsCore/PhoneTwin.swift and docs/ekran-capasi.md (the layer laid out once on the flat
+  // screen, moved onto the phone by the anchor's transform only). Each translated message covers its own
+  // bubble on the game's phone, in the bubble's colours, with its Arabic; the rest of the screen (pictures,
+  // emojis sent alone, the header with its contact) stays the game's own picture. No second phone, no panel.
+  // P: the phone event (see the core's engine: pieces with `uv`/`box_uv` on the screen, `quad` its corners).
+  // The anchor (`phone-anchor` events: {gen, quad} or {gen, lost}) moves the layer every frame.
+  const INPLACE = { anchor: null, layers: new Set(), raf: 0, last: {} };
+  const INPLACE_W = 360;
+
+  function quadOf(P) {
+    const A = INPLACE.anchor;
+    if (P && P.anchor != null && A && A.gen === P.anchor) return A.lost ? null : A.quad;
+    return P && P.quad ? P.quad : null;
+  }
+
+  // the layer's transform onto the phone's screen now: from the flat layout (INPLACE_W × its height) to the
+  // screen's four corners in the root (px)
+  function placeLayer(L) {
+    const q = quadOf(L.P);
+    if (!q || !L.el.isConnected) {
+      L.el.style.visibility = "hidden";
+      return;
+    }
+    const W = L.root.clientWidth, H = L.root.clientHeight;
+    const dst = q.map((c) => [c[0] * W, c[1] * H]);
+    L.el.style.transform = matrix3d([[0, 0], [INPLACE_W, 0], [INPLACE_W, L.fh], [0, L.fh]], dst);
+    L.el.style.visibility = "visible";
+  }
+
+  /** A `phone-anchor` event: the layers move on the next frame (only their transform: nothing is laid out). */
+  function phoneAnchor(A) {
+    INPLACE.anchor = A || null;
+    if (INPLACE.raf) return;
+    INPLACE.raf = requestAnimationFrame(() => {
+      INPLACE.raf = 0;
+      for (const L of [...INPLACE.layers]) {
+        if (!L.el.isConnected) INPLACE.layers.delete(L);
+        else placeLayer(L);
+      }
+    });
+  }
+
+  // the text a piece shows: its Arabic with its emojis as pictures (a name above it in a group chat)
+  function inplaceHtml(p) {
+    const name = p.name ? `<div style="font-weight:700;unicode-bidi:plaintext;opacity:.85">${esc(p.name)}</div>` : "";
+    return `${name}<div style="unicode-bidi:plaintext;white-space:pre-wrap;overflow-wrap:anywhere">${withEmoji(p.ar, p.emoji)}</div>`;
+  }
+
+  function renderPhoneInPlace(root, P) {
+    const W = root.clientWidth, H = root.clientHeight;
+    if (!W || !H || !P || !P.pieces) return;
+    const q = quadOf(P);
+    // (no corners known: the screen's box upright — the pieces' own boxes on the picture)
+    const corners = q || (P.screen ? [[P.screen[0], P.screen[1]], [P.screen[0] + P.screen[2], P.screen[1]], [P.screen[0] + P.screen[2], P.screen[1] + P.screen[3]], [P.screen[0], P.screen[1] + P.screen[3]]] : null);
+    if (!corners) return;
+    const px = corners.map((c) => [c[0] * W, c[1] * H]);
+    const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+    const sw = (dist(px[0], px[1]) + dist(px[3], px[2])) / 2, sh = (dist(px[0], px[3]) + dist(px[1], px[2])) / 2;
+    if (sw < 8 || sh < 8) return;
+    const fh = Math.round((INPLACE_W * sh) / sw);
+    // where a piece is on the flat screen (its bubble's box, else its words' box with the phone's padding)
+    const flat = (p) => {
+      if (p.box_uv) return [p.box_uv[0] * INPLACE_W, p.box_uv[1] * fh, p.box_uv[2] * INPLACE_W, p.box_uv[3] * fh];
+      if (p.uv) {
+        const [x, y, w, h] = [p.uv[0] * INPLACE_W, p.uv[1] * fh, p.uv[2] * INPLACE_W, p.uv[3] * fh];
+        const pad = 0.022 * INPLACE_W;
+        return [x - pad, y - pad * 0.6, w + 2 * pad, h + 1.2 * pad];
+      }
+      // (no place on the screen: from its place in the picture, if the screen is upright)
+      if (!q && P.screen) {
+        const [sx, sy, sw0, sh0] = P.screen;
+        return [((p.rect[0] - sx) / sw0) * INPLACE_W, ((p.rect[1] - sy) / sh0) * fh, (p.rect[2] / sw0) * INPLACE_W, (p.rect[3] / sh0) * fh];
+      }
+      return null;
+    };
+    // the pieces drawn: translated messages and labels; not the header (the contact's name stays the game's),
+    // not a message still being translated (the game's English stays until its Arabic comes: nothing moves)
+    const shown = P.pieces.filter((p) => !p.title && !p.pending && p.ar && p.ar.trim() && flat(p));
+    // the same chat with the same Arabic: its layout as it was (only its place moves)
+    const key = shown.map((p) => p.ar + "@" + flat(p).map((v) => Math.round(v / 6)).join(",")).join("|") + "#" + fh;
+    // (the windows clear their layer on every event and give a new root: the same layout is moved into it,
+    // never laid out again)
+    const keep = INPLACE.last.key === key && INPLACE.last.el && INPLACE.last.W === W && INPLACE.last.H === H;
+    let el;
+    if (keep) {
+      el = INPLACE.last.el;
+      root.appendChild(el);
+    } else {
+      el = document.createElement("div");
+      el.className = "phone-inplace";
+      Object.assign(el.style, {
+        position: "absolute", left: "0", top: "0", width: `${INPLACE_W}px`, height: `${fh}px`,
+        transformOrigin: "0 0", pointerEvents: "none", visibility: "hidden", direction: dir(),
+        fontFamily: `"Noto Sans Arabic Medium", ${fonts()}`, willChange: "transform",
+      });
+      const boxes = [];
+      for (const p of shown) {
+        const [x, y, w, h] = flat(p);
+        const d = document.createElement("div");
+        Object.assign(d.style, {
+          position: "absolute", left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px`, boxSizing: "border-box",
+          background: p.bg || "#f8f9fb", color: p.fg || "#16171b",
+          borderRadius: p.label ? `${0.02 * INPLACE_W}px` : `${(p.end ? 0.05 : 0.035) * INPLACE_W}px`,
+          border: p.edge ? `${0.006 * INPLACE_W}px solid ${p.edge}` : "none",
+          padding: `${0.012 * INPLACE_W}px ${0.025 * INPLACE_W}px`, overflow: "hidden",
+          display: "flex", flexDirection: "column", justifyContent: "center",
+          textAlign: p.label ? "center" : "start", fontWeight: p.label || p.boxed ? "600" : "500", lineHeight: "1.3",
+        });
+        d.innerHTML = inplaceHtml(p);
+        el.appendChild(d);
+        boxes.push(d);
+      }
+      root.appendChild(el);
+      // one text size for the whole chat, the game's own (about 4.5 % of the screen's width) if every bubble
+      // takes its Arabic at it; else smaller, down to three quarters of it; a bubble that still can't takes its
+      // own smaller size: no Arabic ever runs out of its bubble
+      const base = 0.045 * INPLACE_W;
+      const fits = (d) => d.scrollHeight <= d.clientHeight + 1 && d.scrollWidth <= d.clientWidth + 1;
+      let fs = base;
+      for (; fs >= base * 0.75; fs *= 0.95) {
+        el.style.fontSize = `${fs}px`;
+        if (boxes.every(fits)) break;
+      }
+      fs = Math.max(fs, base * 0.75);
+      el.style.fontSize = `${fs}px`;
+      for (const d of boxes) {
+        let own = fs;
+        while (!fits(d) && own > base * 0.4) {
+          own *= 0.93;
+          d.style.fontSize = `${own}px`;
+        }
+      }
+      el.dataset.fs = fs.toFixed(2);
+      INPLACE.last = { key, el, W, H };
+    }
+    for (const o of [...INPLACE.layers]) if (o.el === el || !o.el.isConnected) INPLACE.layers.delete(o);
+    const L = { el, root, P, fh };
+    INPLACE.layers.add(L);
+    placeLayer(L);
+  }
+
+  // GTA VI's message bubble at the bottom right: its Arabic over the game's bubble, in its colours (the
+  // bubble is fixed on the screen: no anchor)
+  function renderChatInPlace(root, C) {
+    const W = root.clientWidth, H = root.clientHeight;
+    if (!C || !C.ar || !W || !H) return;
+    const [x, y, w, h] = [C.rect[0] * W, C.rect[1] * H, C.rect[2] * W, C.rect[3] * H];
+    const d = document.createElement("div");
+    const fs = Math.max(11, 0.0185 * H);
+    Object.assign(d.style, {
+      position: "absolute", left: `${x}px`, top: `${y}px`, width: `${w}px`, minHeight: `${h}px`, boxSizing: "border-box",
+      background: C.bg || "#c8c9cc", color: C.fg || "#1e1f24", borderRadius: `${0.45 * fs}px`, borderBottomLeftRadius: "0",
+      padding: `${0.4 * fs}px ${0.6 * fs}px`, direction: dir(), fontFamily: `"Noto Sans Arabic Medium", ${fonts()}`,
+      fontSize: `${fs}px`, lineHeight: "1.45", overflow: "hidden",
+    });
+    const av = 1.75 * fs;
+    const pic = C.avatar ? `<img src="${C.avatar}" style="width:${av}px;height:${av}px;border-radius:50%;object-fit:cover;flex:none">` : "";
+    d.innerHTML =
+      (C.name ? `<div style="display:flex;align-items:center;gap:${(0.45 * fs).toFixed(1)}px">${pic}<span style="font-weight:700;color:${C.name_fg || "#15161a"};unicode-bidi:plaintext">${esc(C.name)}</span></div>` : "") +
+      `<div style="unicode-bidi:plaintext;white-space:pre-wrap">${withEmoji(C.ar, C.emoji)}</div>`;
+    root.appendChild(d);
+    // (a longer Arabic grows upward from the bubble's bottom, as the game's does)
+    if (d.offsetHeight > h) d.style.top = `${y + h - d.offsetHeight}px`;
+  }
+  return { _phone: { PHONE_BOX: PHONE_BOX, PHONE_FIT: PHONE_FIT, PHONE_QUAD: PHONE_QUAD }, STEADY, steady, setLang, styleOf, esc, segHtml, rectFor, alignOf, anchor, renderBox, renderScreen, matchedPx, placeUnderText, atText, placeAtText, look, COVER, fxOf, coverLook, drawLine, ridePlace, measureBox, renderPhone, renderPhoneInPlace, renderChatInPlace, phoneAnchor, _inplace: INPLACE };
 })();

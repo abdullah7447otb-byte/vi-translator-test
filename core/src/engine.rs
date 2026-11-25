@@ -1431,35 +1431,34 @@ impl Reader {
                             }
                             scr
                         })
-                        .map(|scr| (scr, crate::phone::read_screen_any(ocr, &f.rgba, f.w, f.h, scr)))
+                        .map(|scr| {
+                            let pose = PHONE_TRACKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).shown();
+                            (scr, crate::phone::read_screen_with(ocr, &f.rgba, f.w, f.h, scr, pose))
+                        })
+                        .inspect(|(scr, r)| {
+                            if std::env::var_os("VIT_DEBUG_PHONE").is_some() {
+                                crate::vlog!("[phone] screen {scr:?}: {} pieces: {:?}", r.pieces.len(), r.pieces.iter().map(|p| (p.title, p.avatar.is_some(), p.en.as_str())).collect::<Vec<_>>());
+                            }
+                        })
                         .filter(|(_, r)| !r.pieces.is_empty())
-                        // (a chat only — its header, the contact's name at the screen's top, read now or a moment ago
-                        // with no list's rows since: the chat list, the phone's other apps and a light doorway taken
-                        // for a screen get no second phone)
-                        .filter(|(_, r)| {
-                            let mut at = PHONE_CHAT_AT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        // (what the phone shows — a chat, the chat list, the home screen, a card — all of it: the phone is
+                        // sure by now, found by its shape over two readings or by its own buttons; a light doorway never
+                        // gets here. Before, only a chat with its header read was let through, and the chat list and
+                        // home screen were never translated. The chat's header and messages are kept to tell one chat
+                        // from another: see same_chat)
+                        .inspect(|(_, r)| {
                             let now = Instant::now();
-                            if r.pieces.iter().any(|p| p.avatar.is_some() && !p.title) {
-                                *at = None;
-                                return false;
-                            }
                             let words = chat_words(&r.pieces);
+                            let mut at = PHONE_CHAT_AT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             let mut shown = PHONE_CHAT_TEXT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                            if r.pieces.iter().any(|p| p.title) {
-                                *at = Some(now);
+                            if r.pieces.iter().any(|p| p.title) || at.is_none() || !same_chat(&shown, &words) {
                                 *shown = words;
-                                return true;
-                            }
-                            // (the header unread for a while — a short name read now and then — but the same chat's
-                            // messages: still that chat; after 3 s it went, and came back with the next header read)
-                            if at.is_some() && same_chat(&shown, &words) {
-                                *at = Some(now);
+                            } else {
                                 shown.extend(words);
                                 shown.sort();
                                 shown.dedup();
-                                return true;
                             }
-                            at.is_some_and(|t| now.saturating_duration_since(t) < Duration::from_millis(3000))
+                            *at = Some(now);
                         })
                 } else {
                     None
@@ -1490,6 +1489,12 @@ impl Reader {
                                 },
                             }
                         };
+                        // (the screen followed on every frame from here, so its Arabic stays stuck to it: set up on this
+                        // frame with the corners just found; kept while readings find them near it — see phone_anchor)
+                        if let Some(q) = read.quad {
+                            crate::phone_anchor::with(|a| a.place(&f.rgba, f.w, f.h, q));
+                        }
+                        let anchor_gen = crate::phone_anchor::with(|a| a.is_set().then_some(a.generation));
                         let photos: Vec<[f64; 4]> = read.photos.iter().filter_map(|r| quad_in.and_then(|q| crate::phone::on_screen(q, *r))).collect();
                         // (an emoji sent on its own: where it is on the screen, and its picture as it is)
                         let stickers: Vec<serde_json::Value> = read
@@ -1656,6 +1661,8 @@ impl Reader {
                                         "rect": frac(p.rect), "uv": uv(p.rect), "box_uv": p.bubble.and_then(uv),
                                         "pending": pending,
                                         "ar": ar,
+                                        // (the English it covers: the tests check none of it is left in the drawn bubble)
+                                        "en": p.en,
                                         "name": p.name.as_ref().map(|n| speaker::name_in(&lang, n, None)),
                                         "bg": hex(p.look.bg),
                                         "fg": hex(p.look.fg),
@@ -1674,7 +1681,7 @@ impl Reader {
                             }
                         }
                         let sbg = crate::phone::screen_bg(fr, f.w, f.h, scr, scr.1, scr.1 + scr.3);
-                        let v = serde_json::json!({ "screen": frac(scr), "screen_bg": format!("#{:02x}{:02x}{:02x}", sbg[0], sbg[1], sbg[2]), "pieces": out, "list": pieces.iter().any(|p| p.avatar.is_some() && !p.title), "buttons": btns, "turn": turn, "slant": slant, "screen_own": screen_own.map(frac), "quad": quad.map(|q| q.map(|(x, y)| [x / w, y / h])), "photos": photos, "stickers": stickers });
+                        let v = serde_json::json!({ "screen": frac(scr), "screen_bg": format!("#{:02x}{:02x}{:02x}", sbg[0], sbg[1], sbg[2]), "pieces": out, "list": pieces.iter().any(|p| p.avatar.is_some() && !p.title), "buttons": btns, "turn": turn, "slant": slant, "screen_own": screen_own.map(frac), "quad": quad.map(|q| q.map(|(x, y)| [x / w, y / h])), "photos": photos, "stickers": stickers, "anchor": anchor_gen });
                         let mut up = ctx.live.phone.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         if up.as_ref() != Some(&v) {
                             *up = Some(v.clone());
@@ -1781,6 +1788,11 @@ impl Reader {
                                 let gone = ctx.live.phone_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none_or(|t| now.saturating_duration_since(t) > phone_hold(interval_ms));
                                 if gone && up.is_some() {
                                     *up = None;
+                                    if crate::phone_anchor::with(|a| a.lose("the phone was put away")) {
+                                        let g = crate::phone_anchor::with(|a| a.generation);
+                                        ctx.sink.emit("phone-anchor", serde_json::json!({ "gen": g, "lost": true }));
+                                        *ctx.live.phone_anchor.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                                    }
                                     *PHONE_CHAT_AT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                                     PHONE_CHAT_TEXT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
                                     *PHONE_PNG.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
