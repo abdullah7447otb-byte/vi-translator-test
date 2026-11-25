@@ -113,7 +113,7 @@ struct Inner {
     screen: Arc<dyn Screen>,
     /// encoded frames to the decoder thread (decoding on chiaki's own thread held up its network
     /// reading on slower computers: packets were lost and the picture broke up and stuttered)
-    to_decoder: Mutex<SyncSender<Vec<u8>>>,
+    to_decoder: Mutex<SyncSender<(Vec<u8>, i32)>>,
     /// a frame couldn't be queued: the decoder thread starts again from a key frame
     resync: Arc<AtomicBool>,
     opus: Mutex<Option<(opus::Decoder, u32)>>,
@@ -129,11 +129,11 @@ impl Handler for Inner {
         self.screen.event(&e);
     }
 
-    fn video(&self, frame: &[u8], frames_lost: i32) -> bool {
+    fn video(&self, frame: &[u8], frames_lost: i32, frame_index: i32) -> bool {
         if frames_lost > 0 {
             self.stats.net_lost.fetch_add(frames_lost as u64, Ordering::Relaxed);
         }
-        match self.to_decoder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).try_send(frame.to_vec()) {
+        match self.to_decoder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).try_send((frame.to_vec(), frame_index)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
                 self.stats.late.fetch_add(1, Ordering::Relaxed);
@@ -234,7 +234,7 @@ impl Drop for Player {
 
 /// The picture decoded on its own thread, frame by frame in the order they came.
 fn decode_thread(
-    rx: Receiver<Vec<u8>>,
+    rx: Receiver<(Vec<u8>, i32)>,
     mut dec: openh264::decoder::Decoder,
     resync: Arc<AtomicBool>,
     session: Arc<Mutex<Option<Session>>>,
@@ -255,7 +255,7 @@ fn decode_thread(
         }
     };
     while !stop.load(Ordering::Relaxed) {
-        let frame = match rx.recv_timeout(Duration::from_millis(100)) {
+        let (frame, index) = match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(f) => f,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
@@ -290,7 +290,15 @@ fn decode_thread(
             Err(e) => {
                 stats.bad_frames.fetch_add(1, Ordering::Relaxed);
                 screen.log(2, &format!("video: {e}"));
-                key_frame("a frame could not be decoded");
+                // (the PS5 told which frame, as chiaki does when its own decoder fails; and a key frame
+                // asked for if that isn't known)
+                if index >= 0 {
+                    if let Some(s) = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+                        s.report_corrupt(index, index);
+                    }
+                } else {
+                    key_frame("a frame could not be decoded");
+                }
             }
         }
     }

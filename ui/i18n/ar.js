@@ -452,4 +452,9 @@ I18N.add("ar", {
   "Keep the screen on": "خلّ الشاشة شغالة",
   "Save this session": "احفظ هالجلسة",
   "Save the correction": "احفظ التصحيح",
+  "Glossary (offline translator, Arabic)": "القاموس (المترجم المحلي، العربي)",
+  "Your own words for the free offline translator, one a line as English = Arabic (Wasted = خلصت عليك). They come before the built-in ones.": "كلماتك أنت للمترجم المحلي المجاني، كل سطر بهالشكل: الإنجليزي = العربي (Wasted = خلصت عليك). كلماتك لها الأولوية على الكلمات الجاهزة.",
+  "Delay": "التأخير",
+  "Smooth (a frame later, no stutter)": "سلس (متأخر إطار، بدون تقطيع)",
+  "Lowest delay": "أقل تأخير",
 });

@@ -80,7 +80,8 @@ typedef struct VitPsCallbacks
 	VitLogCb log;
 	void (*event)(int type, int arg, const char *text, void *user);
 	/** One encoded frame (H.264 or H.265 access unit). Return false if it could not be decoded. */
-	bool (*video)(const uint8_t *buf, size_t size, int frames_lost, bool recovered, void *user);
+	/* frame_index: the frame's number in the stream (for vit_session_report_corrupt) */
+	bool (*video)(const uint8_t *buf, size_t size, int frames_lost, bool recovered, int frame_index, void *user);
 	void (*audio_header)(int channels, int rate, int frame_size, void *user);
 	/** One Opus packet. */
 	void (*audio_frame)(const uint8_t *buf, size_t size, void *user);
@@ -92,6 +93,9 @@ void *vit_session_start(const char *host, const char regist_key[16], const uint8
 void vit_session_controller(void *session, uint32_t buttons, uint8_t l2, uint8_t r2, int16_t lx, int16_t ly, int16_t rx, int16_t ry);
 void vit_session_login_pin(void *session, const char *pin);
 void vit_session_request_idr(void *session);
+/* Tells the PS5 that frames start..end (their frame_index) could not be decoded, as chiaki does for
+ * a frame its video callback turned down: the PS5 then sends a picture that doesn't build on them. */
+void vit_session_report_corrupt(void *session, int start, int end);
 /** Ends the stream and frees it (waits for chiaki's threads). */
 void vit_session_free(void *session);
 

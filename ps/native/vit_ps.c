@@ -11,6 +11,8 @@
 #include <chiaki/log.h>
 #include <chiaki/regist.h>
 #include <chiaki/session.h>
+#include <chiaki/streamconnection.h>
+#include <chiaki/videoreceiver.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -279,7 +281,10 @@ static void event_cb(ChiakiEvent *event, void *user)
 static bool video_cb(uint8_t *buf, size_t buf_size, int32_t frames_lost, bool frame_recovered, void *user)
 {
 	Session *s = user;
-	return s->cb.video ? s->cb.video(buf, buf_size, (int)frames_lost, frame_recovered, s->cb.user) : true;
+	// (on chiaki's own thread: the frame being handed over is the receiver's current one)
+	ChiakiVideoReceiver *vr = s->session.stream_connection.video_receiver;
+	int index = vr ? (int)vr->frame_index_cur : -1;
+	return s->cb.video ? s->cb.video(buf, buf_size, (int)frames_lost, frame_recovered, index, s->cb.user) : true;
 }
 
 static void audio_header_cb(ChiakiAudioHeader *header, void *user)
@@ -378,6 +383,13 @@ void vit_session_request_idr(void *session)
 	Session *s = session;
 	if(s)
 		chiaki_session_request_idr(&s->session);
+}
+
+void vit_session_report_corrupt(void *session, int start, int end)
+{
+	Session *s = session;
+	if(s && start >= 0 && end >= start)
+		stream_connection_send_corrupt_frame(&s->session.stream_connection, (ChiakiSeqNum16)start, (ChiakiSeqNum16)end);
 }
 
 void vit_session_free(void *session)

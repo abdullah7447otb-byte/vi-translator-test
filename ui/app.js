@@ -1520,6 +1520,13 @@ function renderPreviewForm() {
   corner.value = $("fps").dataset.corner; // the corner actually used (an unknown value falls back to top right)
 }
 
+// The player's glossary for the free offline translator (Translator tab), saved as it's typed.
+function renderGlossary() {
+  const g = $("glossary");
+  if (document.activeElement !== g) g.value = cfg.glossary || "";
+}
+$("glossary").addEventListener("input", (e) => { cfg.glossary = e.target.value; save(false); });
+
 function renderTiming() {
   const form = $("timing-form");
   form.innerHTML = "";
@@ -2060,6 +2067,8 @@ const PICTURE_GLSL = `
       color = vec4(clamp(c, 0.0, 1.0), 1.0);
     }`;
 let pictureCompare = false; // "hold to compare": the picture as it comes, while held
+// the picture's delay: "smooth" (two frames may wait: network jitter doesn't show) or "low" (one)
+const pictureSmooth = () => { try { return localStorage.getItem("picture-delay") !== "low"; } catch { return true; } };
 function pictureNow() {
   const saved = cfg?.picture?.[cfg?.window_title || ""];
   const p = saved && saved.preset !== "custom" ? PICTURE_PRESETS[saved.preset] : saved;
@@ -2101,6 +2110,9 @@ function renderPicture() {
   panel.innerHTML = `<div class="pic-head"><b>${AS.esc(t("Picture"))}</b>
       <select id="pic-preset">${presets.map(([v, l]) => `<option value="${v}" ${(saved.preset || "default") === v ? "selected" : ""}>${AS.esc(l)}</option>`).join("")}</select></div>
     ${sliders.map(([k, l, mn, mx, st]) => `<label class="pic-row"><span>${AS.esc(l)}</span><input type="range" data-k="${k}" min="${mn}" max="${mx}" step="${st}" value="${cur[k]}"/><span class="v">${(+cur[k]).toFixed(2)}</span></label>`).join("")}
+    <label class="pic-row"><span>${AS.esc(t("Delay"))}</span><select id="pic-delay" style="grid-column: span 2">
+      <option value="smooth" ${pictureSmooth() ? "selected" : ""}>${AS.esc(t("Smooth (a frame later, no stutter)"))}</option>
+      <option value="low" ${pictureSmooth() ? "" : "selected"}>${AS.esc(t("Lowest delay"))}</option></select></label>
     <button class="btn" id="pic-compare" type="button">${AS.esc(t("Hold to compare"))}</button>
     <div class="muted small">${AS.esc(t("Only how the picture looks here: the text is read from the picture as it comes."))}</div>`;
   panel.querySelector("#pic-preset").addEventListener("change", (e) => {
@@ -2118,6 +2130,7 @@ function renderPicture() {
       keep(v);
     });
   }
+  panel.querySelector("#pic-delay").addEventListener("change", (e) => { try { localStorage.setItem("picture-delay", e.target.value); } catch {} });
   const cmp = panel.querySelector("#pic-compare");
   const hold = (on) => { pictureCompare = on; pictureImg(); };
   for (const ev of ["pointerdown"]) cmp.addEventListener(ev, () => hold(true));
@@ -2339,26 +2352,35 @@ async function pullPreview(url, run) {
   let seq = 0;
   let shownUrl = null;
   let first = true;
-  // A raw frame is drawn at the screen's next refresh, not the moment it arrives: frames come in with
-  // the screen's own rhythm instead of whenever a request happened to finish (judder). The next frame
-  // is asked for once the last one is drawn, so while the window is hidden (no refreshes) nothing is
-  // asked for, and the app stops making frames for it.
-  let pending = null;
-  let drawn = null;
-  const drawPending = () => {
-    const f = pending;
-    pending = null;
-    if (!f || run !== pullRun) return;
-    const ok = f.i420 ? i420Draw(f.data, f.w, f.h, f.bt709, f.full, f.stretch) : yuvDraw(f.data, f.w, f.h, f.bt709, f.full);
-    if (ok) {
-      frameShown();
-      canvas.hidden = false;
-      img.hidden = true;
-      if (first) { first = false; fitFrame(); }
+  // Raw frames are drawn one at each of the screen's refreshes, not the moment they arrive: frames come
+  // in with the screen's own rhythm instead of whenever a request happened to finish (judder). "Smooth"
+  // keeps up to two frames waiting, so a frame that comes a little late on the network doesn't show
+  // as a stutter (a frame's time later on screen); "Lowest delay" keeps one. More are asked for only
+  // while fewer wait, so while the window is hidden (no refreshes) nothing is asked for, and the app
+  // stops making frames for it.
+  const queue = [];
+  let wake = null; // resolves the wait for room in the queue
+  let drawing = false;
+  const drawOne = () => {
+    if (run !== pullRun) { drawing = false; if (wake) { const w = wake; wake = null; w(); } return; }
+    const f = queue.shift();
+    if (f) {
+      const ok = f.i420 ? i420Draw(f.data, f.w, f.h, f.bt709, f.full, f.stretch) : yuvDraw(f.data, f.w, f.h, f.bt709, f.full);
+      if (ok) {
+        frameShown();
+        canvas.hidden = false;
+        img.hidden = true;
+        if (first) { first = false; fitFrame(); }
+      }
+      if (wake) { const w = wake; wake = null; w(); }
     }
+    // (on while frames come; it stops when none wait, and the next frame starts it again)
+    if (queue.length) requestAnimationFrame(drawOne);
+    else drawing = false;
   };
+  const room = () => queue.length < (pictureSmooth() ? 2 : 1);
   while (run === pullRun) {
-    if (drawn) { await drawn; drawn = null; }
+    while (!room() && run === pullRun) await new Promise((res) => { wake = res; });
     if (run !== pullRun) break;
     try {
       const r = await fetch(`${url}?after=${seq}`, { cache: "no-store" });
@@ -2376,9 +2398,9 @@ async function pullPreview(url, run) {
         const h = Number(r.headers.get("X-Height"));
         const data = new Uint8Array(await r.arrayBuffer());
         if (run !== pullRun) break;
-        pending = { data, w, h, i420: kind === "application/x-i420", stretch: r.headers.get("X-Stretch") === "1",
-          bt709: r.headers.get("X-Matrix") !== "601", full: r.headers.get("X-Range") === "full" };
-        drawn = new Promise((res) => requestAnimationFrame(() => { drawPending(); res(); }));
+        queue.push({ data, w, h, i420: kind === "application/x-i420", stretch: r.headers.get("X-Stretch") === "1",
+          bt709: r.headers.get("X-Matrix") !== "601", full: r.headers.get("X-Range") === "full" });
+        if (!drawing) { drawing = true; requestAnimationFrame(drawOne); }
         continue;
       }
       const blobUrl = URL.createObjectURL(await r.blob());
@@ -2831,6 +2853,7 @@ function lockControls() {
   renderPages();
   renderAreas();
   renderTiming();
+  renderGlossary();
   renderPreviewForm();
   renderMemory();
   renderDebug();

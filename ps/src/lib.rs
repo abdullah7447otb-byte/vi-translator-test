@@ -37,7 +37,7 @@ mod ffi {
         pub user: *mut c_void,
         pub log: Option<LogCb>,
         pub event: Option<extern "C" fn(kind: c_int, arg: c_int, text: *const c_char, user: *mut c_void)>,
-        pub video: Option<extern "C" fn(buf: *const u8, size: usize, frames_lost: c_int, recovered: bool, user: *mut c_void) -> bool>,
+        pub video: Option<extern "C" fn(buf: *const u8, size: usize, frames_lost: c_int, recovered: bool, frame_index: c_int, user: *mut c_void) -> bool>,
         pub audio_header: Option<extern "C" fn(channels: c_int, rate: c_int, frame_size: c_int, user: *mut c_void)>,
         pub audio_frame: Option<extern "C" fn(buf: *const u8, size: usize, user: *mut c_void)>,
     }
@@ -82,6 +82,7 @@ mod ffi {
         pub fn vit_session_controller(s: *mut c_void, buttons: u32, l2: u8, r2: u8, lx: i16, ly: i16, rx: i16, ry: i16);
         pub fn vit_session_login_pin(s: *mut c_void, pin: *const c_char);
         pub fn vit_session_request_idr(s: *mut c_void);
+        pub fn vit_session_report_corrupt(s: *mut c_void, start: c_int, end: c_int);
         pub fn vit_session_free(s: *mut c_void);
     }
 }
@@ -324,8 +325,9 @@ pub enum Event {
 /// What a stream hands over (each on chiaki's threads).
 pub trait Handler: Send + Sync {
     fn event(&self, e: Event);
-    /// One encoded frame; false if it could not be decoded (a new key frame is then asked for).
-    fn video(&self, frame: &[u8], frames_lost: i32) -> bool;
+    /// One encoded frame, and its number in the stream (-1: not known); false if it could not be
+    /// decoded (a new key frame is then asked for).
+    fn video(&self, frame: &[u8], frames_lost: i32, frame_index: i32) -> bool;
     fn audio_header(&self, channels: u32, rate: u32);
     /// One Opus packet.
     fn audio(&self, packet: &[u8]);
@@ -387,11 +389,11 @@ extern "C" fn s_event(kind: c_int, arg: c_int, t: *const c_char, user: *mut c_vo
     handler(user).event(e);
 }
 
-extern "C" fn s_video(buf: *const u8, size: usize, frames_lost: c_int, _recovered: bool, user: *mut c_void) -> bool {
+extern "C" fn s_video(buf: *const u8, size: usize, frames_lost: c_int, _recovered: bool, frame_index: c_int, user: *mut c_void) -> bool {
     if buf.is_null() {
         return true;
     }
-    handler(user).video(unsafe { std::slice::from_raw_parts(buf, size) }, frames_lost)
+    handler(user).video(unsafe { std::slice::from_raw_parts(buf, size) }, frames_lost, frame_index)
 }
 
 extern "C" fn s_audio_header(channels: c_int, rate: c_int, _frame_size: c_int, user: *mut c_void) {
@@ -488,6 +490,12 @@ impl Session {
     /// Asks for a key frame (after the decoder lost its place).
     pub fn request_key_frame(&self) {
         unsafe { ffi::vit_session_request_idr(self.ptr) };
+    }
+
+    /// Tells the PS5 that the frames `start..=end` (their numbers as `Handler::video` had them)
+    /// couldn't be decoded, so its next picture doesn't build on them.
+    pub fn report_corrupt(&self, start: i32, end: i32) {
+        unsafe { ffi::vit_session_report_corrupt(self.ptr, start, end) };
     }
 }
 
