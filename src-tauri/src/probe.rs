@@ -84,7 +84,9 @@ pub fn probe_phone(out: &str, files: &[String]) -> anyhow::Result<()> {
         let anchor = events.iter().rev().find(|(e, _)| e == "phone-anchor").map(|(_, v)| v.clone()).unwrap_or(serde_json::Value::Null);
         let name = std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         vi_translator_core::vlog!("probe-phone: {name}: {} pieces, {:.1} s", phone["pieces"].as_array().map_or(0, |p| p.len()), started.elapsed().as_secs_f64());
-        results.insert(name, serde_json::json!({ "file": path, "w": f.w, "h": f.h, "phone": phone, "anchor": anchor, "settled": settled_at.is_some() }));
+        // (and the chat as the home-network page's chat view shows it, read only)
+        let chat = if phone.is_null() { serde_json::Value::Null } else { vi_translator_core::lan_page::chat_view(&phone) };
+        results.insert(name, serde_json::json!({ "file": path, "w": f.w, "h": f.h, "phone": phone, "chat": chat, "anchor": anchor, "settled": settled_at.is_some() }));
         // (put away: dark frames until the phone has closed)
         let gone = Instant::now();
         while gone.elapsed() < Duration::from_secs(4) {

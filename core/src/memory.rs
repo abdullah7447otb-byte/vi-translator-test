@@ -96,6 +96,13 @@ fn icons_apart(line: &str) -> String {
             '{' => Some('}'),
             _ => None,
         };
+        // (the live list's and the pages' 🎮 for an icon is a slot too: a line corrected there
+        // has its icons as 🎮)
+        if cs[i] == '🎮' {
+            out.push_str(" 🎮 ");
+            i += 1;
+            continue;
+        }
         if let Some(close) = close {
             let mut j = i + 1;
             while j < cs.len() && cs[j].is_ascii_digit() {
@@ -115,7 +122,7 @@ fn icons_apart(line: &str) -> String {
     out
 }
 
-/// Lower-case words; icons "⟦n⟧" -> "{n}" (renumbered in order, each a word of its own even stuck to
+/// Lower-case words; icons "⟦n⟧" (and the pages' "🎮") -> "{n}" (renumbered in order, each a word of its own even stuck to
 /// text); punctuation dropped.
 /// A translation a person checked: reviewed for the game, or corrected by the player.
 pub fn trusted(source: &str) -> bool {
@@ -130,7 +137,7 @@ pub fn key_of(line: &str) -> String {
         let core = tok.trim_matches(|c: char| !c.is_alphanumeric() && c != '⟦' && c != '⟧'); // "⟦1⟧." is still an icon
         // "{n}" too, so a key that is already normalised (reviewed files) stays the same
         let braced = tok.len() > 2 && tok.starts_with('{') && tok.ends_with('}') && tok[1..tok.len() - 1].chars().all(|c| c.is_ascii_digit());
-        if braced || (core.starts_with('⟦') && core.ends_with('⟧')) {
+        if braced || (core.starts_with('⟦') && core.ends_with('⟧')) || tok.trim_matches(|c: char| c.is_ascii_punctuation()) == "🎮" {
             icon += 1;
             out.push(format!("{{{icon}}}"));
             continue;
@@ -682,6 +689,9 @@ mod tests {
         let m2 = Memory::load(path.clone(), "ar");
         assert!(m2.knows("Go to the bank and press ⟦1⟧!"));
         assert_eq!(key_of(&key_of("Press ⟦1⟧ ⟦2⟧ to zoom.")), "press {1} {2} to zoom");
+        // (the live list shows icons as 🎮: a line corrected there keys as the game's own)
+        assert_eq!(key_of("Press 🎮 🎮 to zoom."), "press {1} {2} to zoom");
+        assert_eq!(key_of("Hold 🎮to run"), key_of("Hold ⟦1⟧ to run"));
         // (the server's KeyNormalizerTest has the same cases)
         assert_eq!(key_of("Go\u{a0}to the car."), "go to the car");
         assert_eq!(key_of("Press\u{a0}\u{27e6}1\u{27e7} to jump"), "press {1} to jump");

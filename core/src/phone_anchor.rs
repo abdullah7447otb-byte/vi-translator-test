@@ -68,13 +68,14 @@ impl Anchor {
     /// quarter of the screen's height): otherwise it is kept (its layer doesn't move to a reading's
     /// slightly different corners).
     pub fn place(&mut self, rgba: &[u8], w: u32, h: u32, quad: Quad) -> bool {
-        if self.is_set() && self.size == (w, h) {
-            if let Some(now) = self.shown {
-                let (.., qh) = bbox(&quad);
-                let far = now.iter().zip(quad.iter()).any(|(a, b)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt() > qh * 0.25);
-                if !far {
-                    return false;
-                }
+        if self.is_set()
+            && self.size == (w, h)
+            && let Some(now) = self.shown
+        {
+            let (.., qh) = bbox(&quad);
+            let far = now.iter().zip(quad.iter()).any(|(a, b)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt() > qh * 0.25);
+            if !far {
+                return false;
             }
         }
         let gray = Gray::from_rgba(rgba, w as usize, h as usize, false, TRACK_WIDTH);

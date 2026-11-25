@@ -57,14 +57,20 @@ fn psnr_y(a: &I420, b: &I420) -> f64 {
 
 struct Run {
     name: String,
+    hardware: bool,
     pictures: Vec<I420>,
     times: Vec<Duration>,
+    /// CPU time of the whole process while decoding, as a share of one core's wall time
+    cpu_pct: f64,
 }
 
 fn run(mut d: VideoDecoder, frames: &[Vec<u8>]) -> Run {
     let name = d.name().to_string();
+    // (Media Foundation on the CPU is Windows's software decoder, not hardware)
+    let hardware = d.is_hardware() && !name.contains("CPU");
     let mut pictures = Vec::new();
     let mut times = Vec::new();
+    let (cpu0, wall0) = (cpu_time::ProcessTime::now(), Instant::now());
     for f in frames {
         let t = Instant::now();
         let p = d.decode(f).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -73,20 +79,28 @@ fn run(mut d: VideoDecoder, frames: &[Vec<u8>]) -> Run {
             pictures.push(p);
         }
     }
-    Run { name, pictures, times }
+    let cpu_pct = cpu0.elapsed().as_secs_f64() / wall0.elapsed().as_secs_f64().max(1e-9) * 100.0;
+    Run { name, hardware, pictures, times, cpu_pct }
 }
 
 fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
-fn summary(r: &Run) -> String {
+/// (avg, p95, max) ms a frame
+fn stats(r: &Run) -> (f64, f64, f64) {
     let mut t: Vec<f64> = r.times.iter().map(|d| ms(*d)).collect();
     t.sort_by(f64::total_cmp);
     let avg = t.iter().sum::<f64>() / t.len() as f64;
-    let p95 = t[(t.len() * 95 / 100).min(t.len() - 1)];
-    format!("| {} | {} | {:.2} | {:.2} | {:.2} |", r.name, r.pictures.len(), avg, p95, t[t.len() - 1])
+    (avg, t[(t.len() * 95 / 100).min(t.len() - 1)], t[t.len() - 1])
 }
+
+fn summary(r: &Run) -> String {
+    let (avg, p95, max) = stats(r);
+    format!("| {} | {} | {} | {avg:.2} | {p95:.2} | {max:.2} | {:.0} % |", r.name, if r.hardware { "yes" } else { "no" }, r.pictures.len(), r.cpu_pct)
+}
+
+const FRAMES: usize = 1200;
 
 #[test]
 fn nv12_round_trip_keeps_the_picture() {
@@ -104,16 +118,16 @@ fn the_system_decoder_matches_openh264() {
         // (the clip takes minutes to make unoptimized: cargo test --release)
         return;
     }
-    let frames = clip(240);
+    let frames = clip(FRAMES);
     let soft = run(VideoDecoder::software().expect("OpenH264"), &frames);
-    assert!(soft.pictures.len() >= 238, "OpenH264 gave {} pictures of 240", soft.pictures.len());
+    assert!(soft.pictures.len() >= FRAMES - 2, "OpenH264 gave {} pictures of {FRAMES}", soft.pictures.len());
     let mut lines = vec![
         "# Video decoding benchmark".to_string(),
         String::new(),
-        format!("Clip: {W}×{H}, 240 frames, 15 Mbit/s, a key frame every 60 (made with OpenH264's encoder in the test)."),
+        format!("Clip: {W}×{H}, {FRAMES} frames (20 s at 60), 15 Mbit/s, a key frame every 60: a moving gradient with scrolling text-like bars, made with OpenH264's encoder in the test (no ffmpeg on the runners)."),
         String::new(),
-        "| Decoder | Pictures | Avg ms/frame | p95 ms | Max ms |".to_string(),
-        "|---|---|---|---|---|".to_string(),
+        "| Decoder | Hardware | Pictures | Avg ms/frame | p95 ms | Max ms | CPU (one core = 100 %) |".to_string(),
+        "|---|---|---|---|---|---|---|".to_string(),
         summary(&soft),
     ];
     let mut note = String::new();
@@ -123,7 +137,7 @@ fn the_system_decoder_matches_openh264() {
             lines.push(summary(&sys));
             // (the system decoder may hold back its first picture or two; the rest line up)
             let n = sys.pictures.len().min(soft.pictures.len());
-            assert!(n >= 230, "{} gave {} pictures of 240", sys.name, sys.pictures.len());
+            assert!(n >= FRAMES - 10, "{} gave {} pictures of {FRAMES}", sys.name, sys.pictures.len());
             let lag = soft.pictures.len() - n;
             let mut worst = 99.0f64;
             for i in 0..n {
@@ -131,6 +145,16 @@ fn the_system_decoder_matches_openh264() {
             }
             note = format!("Same picture: lowest PSNR (Y) between {} and OpenH264 over {n} pictures: {worst:.1} dB (99 = identical).", sys.name);
             assert!(worst >= 40.0, "{note}");
+            let ((s_avg, _, _), (h_avg, h_p95, _)) = (stats(&soft), stats(&sys));
+            if sys.hardware {
+                // (the hardware decoder must not be slower than the CPU's, and on the Mac a frame's p95 at most 8 ms)
+                assert!(h_avg <= s_avg, "{} ({h_avg:.2} ms a frame) is slower than OpenH264 ({s_avg:.2} ms)", sys.name);
+                if cfg!(target_os = "macos") {
+                    assert!(h_p95 <= 8.0, "{} p95 {h_p95:.2} ms > 8 ms", sys.name);
+                }
+            } else {
+                note.push_str(&format!(" {} decodes on the CPU here (no graphics card on this runner): the speed checks are for hardware.", sys.name));
+            }
         }
         None => note.push_str("No system decoder on this computer (Linux, or none available): OpenH264 only."),
     }

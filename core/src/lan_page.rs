@@ -65,7 +65,7 @@ impl LivePage {
             let l = log.iter().find(|l| l["id"].as_u64() == Some(id))?;
             (l["area"].as_str()?.to_string(), l["en"].as_str()?.to_string())
         };
-        let segs: crate::translate::Segments = vec![(ar.to_string(), None)];
+        let segs = corrected_segments(ar);
         if let Some(m) = &self.memory {
             let lang = self.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).target_lang.clone();
             let mut m = m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -107,6 +107,7 @@ impl LivePage {
         let (path, query) = (req.path.as_str(), req.query.as_str());
         match path {
             "/" | "/live" => serve(s, "live.html"),
+            "/manifest.webmanifest" | "/icon-180.png" | "/icon-512.png" => serve(s, path.trim_start_matches('/')),
             "/live.json" => {
                 let after: u64 = query.split('&').find_map(|kv| kv.strip_prefix("after=")).and_then(|v| v.parse().ok()).unwrap_or(0);
                 // (`wait=1`: answered as soon as a new line is there, or after LONG_POLL with none — the
@@ -115,13 +116,28 @@ impl LivePage {
                 let newer = || -> Vec<serde_json::Value> {
                     shared.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|l| l["id"].as_u64().unwrap_or(0) > after).cloned().collect()
                 };
+                // (the phone's chat on the game's screen now, for the page's chat view: sent when it
+                // changed since `ph`, the version the page has; a change answers the long poll too)
+                let have_phone: u64 = query.split('&').find_map(|kv| kv.strip_prefix("ph=")).and_then(|v| v.parse().ok()).unwrap_or(0);
+                let phone_now = || -> (u64, Option<serde_json::Value>) {
+                    let p = shared.phone.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map(chat_view);
+                    let h = p.as_ref().map(|v| {
+                        use std::hash::{Hash, Hasher};
+                        let mut x = std::collections::hash_map::DefaultHasher::new();
+                        v.to_string().hash(&mut x);
+                        x.finish() | 1
+                    });
+                    (h.unwrap_or(0), p)
+                };
                 let started = std::time::Instant::now();
                 let mut lines = newer();
+                let mut phone = phone_now();
                 // (a line id below `after`: the app started again, its ids with it — answered at once)
                 let restarted = shared.live_seq.load(Ordering::Relaxed) < after;
-                while wait && lines.is_empty() && !restarted && started.elapsed() < LONG_POLL {
+                while wait && lines.is_empty() && phone.0 == have_phone && !restarted && started.elapsed() < LONG_POLL {
                     std::thread::sleep(std::time::Duration::from_millis(40));
                     lines = newer();
+                    phone = phone_now();
                 }
                 let live = !shared.live_off.load(Ordering::Relaxed);
                 // ("run": new each time the app starts; line ids start again then, and the page with it)
@@ -130,7 +146,8 @@ impl LivePage {
                     (c.snap_lan, c.lan_control.then(|| self.controls(&c)), c.ui_lang.clone())
                 };
                 // ("ui": the app's own interface language, which the page takes for its buttons and notices)
-                let body = serde_json::json!({ "run": crate::net::build_id(), "lang": shared.live_lang.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(), "lines": lines, "live": live, "snap": snap, "control": control, "ui": ui, "perf": crate::perf::perf_status() });
+                let (ph, chat) = phone;
+                let body = serde_json::json!({ "ph": ph, "phone": if ph != have_phone { chat } else { None }, "run": crate::net::build_id(), "lang": shared.live_lang.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(), "lines": lines, "live": live, "snap": snap, "control": control, "ui": ui, "perf": crate::perf::perf_status() });
                 respond(s, "200 OK", "application/json; charset=utf-8", body.to_string().as_bytes());
             }
             "/common.js" => serve(s, "common.js"),
@@ -252,9 +269,146 @@ impl LivePage {
     }
 }
 
+/// A correction's Arabic as segments: each 🎮 (the page's icon, kept or moved by the player) is
+/// the line's next icon slot, so the corrected line still shows the game's own buttons.
+pub fn corrected_segments(ar: &str) -> crate::translate::Segments {
+    let mut out: crate::translate::Segments = Vec::new();
+    for (n, part) in ar.split('🎮').enumerate() {
+        if n > 0 {
+            out.push(("🎮".into(), Some(format!("icon:{n}"))));
+        }
+        if !part.is_empty() {
+            out.push((part.to_string(), None));
+        }
+    }
+    out
+}
+
+/// The game phone's screen as the page's chat view shows it: its messages top to bottom, each
+/// with its side (the player's own on the right, as on the phone), its sender and its Arabic; the
+/// chat's title; a chat list's rows with their pictures; a "New messages" line as a divider. None
+/// of the picture's own positions.
+pub fn chat_view(phone: &serde_json::Value) -> serde_json::Value {
+    let nums = |v: &serde_json::Value| v.as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect::<Vec<_>>()).unwrap_or_default();
+    let screen = nums(&phone["screen"]);
+    let (sx, sw) = if screen.len() == 4 { (screen[0], screen[2].max(1e-6)) } else { (0.0, 1.0) };
+    // (a bubble's colour as blue minus red: the player's own are bluer than the rest, whatever
+    // light the phone is in)
+    let blue = |p: &serde_json::Value| -> Option<f64> {
+        let h = p["bg"].as_str()?.strip_prefix('#')?;
+        let c = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok().map(f64::from);
+        Some(c(4)? - c(0)?)
+    };
+    let mut title = String::new();
+    let mut msgs: Vec<(Vec<f64>, &serde_json::Value)> = Vec::new();
+    for p in phone["pieces"].as_array().into_iter().flatten() {
+        let r = nums(&p["rect"]);
+        if r.len() != 4 {
+            continue;
+        }
+        let ar = p["ar"].as_str().unwrap_or("").trim();
+        if p["title"].as_bool() == Some(true) {
+            if title.is_empty() {
+                title = ar.to_string();
+            }
+            continue;
+        }
+        if !ar.is_empty() {
+            msgs.push((r, p));
+        }
+    }
+    let mut tints: Vec<f64> = msgs.iter().filter_map(|(_, p)| blue(p)).collect();
+    tints.sort_by(f64::total_cmp);
+    let usual = (tints.len() >= 3).then(|| tints[tints.len() / 2]);
+    let mut items: Vec<(f64, serde_json::Value)> = Vec::new();
+    for (r, p) in msgs {
+        let (left, right) = ((r[0] - sx) / sw, (sx + sw - r[0] - r[2]) / sw);
+        let mid = left + r[2] / sw / 2.0;
+        let en = p["en"].as_str().unwrap_or("");
+        // ("New messages", a day: short, alone in the middle, no bubble round it)
+        let divider = (mid - 0.5).abs() < 0.06 && r[2] / sw < 0.45 && en.split_whitespace().count() <= 3 && p["box_uv"].is_null();
+        let me = match (usual, blue(p)) {
+            (Some(u), Some(b)) => b - u > 15.0,
+            _ => left > right * 2.0 && left > 0.08,
+        };
+        items.push((
+            r[1],
+            serde_json::json!({
+                "ar": p["ar"].as_str().unwrap_or("").trim(),
+                "en": p["en"],
+                "name": p["name"],
+                "me": me && !divider,
+                "divider": divider,
+                "pending": p["pending"].as_bool() == Some(true),
+                "avatar": p["avatar"],
+                // (the emoji drawn in the message, as pictures from the phone)
+                "emoji": p["emoji"],
+            }),
+        ));
+    }
+    items.sort_by(|a, b| a.0.total_cmp(&b.0));
+    serde_json::json!({ "title": title, "list": phone["list"].as_bool() == Some(true), "items": items.into_iter().map(|(_, v)| v).collect::<Vec<_>>() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_chat_view_is_the_messages_in_order_with_their_side() {
+        let phone = serde_json::json!({
+            "screen": [0.4, 0.2, 0.2, 0.6],
+            "list": false,
+            "pieces": [
+                { "rect": [0.47, 0.50, 0.12, 0.04], "ar": "وينك؟", "en": "Where are you?" },
+                { "rect": [0.42, 0.22, 0.16, 0.03], "ar": "لوسيا", "title": true },
+                { "rect": [0.41, 0.30, 0.10, 0.04], "ar": "تعال المطعم", "en": "Come to the diner", "name": "جيسون" },
+                { "rect": [0.41, 0.40, 0.10, 0.04], "ar": "", "en": "" },
+                { "rect": [0.475, 0.45, 0.05, 0.02], "ar": "رسائل جديدة", "en": "New messages" },
+            ],
+        });
+        let v = chat_view(&phone);
+        assert_eq!(v["title"], "لوسيا");
+        let items = v["items"].as_array().cloned().unwrap_or_default();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["ar"], "تعال المطعم");
+        assert_eq!(items[0]["me"], false);
+        assert_eq!(items[1]["divider"], true);
+        assert_eq!(items[2]["ar"], "وينك؟");
+        assert_eq!(items[2]["me"], true);
+    }
+
+    #[test]
+    fn a_corrected_line_with_icons_keeps_them_and_its_memory_entry() {
+        let segs = corrected_segments("اضغط 🎮 ثم 🎮 للدخول");
+        let icons: Vec<_> = segs.iter().filter(|(_, c)| c.as_deref().is_some_and(|c| c.starts_with("icon:"))).collect();
+        assert_eq!(icons.len(), 2);
+        assert_eq!(crate::memory::slot_text(&segs), "اضغط {1} ثم {2} للدخول");
+        // (the live list's English, "Press 🎮 then 🎮 to enter", is the game's line's key)
+        assert_eq!(crate::memory::key_of("Press 🎮 then 🎮 to enter."), crate::memory::key_of("Press ⟦1⟧ then ⟦2⟧ to enter."));
+        assert_eq!(corrected_segments("بدون أيقونات"), vec![("بدون أيقونات".to_string(), None)]);
+    }
+
+    #[test]
+    fn the_players_own_bubble_is_the_bluer_one() {
+        // (GTA VI's chat with Donnie at sunset, as the app reads it: the player's message is bluish)
+        let phone = serde_json::json!({
+            "screen": [0.591, 0.156, 0.238, 0.7],
+            "pieces": [
+                { "rect": [0.621, 0.265, 0.121, 0.068], "ar": "لكرفاني! فاهم؟", "en": "TO MY TRAILER! Comprendo?", "bg": "#cbb3b2" },
+                { "rect": [0.651, 0.354, 0.119, 0.03], "ar": "بيت دوني", "en": "Casa De Donnie", "bg": "#cdb3b5" },
+                { "rect": [0.639, 0.436, 0.141, 0.069], "ar": "وصّلت لك الأغراض", "en": "Dropped that stuff off for you", "bg": "#bdb1c2" },
+                { "rect": [0.653, 0.594, 0.105, 0.027], "ar": "رسالة جديدة", "en": "New message", "bg": "#d0b7b6" },
+                { "rect": [0.625, 0.661, 0.151, 0.139], "ar": "مشكور يا صاحبي!", "en": "Thx amigo!", "bg": "#cfb6b5", "box_uv": [0, 0, 1, 1] },
+            ],
+        });
+        let v = chat_view(&phone);
+        let items = v["items"].as_array().cloned().unwrap_or_default();
+        let me: Vec<bool> = items.iter().map(|i| i["me"].as_bool() == Some(true)).collect();
+        let div: Vec<bool> = items.iter().map(|i| i["divider"].as_bool() == Some(true)).collect();
+        assert_eq!(me, vec![false, false, true, false, false]);
+        assert_eq!(div, vec![false, false, false, true, false]);
+    }
 
     #[test]
     fn qr_code_for_the_address() {

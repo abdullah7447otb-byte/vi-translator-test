@@ -47,7 +47,7 @@ impl Sound {
     }
     /// The factor samples are multiplied by: the volume on a curve the ear hears as even steps.
     pub fn gain(&self) -> f32 {
-        if !self.on.load(Ordering::Relaxed) {
+        if !self.on.load(Ordering::Relaxed) || READ_ONLY.load(Ordering::Relaxed) {
             return 0.0;
         }
         let v = self.volume.load(Ordering::Relaxed).min(100) as f32 / 100.0;
@@ -68,6 +68,11 @@ pub fn scale(pcm: &mut [i16], gain: f32) {
 /// A controller pressed by the app itself (dev builds' debug server: driving the game to test its overlays), and
 /// until when: added to the real controllers' state while it lasts.
 static VIRTUAL: Mutex<Option<(Pad, Instant)>> = Mutex::new(None);
+
+/// Read only: the stream is only read (the PS5 plays on its own screen with its own controller),
+/// so nothing from this computer's controllers or the app's presses goes to the PS5, and its
+/// sound isn't played here.
+pub static READ_ONLY: AtomicBool = AtomicBool::new(false);
 
 /// Presses `p` on the PS5 for `hold`, with whatever real controllers do meanwhile.
 pub fn press(p: Pad, hold: Duration) {
@@ -350,7 +355,7 @@ fn decode_thread(
             Ok(None) => {}
             Err(e) if dec.is_hardware() && e.ends_with("fall back") => {
                 stats.bad_frames.fetch_add(1, Ordering::Relaxed);
-                screen.log(2, &format!("[video] {} failed three times in a row ({e}): OpenH264 from now on", dec.name()));
+                screen.log(2, &format!("[video] {} failed twice in a row ({e}): OpenH264 from now on", dec.name()));
                 if let Err(e) = dec.fall_back() {
                     return screen.log(1, &e);
                 }
@@ -548,20 +553,23 @@ fn sdl_thread(rx: Receiver<ToSdl>, session: Arc<Mutex<Option<Session>>>, stop: A
             }
         }
         // (and the app's own press, while it lasts)
-        if let Some((v, until)) = *VIRTUAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
-            if Instant::now() < until {
-                p.buttons |= v.buttons;
-                p.l2 = p.l2.max(v.l2);
-                p.r2 = p.r2.max(v.r2);
-                for (a, b) in [(&mut p.lx, v.lx), (&mut p.ly, v.ly), (&mut p.rx, v.rx), (&mut p.ry, v.ry)] {
-                    if b != 0 {
-                        *a = b;
-                    }
+        if let Some((v, until)) = *VIRTUAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            && Instant::now() < until
+        {
+            p.buttons |= v.buttons;
+            p.l2 = p.l2.max(v.l2);
+            p.r2 = p.r2.max(v.r2);
+            for (a, b) in [(&mut p.lx, v.lx), (&mut p.ly, v.ly), (&mut p.rx, v.rx), (&mut p.ry, v.ry)] {
+                if b != 0 {
+                    *a = b;
                 }
             }
         }
-        // (sent when it changes, and every half second anyway)
-        if p != last || last_sent.elapsed() > Duration::from_millis(500) {
+        // (sent when it changes, and every half second anyway; never while read only, as a still
+        // pad sent then would fight the player's own controller on the PS5)
+        if READ_ONLY.load(Ordering::Relaxed) {
+            last = Pad::default();
+        } else if p != last || last_sent.elapsed() > Duration::from_millis(500) {
             if let Some(s) = session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
                 s.controller(p);
             }

@@ -57,10 +57,10 @@ fn the_phone_is_found_in_every_phone_frame_and_in_no_other() {
                 if pose.is_some() != *want_pose {
                     failures.push(format!("{name}: pose {}, expected {}", pose.is_some(), want_pose));
                 }
-                if let (Some(p), Some(t)) = (pose, tilt) {
-                    if (p.tilt(w, h) - t).abs() > 3.0 {
-                        failures.push(format!("{name}: tilt {:.1}°, expected {t}° ±3°", p.tilt(w, h)));
-                    }
+                if let (Some(p), Some(t)) = (pose, tilt)
+                    && (p.tilt(w, h) - t).abs() > 3.0
+                {
+                    failures.push(format!("{name}: tilt {:.1}°, expected {t}° ±3°", p.tilt(w, h)));
                 }
                 // (a phone: its screen is found inside the pose's box, or by brightness)
                 let screen = pose.map(|p| phone::screen_in_pose(bright, p.bounds().px(w, h))).or(bright);

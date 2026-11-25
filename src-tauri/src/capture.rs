@@ -36,21 +36,46 @@ pub fn capture_test(title: &str, secs: f64, out: &std::path::Path) -> anyhow::Re
     shared.capture_ms.store(16, Ordering::Relaxed);
     let (cap, _) = platform::start_window(title, shared.clone())?;
     let start = Instant::now();
-    let (mut seen, mut last_seq, mut first) = (0u32, 0u64, None);
+    let (mut seen, mut last_seq, mut first, mut prev, mut gap) = (0u32, 0u64, None, None::<Instant>, Duration::ZERO);
+    // (the pictures, and the longest wait between two of the first 120 after the first)
+    let (mut gap120, mut t120) = (Duration::ZERO, None);
     while start.elapsed().as_secs_f64() < secs {
         if let Some(f) = shared.latest() {
             if f.seq != last_seq {
+                let now = Instant::now();
                 last_seq = f.seq;
                 seen += 1;
                 first.get_or_insert(start.elapsed());
+                if let Some(p) = prev {
+                    gap = gap.max(now - p);
+                }
+                prev = Some(now);
+                if seen <= 121 {
+                    gap120 = gap;
+                }
+                if seen == 121 {
+                    t120 = Some(now);
+                }
             }
         }
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(1));
     }
     cap.stop();
     let f = shared.latest().ok_or_else(|| anyhow::anyhow!("no picture came"))?;
     save_png(&f, out)?;
-    Ok(format!("{seen} pictures in {secs:.1} s ({:.1} a second), the first after {} ms, {}x{}", seen as f64 / secs, first.map(|d| d.as_millis()).unwrap_or(0), f.w, f.h))
+    let fps120 = match (first, t120) {
+        (Some(a), Some(b)) => 120.0 / (b - start - a).as_secs_f64().max(1e-9),
+        _ => 0.0,
+    };
+    Ok(format!(
+        "{seen} pictures in {secs:.1} s ({:.1} a second), the first after {} ms, {}x{}; first 120: {fps120:.1} a second, longest gap {} ms; longest gap overall {} ms",
+        seen as f64 / secs,
+        first.map(|d| d.as_millis()).unwrap_or(0),
+        f.w,
+        f.h,
+        gap120.as_millis(),
+        gap.as_millis()
+    ))
 }
 
 pub use platform::{client_rect, find_window, focused_client_rect, foreground_window, grab_once, list_screens, screen_rect, grab_screen_region, list_windows};

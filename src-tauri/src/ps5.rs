@@ -78,6 +78,11 @@ pub struct Saved {
     /// the picture decoded by OpenH264 on the CPU even where the computer has its own decoder
     #[serde(default)]
     pub software_decode: bool,
+    /// Read only: the PS5 plays on its own screen with its own controller; the app only reads
+    /// the stream (no controller, no sound here) and the translations go to the home-network
+    /// page (an iPad beside the screen)
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 struct Global {
@@ -119,6 +124,7 @@ fn g() -> &'static Global {
 pub fn init(app: AppHandle, data_dir: &Path) {
     let file = data_dir.join("ps5.json");
     let saved: Saved = std::fs::read_to_string(&file).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    ps::play::READ_ONLY.store(saved.read_only, Ordering::Relaxed);
     let _ = G.set(Global {
         app,
         file,
@@ -159,6 +165,7 @@ pub fn status() -> serde_json::Value {
         "sound": !s.sound_off,
         "volume": s.volume.unwrap_or(100),
         "software_decode": s.software_decode,
+        "read_only": s.read_only,
         "decoder": DECODER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
         "console": s.console.as_ref().map(|c| serde_json::json!({ "name": c.nickname, "host": c.host })),
         "pin_wanted": *g.pin_wanted.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -330,6 +337,14 @@ pub fn set_decode(software: bool) {
     s.software_decode = software;
     save(&s);
     g().restart.store(true, Ordering::Relaxed);
+}
+
+/// Read only on or off; at once (the stream goes on).
+pub fn set_read_only(on: bool) {
+    ps::play::READ_ONLY.store(on, Ordering::Relaxed);
+    let mut s = saved();
+    s.read_only = on;
+    save(&s);
 }
 
 /// The PS5's sound on this computer: on or off, and its volume (0–100); heard at once.

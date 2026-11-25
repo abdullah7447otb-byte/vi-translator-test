@@ -64,7 +64,7 @@ fn blur(src: &[u8], w: u32, h: u32) -> Vec<u8> {
 fn motion_at(i: usize, cx: f64, cy: f64) -> [f64; 9] {
     let t = i as f64 / 30.0;
     let dx = 15.0 * (2.0 * std::f64::consts::PI * 0.7 * t).sin() + 4.0 * (2.0 * std::f64::consts::PI * 3.1 * t).sin();
-    let dy = 10.0 * (2.0 * std::f64::consts::PI * 0.5 * t + 1.0).sin() + (if (t * 2.0) as u64 % 5 == 0 { 6.0 * (2.0 * std::f64::consts::PI * 6.0 * t).sin() } else { 0.0 });
+    let dy = 10.0 * (2.0 * std::f64::consts::PI * 0.5 * t + 1.0).sin() + (if ((t * 2.0) as u64).is_multiple_of(5) { 6.0 * (2.0 * std::f64::consts::PI * 6.0 * t).sin() } else { 0.0 });
     let angle = (10.0f64).to_radians() * (2.0 * std::f64::consts::PI * 0.08 * t).sin();
     let s = 1.0 + 0.04 * (2.0 * std::f64::consts::PI * 0.15 * t).sin();
     let (sn, cs) = angle.sin_cos();

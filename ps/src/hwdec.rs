@@ -1,6 +1,6 @@
 //! The PS5's picture decoded: by the computer's own video decoder where it has one
 //! (VideoToolbox on a Mac, the graphics card through Media Foundation on Windows), else on the
-//! CPU by OpenH264. A hardware decoder that fails falls back to OpenH264 for the rest of the stream.
+//! CPU by OpenH264. A hardware decoder that fails twice in a row falls back to OpenH264 for the rest of the stream.
 
 use crate::play::I420;
 
@@ -61,7 +61,7 @@ enum Inner {
 
 pub struct VideoDecoder {
     inner: Inner,
-    /// hardware failures in a row (three: OpenH264 from then on)
+    /// hardware failures in a row (two: OpenH264 from then on)
     #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
     failures: u32,
 }
@@ -127,7 +127,7 @@ impl VideoDecoder {
         Ok(())
     }
 
-    /// One frame in; a picture out once there is one. A hardware decoder's third failure in a
+    /// One frame in; a picture out once there is one. A hardware decoder's second failure in a
     /// row is told as `Err` with "fall back" in it: the caller switches with [`Self::fall_back`].
     pub fn decode(&mut self, frame: &[u8]) -> Result<Option<I420>, String> {
         match &mut self.inner {
@@ -161,7 +161,7 @@ impl VideoDecoder {
                 let r = unsafe { ffi::vit_mf_decode(n.0, frame.as_ptr(), frame.len(), &mut y, &mut uv, &mut w, &mut h, &mut ys, &mut uvs) };
                 if r < 0 {
                     self.failures += 1;
-                    return Err(if self.failures >= 3 { format!("hardware decoder failed ({r}): fall back") } else { format!("hardware decoder failed ({r})") });
+                    return Err(if self.failures >= 2 { format!("hardware decoder failed ({r}): fall back") } else { format!("hardware decoder failed ({r})") });
                 }
                 self.failures = 0;
                 if r == 0 || y.is_null() || uv.is_null() || w <= 0 || h <= 0 || ys < w || uvs < w {

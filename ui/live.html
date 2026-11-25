@@ -6,6 +6,13 @@
     <meta name="theme-color" content="#120a26" />
     <title>Barqawi · Live</title>
     <link rel="stylesheet" href="fonts.css" />
+    <!-- on an iPad's or phone's home screen: Share › Add to Home Screen opens it full screen, like an app -->
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="icon-180.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Barqawi" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <style>
       :root { --bg: #0f0b1d; --panel: #1a1431; --text: #f4f1ff; --muted: #a59cc7; --accent: #ffcf5a; --size: 26px; }
       * { box-sizing: border-box; }
@@ -57,6 +64,36 @@
       #fixer textarea { width: 100%; min-height: 90px; font: inherit; font-size: 20px; background: #2a2147; color: var(--text);
         border: 1px solid #3a3063; border-radius: 10px; padding: 8px; unicode-bidi: plaintext; }
       #fixer .row { display: flex; gap: 8px; justify-content: flex-end; }
+      /* the game phone's chat, as it is on the phone now (its messages in Arabic, the player's own on the right) */
+      #chat { background: #17112b; border-bottom: 1px solid #2c2450; padding: 8px 12px 10px; max-height: 55vh; overflow-y: auto; }
+      #chat[hidden] { display: none; }
+      #chat .ttl { text-align: center; font-weight: 700; color: var(--accent); font-size: 15px; padding: 2px 0 8px; }
+      #chat .msgs { display: flex; flex-direction: column; gap: 6px; direction: ltr; }
+      #chat .b { max-width: 82%; padding: 7px 11px; border-radius: 16px; font-size: calc(var(--size) * .8); line-height: 1.4;
+        background: #2a2147; color: var(--text); align-self: flex-start; unicode-bidi: plaintext; text-align: start; direction: rtl; }
+      #chat .b.me { align-self: flex-end; background: #3a6df0; color: #fff; }
+      #chat .b.pending { opacity: .6; }
+      #chat .b .who { display: block; font-size: 12px; font-weight: 700; color: var(--accent); margin-bottom: 2px; }
+      #chat .b.me .who { color: #dfe7ff; }
+      #chat .div { align-self: center; color: #8fa6ff; font-size: 13px; padding: 2px 10px; direction: rtl; }
+      #chat .b img.em { height: 1.15em; width: auto; vertical-align: -0.2em; margin: 0 0.1em; }
+      #speech { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 6px 14px; background: var(--panel);
+        border-bottom: 1px solid #2c2450; font-size: 14px; color: var(--muted); }
+      #speech[hidden] { display: none; }
+      #speech input[type=range] { width: 120px; accent-color: var(--accent); }
+      #speech input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
+      #chat .row { display: flex; align-items: center; gap: 10px; padding: 6px 2px; border-bottom: 1px solid #241c40; direction: rtl; }
+      #chat .row img { width: 40px; height: 40px; border-radius: 50%; flex: none; }
+      #chat .row .t { font-size: calc(var(--size) * .75); unicode-bidi: plaintext; }
+      /* a phone's width: the buttons wrap onto a second row and get smaller */
+      @media (max-width: 500px) {
+        header { flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
+        header b { font-size: 15px; }
+        button { min-width: 38px; height: 34px; font-size: 15px; }
+        header select { height: 34px; font-size: 13px; max-width: 8em; }
+        main { padding: 10px 10px 40px; }
+        #chat .b { max-width: 90%; }
+      }
       #nosleep { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
     </style>
   </head>
@@ -71,6 +108,8 @@
         <option value="dialogue" data-i18n>Dialogue</option>
         <option value="other" data-i18n>Instructions</option>
       </select>
+      <button id="phone" class="on" title="The game phone's chat" data-i18n-title>📱</button>
+      <button id="speak" title="Read the new lines aloud" data-i18n-title>🔊</button>
       <button id="big" title="The current line, big" data-i18n-title>⛶</button>
       <button id="awake" title="Keep the screen on" data-i18n-title>🔆</button>
       <button id="save" title="Save this session" data-i18n-title>💾</button>
@@ -82,6 +121,11 @@
     <!-- the app's switches, when it allows changes from this page -->
     <div class="ctl" id="ctl-panel" hidden></div>
     <div class="paused" id="paused" hidden data-i18n>Paused: Live translations are switched off in VI Translator.</div>
+    <div id="speech" hidden>
+      <label><span data-i18n>Speed</span> <input type="range" id="rate" min="0.6" max="1.6" step="0.1" value="1" /> <b id="rate-v">1.0×</b></label>
+      <label><input type="checkbox" id="names" checked /> <span data-i18n>Read the speakers' names</span></label>
+    </div>
+    <section id="chat" hidden></section>
     <main id="list"><div class="empty" id="empty" data-i18n>Waiting for translations…</div></main>
     <!-- a line corrected here: into the app's translation memory as the player's own -->
     <div id="fixer" hidden><div class="box">
@@ -165,6 +209,64 @@
 
       let last = 0;
       let run = null;
+      let seenAny = false;
+      // the phone chat's version the page has (0: none)
+      let ph = 0;
+      let chatOn = store("chat") !== "0";
+      let chatNow = null;
+      const showChat = (c) => {
+        chatNow = c;
+        const box = $("chat");
+        if (!c || !c.items || !c.items.length || !chatOn) { box.hidden = true; return; }
+        const rtl = document.documentElement.lang === "ar";
+        let html = c.title ? `<div class="ttl" dir="auto">${esc(c.title)}</div>` : "";
+        if (c.list) {
+          html += c.items.map((m) => `<div class="row">${m.avatar && /^data:image\/png;base64,/.test(m.avatar) ? `<img src="${m.avatar}" alt="">` : ""}<div class="t">${m.name ? `<b>${esc(m.name)}</b><br>` : ""}${esc(m.ar)}</div></div>`).join("");
+        } else {
+          const ems = (m) => (m.emoji || []).filter((e) => /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(e)).map((e) => `<img class="em" src="${e}" alt="">`).join("");
+          html += `<div class="msgs">` + c.items.map((m) => m.divider ? `<div class="div">${esc(m.ar)}</div>` : `<div class="b${m.me ? " me" : ""}${m.pending ? " pending" : ""}">${m.name ? `<span class="who">${esc(m.name)}</span>` : ""}${esc(m.ar)}${ems(m)}</div>`).join("") + `</div>`;
+        }
+        box.innerHTML = html;
+        box.hidden = false;
+        box.dir = rtl ? "rtl" : "ltr";
+        box.scrollTop = box.scrollHeight;
+      };
+      const setChat = (on) => { chatOn = on; $("phone").classList.toggle("on", on); store("chat", on ? "1" : "0"); showChat(chatNow); };
+      setChat(chatOn);
+      $("phone").onclick = () => setChat(!chatOn);
+      // read aloud (the device's own Arabic voice): iOS lets a page speak only after a tap, so the
+      // button's tap starts it with a word of silence
+      let speakOn = false;
+      let rate = Number(store("rate")) || 1;
+      let names = store("names") !== "0";
+      $("rate").value = String(rate);
+      $("rate-v").textContent = `${rate.toFixed(1)}×`;
+      $("rate").oninput = () => { rate = Number($("rate").value); $("rate-v").textContent = `${rate.toFixed(1)}×`; store("rate", rate); };
+      $("names").checked = names;
+      $("names").onchange = () => { names = $("names").checked; store("names", names ? "1" : "0"); };
+      const voice = () => (window.speechSynthesis ? speechSynthesis.getVoices() : []).find((v) => /^ar/i.test(v.lang)) || null;
+      const say = (text) => {
+        if (!speakOn || !window.speechSynthesis || !text) return;
+        let clean = String(text).replace(/\s+/g, " ").trim();
+        // (the speaker's name before the line, "جيسون: …", left out if so chosen)
+        if (!names) clean = clean.replace(/^[^:：\n]{1,24}[:：]\s*/, "");
+        if (!clean) return;
+        // (behind by more than two lines: the old ones are dropped, so it speaks what's on screen now)
+        if (speechSynthesis.pending && speechSynthesis.speaking) speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(clean);
+        u.lang = (voice() && voice().lang) || "ar-SA";
+        if (voice()) u.voice = voice();
+        u.rate = rate;
+        speechSynthesis.speak(u);
+      };
+      $("speak").onclick = () => {
+        if (!window.speechSynthesis) { alert(t("Speech isn't available in this browser.")); return; }
+        speakOn = !speakOn;
+        $("speak").classList.toggle("on", speakOn);
+        $("speech").hidden = !speakOn;
+        if (speakOn) { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); }
+        else speechSynthesis.cancel();
+      };
       // every line of this session (the list keeps the newest 200 on screen), for "Save this session"
       const session = new Map();
       let canFix = false;
@@ -251,7 +353,7 @@
       const atBottom = () => { const m = $("list"); return m.scrollHeight - m.scrollTop - m.clientHeight < 80; };
       async function poll() {
         try {
-          const r = await fetch(`live.json?after=${last}&wait=1`, { cache: "no-store" });
+          const r = await fetch(`live.json?after=${last}&wait=1&ph=${ph}`, { cache: "no-store" });
           const d = await r.json();
           // the app started again: its line ids start again too
           if (run !== null && d.run !== run) last = 0;
@@ -262,6 +364,7 @@
           const want = store("ui") || deviceLang() || d.ui || "en";
           if (want !== uiLang) useUiLang(want);
           $("snap").hidden = d.snap !== true;
+          if (typeof d.ph === "number" && d.ph !== ph) { ph = d.ph; showChat(d.phone || null); }
           showControls(d.control || null);
           canFix = !!d.control;
           document.body.classList.toggle("can-fix", canFix);
@@ -270,7 +373,11 @@
           if (d.lines.length) {
             const stick = atBottom();
             $("empty")?.remove();
+            const first = !seenAny;
+            seenAny = true;
             for (const l of d.lines) {
+              // (read aloud: the new lines, not the ones already there when the page opened)
+              if (!first && l.id > last && shows(l.area)) say(l.text);
               last = Math.max(last, l.id);
               session.set(l.id, l);
               const el = document.createElement("div");

@@ -1,0 +1,15 @@
+{
+  "name": "Barqawi",
+  "short_name": "Barqawi",
+  "description": "GTA VI's text in Arabic, live, beside the screen",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f0b1d",
+  "theme_color": "#120a26",
+  "icons": [
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

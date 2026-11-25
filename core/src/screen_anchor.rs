@@ -88,10 +88,10 @@ impl Gray {
                 let a = &bytes[(2 * y * width) * 4..(2 * y * width + width) * 4];
                 let bb = &bytes[((2 * y + 1) * width) * 4..((2 * y + 1) * width + width) * 4];
                 let row_out = &mut out[y * w..(y + 1) * w];
-                for x in x0..x1 {
+                for (x, px) in row_out.iter_mut().enumerate().take(x1).skip(x0) {
                     let i = 8 * x;
                     let sum = luma(&a[i..i + 4]) + luma(&a[i + 4..i + 8]) + luma(&bb[i..i + 4]) + luma(&bb[i + 4..i + 8]);
-                    row_out[x] = ((sum + 16) / 32).min(255) as u8;
+                    *px = ((sum + 16) / 32).min(255) as u8;
                 }
             }
             return Gray { width: w, height: h, pixels: out };
@@ -321,10 +321,10 @@ impl Tracker {
         starts.push(search(&self.pyramid[coarsest], &images[coarsest], &rect, around));
         let mut best: Option<Fix> = None;
         for start in starts {
-            if let Some(fix) = align(&self.pyramid[coarsest], &images[coarsest], &rect, start) {
-                if best.is_none_or(|b| fix.inliers > b.inliers) {
-                    best = Some(fix);
-                }
+            if let Some(fix) = align(&self.pyramid[coarsest], &images[coarsest], &rect, start)
+                && best.is_none_or(|b| fix.inliers > b.inliers)
+            {
+                best = Some(fix);
             }
         }
         let Some(mut current) = best else {
@@ -619,16 +619,16 @@ impl Smoother {
     /// The transform to show, and whether it jumped.
     pub fn push(&mut self, raw: Motion, rect: &Rect) -> (Motion, bool) {
         let last = self.last.replace(raw);
-        if let Some(last) = last {
-            if raw.distance(&last, rect) > Self::JUMP_SHARE * rect.height {
-                self.shown = Some(raw);
-                return (raw, true);
-            }
+        if let Some(last) = last
+            && raw.distance(&last, rect) > Self::JUMP_SHARE * rect.height
+        {
+            self.shown = Some(raw);
+            return (raw, true);
         }
-        if let Some(shown) = self.shown {
-            if raw.distance(&shown, rect) <= Self::DEADBAND {
-                return (shown, false);
-            }
+        if let Some(shown) = self.shown
+            && raw.distance(&shown, rect) <= Self::DEADBAND
+        {
+            return (shown, false);
         }
         self.shown = Some(raw);
         (raw, false)

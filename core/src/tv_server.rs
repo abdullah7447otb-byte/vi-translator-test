@@ -27,6 +27,10 @@ const ASSETS: &[(&str, &str, &[u8])] = &[
     ("fonts.css", "text/css", include_bytes!("../../ui/fonts.css")),
     // the live page (lan_page.rs)
     ("live.html", "text/html", include_bytes!("../../ui/live.html")),
+    // (the live page on an iPad's or phone's home screen: its name and icons)
+    ("manifest.webmanifest", "application/manifest+json", include_bytes!("../../ui/manifest.webmanifest")),
+    ("icon-180.png", "image/png", include_bytes!("../../ui/icon-180.png")),
+    ("icon-512.png", "image/png", include_bytes!("../../ui/icon-512.png")),
     ("snapshot.js", "text/javascript", include_bytes!("../../ui/snapshot.js")),
     ("i18n.js", "text/javascript", include_bytes!("../../ui/i18n.js")),
     ("i18n/ar.js", "text/javascript", include_bytes!("../../ui/i18n/ar.js")),

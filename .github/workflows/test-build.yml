@@ -19,7 +19,7 @@ jobs:
       matrix:
         include:
           - { os: windows, runner: windows-latest, target: x86_64-pc-windows-msvc }
-          - { os: macos,   runner: macos-latest,   target: aarch64-apple-darwin }
+          - { os: macos,   runner: macos-15,       target: aarch64-apple-darwin }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     defaults:
@@ -122,15 +122,27 @@ jobs:
       # that's what the result says.
       - name: Window capture (macOS)
         if: matrix.os == 'macos'
-        continue-on-error: true
         run: |
           APP=target/universal-apple-darwin/release/vi-translator
           mkdir -p video-bench
           osascript -l JavaScript tools/test_window.js &
           sleep 6
-          { echo "ScreenCaptureKit:"; "$APP" --capture-window "VIT capture test" 10 video-bench/capture-sck.png 2>&1 | tail -3
-            echo "CoreGraphics:"; VIT_CAPTURE=cg "$APP" --capture-window "VIT capture test" 10 video-bench/capture-cg.png 2>&1 | tail -3; } | tee video-bench/window-capture.txt
+          SCK=$("$APP" --capture-window "VIT capture test" 10 video-bench/capture-sck.png 2>&1 | tail -1 || true)
+          CG=$(VIT_CAPTURE=cg "$APP" --capture-window "VIT capture test" 10 video-bench/capture-cg.png 2>&1 | tail -1 || true)
           kill %1 || true
+          printf 'ScreenCaptureKit: %s\nCoreGraphics: %s\n' "$SCK" "$CG" | tee video-bench/window-capture.txt
+          # (no Screen Recording permission on the runner: nothing to measure, said so; else 120 frames at
+          # 55 a second or more with no wait over 50 ms)
+          if echo "$SCK" | grep -q "Screen Recording"; then echo "skipped: the runner doesn't allow screen recording" | tee -a video-bench/window-capture.txt; exit 0; fi
+          python3 - "$SCK" <<'PY'
+          import re, sys
+          line = sys.argv[1]
+          m = re.search(r"first 120: ([0-9.]+) a second, longest gap (\d+) ms", line)
+          assert m, line
+          fps, gap = float(m.group(1)), int(m.group(2))
+          assert fps >= 55 and gap <= 50, f"ScreenCaptureKit: {fps} a second, longest gap {gap} ms"
+          print("ok", fps, gap)
+          PY
 
       - uses: actions/upload-artifact@v4
         if: always() && matrix.os == 'macos'

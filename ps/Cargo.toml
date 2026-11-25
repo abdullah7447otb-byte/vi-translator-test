@@ -18,3 +18,7 @@ sdl2 = { version = "0.39", features = ["bundled", "static-link"] }
 
 [build-dependencies]
 cc = "1"
+
+[dev-dependencies]
+# (the video benchmark: CPU time the process spent decoding)
+cpu-time = "1"

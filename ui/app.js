@@ -644,6 +644,37 @@ function ps5DecodeRow(s) {
     s.decoder ? el("p", { class: "muted small" }, t("Decoding now: {name}", { name: s.decoder })) : null);
 }
 
+// read only: the PS5 plays on its own screen with its own controller; the app reads its stream and the
+// translations go to the home-network page (an iPad beside the screen)
+function ps5ReadOnlyRow(s) {
+  const on = el("input", { type: "checkbox", id: "ps5-read-only" });
+  on.checked = !!s.read_only;
+  const where = el("div", { class: "small muted ps5-lan" });
+  const showLan = async () => {
+    where.textContent = "";
+    if (!on.checked) return;
+    try {
+      const i = await invoke("lan_info");
+      if (!i.url) { where.textContent = t("Starting… If Windows asks, allow the app on private networks."); setTimeout(showLan, 1500); return; }
+      where.innerHTML = `<div>${AS.esc(t("On the iPad, open:"))} <b dir="ltr">${AS.esc(i.url)}</b></div><div class="lan-qr">${i.qr || ""}</div>`;
+      const svg = where.querySelector("svg");
+      if (svg) Object.assign(svg.style, { width: "120px", height: "120px" });
+    } catch (e) { where.textContent = String(e); }
+  };
+  on.addEventListener("change", () => {
+    ps5 = { ...ps5, read_only: on.checked };
+    invoke("ps5_set_read_only", { on: on.checked });
+    // (the home-network page is where the translations go)
+    if (on.checked && !cfg.lan_page) { cfg.lan_page = true; save(false); setTimeout(showLan, 900); } else showLan();
+  });
+  showLan();
+  return el("div", { class: "field" },
+    el("label", { class: "check" }, on, " ", el("span", {}, t("Read only (the PS5 on its own screen)"))),
+    el("p", { class: "muted small" }, t("Play on the monitor with the PS5's own controller; the app only reads the stream. No controller or sound goes through the app, and the translations show on the home-network page, on an iPad or phone beside the screen.")),
+    el("p", { class: "muted small" }, t("Sign the app in with a second PSN account (a free one) and link the PS5 with it: Remote Play with your own account would take over your session and switch your controller off; with a second account your game isn't interrupted. On the PS5, don't pick that second user: it only watches.")),
+    where);
+}
+
 function ps5Linked(s) {
   const name = s.console.name || "PS5";
   const note = el("p", { class: "small muted" });
@@ -677,7 +708,8 @@ function ps5Linked(s) {
       el("div", { class: "field" }, el("label", { for: "ps5-quality" }, t("Stream quality")), quality,
         el("p", { class: "muted small" }, t("1080p reads small text best; 720p for a slower home network."))),
       ps5SmoothRow(s),
-      ps5DecodeRow(s)),
+      ps5DecodeRow(s),
+      ps5ReadOnlyRow(s)),
     el("p", { class: "muted small ps5-foot" }, t("Controllers connected to this PC play on the PS5. Use Play to play full screen.")),
   );
 }
@@ -1620,7 +1652,8 @@ function renderTiming() {
   th.className = "field";
   th.innerHTML = `<label for="ort-threads">${t("Offline translator threads")}</label>
     <select id="ort-threads">${[0, 1, 2, 3, 4, 6, 8].map((n) => `<option value="${n}" ${(cfg.ort_threads || 0) === n ? "selected" : ""}>${n === 0 ? AS.esc(t("Automatic")) : n}</option>`).join("")}</select>
-    <div class="muted small" style="margin:4px 0 0">${t("Fewer threads leave more of the computer to the picture; the change applies the next time the app starts.")}</div>`;
+    <div class="muted small" style="margin:4px 0 0">${t("Fewer threads leave more of the computer to the picture; the change applies the next time the app starts.")}</div>
+    <div class="muted small" style="margin:4px 0 0">${AS.esc(t("Automatic on this computer: {n} threads ({cores} cores). A computer with 8 cores or fewer, like a 4-core laptop, gets 2, so the picture keeps its share.", { n: (navigator.hardwareConcurrency || 4) <= 8 ? 2 : 4, cores: navigator.hardwareConcurrency || "?" }))}</div>`;
   th.querySelector("select").addEventListener("change", (e) => { cfg.ort_threads = +e.target.value; save(false); });
   form.appendChild(th);
   const fields = [
