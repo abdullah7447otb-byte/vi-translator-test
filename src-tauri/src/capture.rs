@@ -125,6 +125,11 @@ pub struct Shared {
     /// Or, from a capture card that sends YUY2: the card's own frame as it came, no conversion or
     /// JPEG (the window turns it into colour on the GPU, the way OBS does). Numbered with `preview_seq`.
     pub preview_yuv: Mutex<Option<(u64, Arc<YuvFrame>)>>,
+    /// When the newest frames were made (app_ms), by seq: the full frames' (the reading and the
+    /// phone's anchor) and the raw preview's. The window holds the anchor's move until it draws
+    /// the picture of the same moment, so the Arabic on the phone and the phone move together.
+    pub frame_times: Mutex<std::collections::VecDeque<(u64, u64)>>,
+    pub preview_times: Mutex<std::collections::VecDeque<(u64, u64)>>,
     pub preview_seq: AtomicU64,
     pub preview_clients: AtomicUsize,
     /// when the app's window last asked for a preview frame (ms since the app started)
@@ -250,6 +255,20 @@ fn app_ms() -> u64 {
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
+/// A frame's time, kept for the last few frames (see `frame_times`).
+fn remember(times: &Mutex<std::collections::VecDeque<(u64, u64)>>, seq: u64) {
+    let mut t = times.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    t.push_back((seq, app_ms()));
+    while t.len() > 16 {
+        t.pop_front();
+    }
+}
+
+/// The time frame `seq` was made at (app_ms), if it's one of the last few.
+pub fn time_of(times: &Mutex<std::collections::VecDeque<(u64, u64)>>, seq: u64) -> Option<u64> {
+    times.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().rev().find(|(s, _)| *s == seq).map(|(_, t)| *t)
+}
+
 impl Shared {
     pub fn latest(&self) -> Option<Arc<FrameData>> {
         self.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
@@ -295,6 +314,7 @@ impl Shared {
             None => (w, h, rgba),
         };
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        remember(&self.frame_times, seq);
         *self.frame.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(FrameData { w, h, rgba, seq }));
     }
     /// Store a preview frame (small RGBA; the preview thread turns it into JPEG).
@@ -313,6 +333,7 @@ impl Shared {
     #[cfg_attr(not(windows), allow(dead_code))] // (the Windows capture card reader's)
     pub fn put_preview_yuv(&self, f: YuvFrame) {
         let seq = self.preview_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        remember(&self.preview_times, seq);
         *self.preview_yuv.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((seq, Arc::new(f)));
     }
     /// Store a ready-made preview JPEG (OBS sends one).

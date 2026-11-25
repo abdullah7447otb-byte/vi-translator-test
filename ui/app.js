@@ -2446,6 +2446,7 @@ function setPreview(on) {
   try { localStorage.setItem("preview", on ? "on" : "off"); } catch {}
   pullRun++; // stops the picture loop; when on, the next "frame" event (twice a second) starts it again
   streaming = "";
+  AS.pictureStopped();
 }
 $("preview-on").addEventListener("change", (e) => setPreview(e.target.checked));
 $("preview-on-2").addEventListener("click", () => setPreview(true));
@@ -2485,6 +2486,8 @@ async function pullPreview(url, run) {
       const ok = f.i420 ? i420Draw(f.data, f.w, f.h, f.bt709, f.full, f.stretch) : yuvDraw(f.data, f.w, f.h, f.bt709, f.full);
       if (ok) {
         frameShown();
+        // (the phone's Arabic moves with this picture: AS.picturePainted)
+        if (f.t) AS.picturePainted(f.t);
         canvas.hidden = false;
         img.hidden = true;
         if (first) { first = false; fitFrame(); }
@@ -2515,7 +2518,7 @@ async function pullPreview(url, run) {
         const h = Number(r.headers.get("X-Height"));
         const data = new Uint8Array(await r.arrayBuffer());
         if (run !== pullRun) break;
-        queue.push({ data, w, h, i420: kind === "application/x-i420", stretch: r.headers.get("X-Stretch") === "1",
+        queue.push({ data, w, h, i420: kind === "application/x-i420", stretch: r.headers.get("X-Stretch") === "1", t: Number(r.headers.get("X-Time")) || 0,
           bt709: r.headers.get("X-Matrix") !== "601", full: r.headers.get("X-Range") === "full" });
         if (!drawing) { drawing = true; requestAnimationFrame(drawOne); }
         continue;
@@ -2528,6 +2531,8 @@ async function pullPreview(url, run) {
       img.src = blobUrl;
       pictureImg();
       frameShown();
+      // (a picture with no frame times: the phone's Arabic moves as its anchor comes)
+      if (AS._sync.on) AS.pictureStopped();
       img.hidden = false;
       canvas.hidden = true;
       if (shownUrl) URL.revokeObjectURL(shownUrl);
@@ -2561,6 +2566,7 @@ listen("frame", (e) => {
   } else {
     streaming = "";
     pullRun++; // stops the picture loop
+    AS.pictureStopped();
     frameSize = { w: 0, h: 0 };
     shown = { w: 0, h: 0 };
     $("frame").removeAttribute("src");

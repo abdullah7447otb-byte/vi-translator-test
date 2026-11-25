@@ -106,7 +106,7 @@ fn preview_frame(shared: &Shared, s: &mut TcpStream, query: &str, origin: Option
     let after: u64 = query.split('&').find_map(|kv| kv.strip_prefix("after=")).and_then(|v| v.parse().ok()).unwrap_or(0);
     // (the picture is for the app's own window: no other website may read it)
     let expose = match origin {
-        Some(o) => format!("Access-Control-Allow-Origin: {o}\r\nVary: Origin\r\nAccess-Control-Expose-Headers: X-Seq, X-Width, X-Height, X-Matrix, X-Range, X-Stretch\r\n"),
+        Some(o) => format!("Access-Control-Allow-Origin: {o}\r\nVary: Origin\r\nAccess-Control-Expose-Headers: X-Seq, X-Time, X-Width, X-Height, X-Matrix, X-Range, X-Stretch\r\n"),
         None => String::new(),
     };
     let start = std::time::Instant::now();
@@ -126,8 +126,10 @@ fn preview_frame(shared: &Shared, s: &mut TcpStream, query: &str, origin: Option
                     crate::capture::YuvLayout::Yuy2 => "application/x-yuy2",
                     crate::capture::YuvLayout::I420 => "application/x-i420",
                 };
+                // (when the frame was made: the window moves the phone's Arabic with this picture)
+                let at = crate::capture::time_of(&shared.preview_times, seq).unwrap_or(0);
                 let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nX-Seq: {seq}\r\nX-Width: {}\r\nX-Height: {}\r\nX-Matrix: {}\r\nX-Range: {}\r\nX-Stretch: {}\r\nCache-Control: no-store\r\n{expose}Connection: keep-alive\r\n\r\n",
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nX-Seq: {seq}\r\nX-Time: {at}\r\nX-Width: {}\r\nX-Height: {}\r\nX-Matrix: {}\r\nX-Range: {}\r\nX-Stretch: {}\r\nCache-Control: no-store\r\n{expose}Connection: keep-alive\r\n\r\n",
                     f.data.len(),
                     f.w,
                     f.h,
@@ -174,7 +176,7 @@ fn stream_preview(shared: &Shared, mut s: TcpStream) {
         let next = shared
             .preview_jpeg
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .filter(|(seq, _)| *seq != sent || sent_at.elapsed() >= Duration::from_secs(1));
         match next {

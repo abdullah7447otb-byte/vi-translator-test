@@ -79,7 +79,7 @@ def serve(ui, w, h):
                     time.sleep(max(0.0005, (state["t0"] + k / FPS) - time.monotonic()))
                 state["sent"] += 1
                 return self.send(pics[k % len(pics)], "application/x-i420",
-                                 [("X-Seq", str(k)), ("X-Width", str(w)), ("X-Height", str(h)), ("X-Matrix", "709"), ("X-Range", "limited")])
+                                 [("X-Seq", str(k)), ("X-Time", str(int(1000 + k * 1000 / FPS))), ("X-Width", str(w)), ("X-Height", str(h)), ("X-Matrix", "709"), ("X-Range", "limited")])
             if p in ("/", "/index.html"):
                 html = open(os.path.join(ui, "index.html"), "rb").read()
                 html = html.replace(b'<script src="app.js"></script>', b'<script src="/__mockcfg.js"></script><script src="/__mock.js"></script><script src="app.js"></script>')
@@ -117,7 +117,26 @@ def run(pg, base, seconds, mode, extra):
       window.i420Draw = function (...a) { const ok = orig.apply(this, a); if (ok) window.__drawn.push(performance.now()); return ok; };
     }""")
     if extra == "phone":
-        pg.evaluate("p => { MOCK_EMIT('phone', p); MOCK_EMIT('phone-anchor', { gen: 1, m: [1,0,0,1,0,0,0,0] }); }", PHONE)
+        pg.evaluate("p => { MOCK_EMIT('phone', p); MOCK_EMIT('phone-anchor', { gen: 1, quad: p.quad }); }", PHONE)
+        # (anchors as the app sends them: tracked on a frame, arriving before that frame's picture is drawn —
+        # two frames ahead; each applied when it is, against the picture on screen then)
+        pg.evaluate("""q => {
+          window.__applied = [];
+          let n = 0, seen = null;
+          setInterval(() => {
+            const t = AS._sync.painted;
+            if (!t) return;
+            n++;
+            const d = 0.002 * Math.sin(n / 5);
+            MOCK_EMIT('phone-anchor', { gen: 1, t: t + 2 * 1000 / 60, quad: q.map(c => [c[0] + d, c[1]]) });
+          }, 50);
+          const watch = () => {
+            const a = AS._inplace.anchor;
+            if (a && a !== seen) { seen = a; if (a.t) window.__applied.push([a.t, AS._sync.painted, AS._sync.prev]); }
+            requestAnimationFrame(watch);
+          };
+          requestAnimationFrame(watch);
+        }""", PHONE["quad"])
     if extra == "panel":
         pg.evaluate("() => { const b = document.getElementById('pic-btn'); if (b) b.click(); }")
     pg.evaluate(f"() => MOCK_EMIT('frame', {{ live: true, w: 1920, h: 1080, preview_url: '{base}/preview', status: 'Playing on PS5', load: 0, read_fps: 10, preview_fps: 60 }})")
@@ -127,8 +146,9 @@ def run(pg, base, seconds, mode, extra):
         pg.wait_for_timeout(500)
         pg.evaluate(f"() => MOCK_EMIT('frame', {{ live: true, w: 1920, h: 1080, preview_url: '{base}/preview', status: 'Playing on PS5', load: 0, read_fps: 10, preview_fps: 60 }})")
     drawn = pg.evaluate("() => window.__drawn")
+    applied = pg.evaluate("() => window.__applied || []")
     refresh = pg.evaluate("""() => new Promise(r => { const t = []; const f = (x) => { t.push(x); if (t.length < 61) requestAnimationFrame(f); else r((t[60] - t[0]) / 60); }; requestAnimationFrame(f); })""")
-    return drawn, refresh
+    return drawn, refresh, applied
 
 
 def main():
@@ -138,7 +158,7 @@ def main():
     srv, state = serve(ui, w, h)
     base = f"http://127.0.0.1:{srv.server_address[1]}"
     from playwright.sync_api import sync_playwright
-    rows, ok = [], True
+    rows, ok, sync_rows = [], True, []
     with sync_playwright() as p:
         try:
             b = p.chromium.launch(channel="chrome", args=["--ignore-gpu-blocklist", "--enable-gpu-rasterization"])
@@ -150,7 +170,14 @@ def main():
                 errors = []
                 pg.on("pageerror", lambda e: errors.append(str(e)))
                 state["t0"], state["sent"] = time.monotonic(), 0
-                drawn, refresh = run(pg, base, seconds, mode, extra)
+                drawn, refresh, applied = run(pg, base, seconds, mode, extra)
+                if extra == "phone":
+                    # (how far the Arabic is from its picture: + it shows before its frame, − after)
+                    leads = [a - p for a, p, _ in applied]
+                    # (applied with the first picture of its frame or later: never with a picture before it,
+                    # and never a picture later than the first one at or after its frame)
+                    exact = sum(1 for a, p, q in applied if q < a <= p)
+                    sync_rows.append((mode, len(leads), max(leads) if leads else None, min(leads) if leads else None, exact))
                 pg.close()
                 served = state["sent"]
                 if len(drawn) < 2:
@@ -178,6 +205,16 @@ def main():
         name = {"smooth": "Smooth", "low": "Lowest delay"}[mode]
         over = {"plain": "nothing", "phone": "in-place phone layer", "panel": "picture panel open"}[extra]
         lines.append(f"| {name} | {over} | {made} | {n} | {share:.1f} | {worst:.1f} | {refresh:.1f} | {'yes' if good else 'NO'}{' (' + '; '.join(errors)[:120] + ')' if errors else ''} |")
+    lines += ["", "## The phone's Arabic against its picture", "",
+              "Anchors sent two frames ahead of the picture (as the tracking runs ahead of the window's frame queue); each is applied when the picture of its frame is drawn.",
+              "Lead: the anchor's frame time minus the picture's on screen when it was applied (+: the Arabic ahead of the picture). "
+              "With its frame: applied with the first picture drawn of that frame or after it, not one sooner and not one later. "
+              "Pass: never ahead, and every anchor with its frame.", "",
+              "| Picture delay | Anchors applied | Most ahead (ms) | Most behind (ms) | With its frame | Pass |", "|---|---|---|---|---|---|"]
+    for mode, n, hi, lo, exact in sync_rows:
+        good = n > 0 and hi is not None and hi <= 0.5 and exact == n
+        ok &= good
+        lines.append(f"| {'Smooth' if mode == 'smooth' else 'Lowest delay'} | {n} | {hi if hi is None else round(hi, 1)} | {lo if lo is None else round(-lo, 1)} | {exact}/{n} | {'yes' if good else 'NO'} |")
     open(out, "w", encoding="utf-8").write("\n".join(lines) + "\n")
     print("\n".join(lines))
     sys.exit(0 if ok else 1)

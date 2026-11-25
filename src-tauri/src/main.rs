@@ -1051,7 +1051,11 @@ fn anchor_loop(app: AppHandle, shared: Arc<Shared>) {
         };
         last = f.seq;
         let (moved, generation) = phone_anchor::with(|a| (a.feed(&f.rgba, f.w, f.h, f.seq), a.generation));
-        if let Some(ev) = phone_anchor::event(generation, &moved, f.w, f.h) {
+        if let Some(mut ev) = phone_anchor::event(generation, &moved, f.w, f.h) {
+            // (the moment of the frame it was tracked on: the window applies it with that frame's picture)
+            if let Some(t) = capture::time_of(&shared.frame_times, f.seq) {
+                ev["t"] = serde_json::json!(t);
+            }
             let _ = app.emit("phone-anchor", ev.clone());
             *shared.live.phone_anchor.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ev);
         }

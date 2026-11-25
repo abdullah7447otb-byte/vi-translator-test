@@ -1872,8 +1872,45 @@ window.AS = (() => {
     L.el.style.visibility = "visible";
   }
 
+  // Where the app draws the picture itself (the PS5 in its window), each anchor waits for the picture of
+  // the frame it was tracked on (`t`, the frame's time, as the picture's X-Time): the Arabic and the phone
+  // move together, never the Arabic a frame or two ahead. Elsewhere (over a captured window, the TV, OBS)
+  // it moves at once.
+  const SYNC = { on: false, painted: 0, prev: 0, waiting: [], timer: 0 };
+
   /** A `phone-anchor` event: the layers move on the next frame (only their transform: nothing is laid out). */
   function phoneAnchor(A) {
+    if (SYNC.on && A && A.t && A.t > SYNC.painted) {
+      SYNC.waiting.push(A);
+      if (SYNC.waiting.length > 8) SYNC.waiting.shift();
+      // (no picture comes for a moment: the anchor isn't held back for it)
+      clearTimeout(SYNC.timer);
+      SYNC.timer = setTimeout(() => { const last = SYNC.waiting.pop(); SYNC.waiting = []; if (last) moveTo(last); }, 250);
+      return;
+    }
+    moveTo(A);
+  }
+
+  /** The picture of the frame made at `t` (app ms) is on screen now: the anchors tracked up to then apply. */
+  function picturePainted(t) {
+    if (!t) return;
+    SYNC.on = true;
+    SYNC.prev = SYNC.painted;
+    SYNC.painted = t;
+    let due = null;
+    while (SYNC.waiting.length && SYNC.waiting[0].t <= t) due = SYNC.waiting.shift();
+    if (due) moveTo(due);
+  }
+
+  /** The picture stream stopped (another source): anchors move at once again. */
+  function pictureStopped() {
+    SYNC.on = false;
+    const last = SYNC.waiting.pop();
+    SYNC.waiting = [];
+    if (last) moveTo(last);
+  }
+
+  function moveTo(A) {
     INPLACE.anchor = A || null;
     if (INPLACE.raf) return;
     INPLACE.raf = requestAnimationFrame(() => {
@@ -2007,5 +2044,5 @@ window.AS = (() => {
     // (a longer Arabic grows upward from the bubble's bottom, as the game's does)
     if (d.offsetHeight > h) d.style.top = `${y + h - d.offsetHeight}px`;
   }
-  return { _phone: { PHONE_BOX: PHONE_BOX, PHONE_FIT: PHONE_FIT, PHONE_QUAD: PHONE_QUAD }, STEADY, steady, setLang, styleOf, esc, segHtml, rectFor, alignOf, anchor, renderBox, renderScreen, matchedPx, placeUnderText, atText, placeAtText, look, COVER, fxOf, coverLook, drawLine, ridePlace, measureBox, renderPhone, renderPhoneInPlace, renderChatInPlace, phoneAnchor, _inplace: INPLACE };
+  return { _phone: { PHONE_BOX: PHONE_BOX, PHONE_FIT: PHONE_FIT, PHONE_QUAD: PHONE_QUAD }, STEADY, steady, setLang, styleOf, esc, segHtml, rectFor, alignOf, anchor, renderBox, renderScreen, matchedPx, placeUnderText, atText, placeAtText, look, COVER, fxOf, coverLook, drawLine, ridePlace, measureBox, renderPhone, renderPhoneInPlace, renderChatInPlace, phoneAnchor, picturePainted, pictureStopped, _inplace: INPLACE, _sync: SYNC };
 })();
