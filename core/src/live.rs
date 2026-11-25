@@ -7,10 +7,55 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Menu text translations, for one target language (the translator's answers in another are dropped).
+/// At most `MenuCache::MOST` of them (the oldest go first), found by their English as it is, or as
+/// OCR spells it a little differently (`similar`) without looking through all of them.
 #[derive(Default)]
 pub struct MenuCache {
     pub lang: String,
     pub map: HashMap<String, String>,
+    /// the English in the order it came, oldest first
+    order: VecDeque<String>,
+    /// the English by its length in characters (`ocr::similar` only matches lengths within 15 %)
+    by_len: HashMap<usize, Vec<String>>,
+}
+
+impl MenuCache {
+    pub const MOST: usize = 5000;
+
+    pub fn insert(&mut self, en: String, ar: String) {
+        if self.map.insert(en.clone(), ar).is_none() {
+            self.by_len.entry(en.chars().count()).or_default().push(en.clone());
+            self.order.push_back(en);
+        }
+        while self.order.len() > Self::MOST {
+            let Some(old) = self.order.pop_front() else { break };
+            self.map.remove(&old);
+            if let Some(v) = self.by_len.get_mut(&old.chars().count()) {
+                v.retain(|e| *e != old);
+            }
+        }
+    }
+
+    /// The translation of `en` as it is, else of one OCR spelt alike.
+    pub fn similar(&self, en: &str) -> Option<String> {
+        if let Some(a) = self.map.get(en) {
+            return Some(a.clone());
+        }
+        let n = en.chars().count();
+        // (lengths `similar` can match: a difference under 15 % of the longer)
+        let (lo, hi) = (n * 17 / 20, n * 20 / 17 + 1);
+        (lo..=hi)
+            .filter_map(|len| self.by_len.get(&len))
+            .flat_map(|v| v.iter())
+            .find(|k| crate::ocr::similar(k, en))
+            .and_then(|k| self.map.get(k).cloned())
+    }
+
+    pub fn clear(&mut self) {
+        self.map.clear();
+        self.order.clear();
+        self.by_len.clear();
+    }
 }
 
 #[derive(Default)]
@@ -122,6 +167,22 @@ pub fn overlay_state(cfg: &Mutex<crate::config::Config>, live: &Live) -> serde_j
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_menu_cache_finds_ocr_spellings_and_keeps_the_newest() {
+        let mut c = MenuCache::default();
+        c.insert("Mission Failed".into(), "فشلت المهمة".into());
+        c.insert("Settings".into(), "الإعدادات".into());
+        assert_eq!(c.similar("Settings").as_deref(), Some("الإعدادات"));
+        assert_eq!(c.similar("Missi0n Failed").as_deref(), Some("فشلت المهمة"));
+        assert_eq!(c.similar("Map"), None);
+        for i in 0..MenuCache::MOST {
+            c.insert(format!("line {i}"), format!("سطر {i}"));
+        }
+        assert_eq!(c.map.len(), MenuCache::MOST);
+        assert_eq!(c.similar("Mission Failed"), None, "the oldest went first");
+        assert_eq!(c.similar("line 4999").as_deref(), Some("سطر 4999"));
+    }
+
     use super::*;
     use crate::config::Config;
 

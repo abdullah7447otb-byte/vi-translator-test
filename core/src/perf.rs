@@ -70,3 +70,44 @@ pub fn translating(on: bool) {
 pub fn translating_for() -> Option<Duration> {
     TRANSLATING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).map(|t| t.elapsed())
 }
+
+/// The least time between reads the performance mode allows now (ms; 0: as the settings say). The
+/// desktop app sets it (src-tauri/src/load.rs); the reading never reads more often.
+pub static READ_FLOOR_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The average of this kind's samples over the last `secs` seconds (none in that time: None).
+pub fn recent_avg(kind: PerfKind, secs: u64) -> Option<f64> {
+    let p = PERF.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let now = Instant::now();
+    let v: Vec<f64> = p.as_ref()?.samples[kind as usize].iter().rev().take_while(|(t, _)| now - *t <= Duration::from_secs(secs)).map(|(_, ms)| *ms).collect();
+    (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64)
+}
+
+/// This thread at a lower priority than the picture's (the translator's: a line ready a few
+/// milliseconds later is never seen, a picture late is). macOS: the "utility" quality of service,
+/// which the threads it starts take too; Windows: below normal.
+pub fn lower_this_thread() {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn pthread_set_qos_class_self_np(qos: u32, relative_priority: i32) -> i32;
+        }
+        const QOS_CLASS_UTILITY: u32 = 0x11;
+        unsafe {
+            pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+        }
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentThread() -> isize;
+            fn SetThreadPriority(thread: isize, priority: i32) -> i32;
+        }
+        const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
+        unsafe {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        }
+    }
+}
+

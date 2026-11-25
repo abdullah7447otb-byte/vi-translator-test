@@ -348,7 +348,7 @@ pub fn start(name: String, shared: Arc<Shared>, big: bool) -> DeviceCapture {
                         } else {
                             // the card's frame as it is: the window converts it on the GPU
                             last_preview = Instant::now();
-                            shared.put_preview_yuv(crate::capture::YuvFrame { w, h, color, data: px });
+                            shared.put_preview_yuv(crate::capture::YuvFrame { w, h, color, layout: crate::capture::YuvLayout::Yuy2, stretch: false, data: px });
                         }
                     }
                 }
@@ -366,7 +366,7 @@ pub fn start(name: String, shared: Arc<Shared>, big: bool) -> DeviceCapture {
                         } else {
                             last_preview = Instant::now();
                             let color = crate::capture::YuvColor { bt709: true, full_range: false };
-                            shared.put_preview_yuv(crate::capture::YuvFrame { w, h, color, data: yuy2 });
+                            shared.put_preview_yuv(crate::capture::YuvFrame { w, h, color, layout: crate::capture::YuvLayout::Yuy2, stretch: false, data: yuy2 });
                         }
                     } else if preview {
                         last_preview = Instant::now();

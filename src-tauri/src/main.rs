@@ -26,6 +26,8 @@ mod vcam;
 mod xbox;
 // PS5 remote play in the app (chiaki-ng)
 mod ps5;
+// how hard the app works (Performance mode)
+mod load;
 
 // The reading and translating are the core's (shared with the phone apps); its modules read as this
 // crate's own (`crate::config`, `crate::ocr` …).
@@ -221,6 +223,10 @@ struct FrameEvent {
     status: String,
     /// where the live preview streams from
     preview_url: String,
+    /// the performance mode's level now (0: nothing lowered), and the rates it leaves (per second)
+    load: u8,
+    read_fps: u64,
+    preview_fps: u64,
 }
 
 // ------------------------------------------------------------------------------------- commands
@@ -831,7 +837,16 @@ fn preview_loop(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared>) {
             let _ = app.emit_to(
                 "main",
                 "frame",
-                FrameEvent { live: frame.is_some(), w, h, status, preview_url: format!("http://127.0.0.1:{port}/preview") },
+                FrameEvent {
+                    live: frame.is_some(),
+                    w,
+                    h,
+                    status,
+                    preview_url: format!("http://127.0.0.1:{port}/preview"),
+                    load: load::LEVEL.load(std::sync::atomic::Ordering::Relaxed) as u8,
+                    read_fps: 1000 / shared.capture_ms.load(std::sync::atomic::Ordering::Relaxed).max(1),
+                    preview_fps: 1000 / shared.preview_ms.load(std::sync::atomic::Ordering::Relaxed).max(1),
+                },
             );
             if frame.is_none() {
                 *shared.preview_raw.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
@@ -857,8 +872,10 @@ fn stall_of(picture: Option<f64>, read: Option<f64>, translating: Option<f64>) -
 
 /// Once a second: what has stalled (into the status line and the log); every 10 s a line of figures
 /// for the log (pictures a second, the reading's and the translator's times, the source's status).
-fn watch_loop(shared: Arc<Shared>) {
+fn watch_loop(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
     use vi_translator_core::perf::{self, PerfKind};
+    let mut load = load::Load::default();
+    let mut sent_before = shared.preview_sent.load(std::sync::atomic::Ordering::Relaxed);
     let mut last_seq = shared.seq.load(std::sync::atomic::Ordering::Relaxed);
     let mut seq_at = Instant::now();
     let mut ten = (Instant::now(), last_seq);
@@ -885,6 +902,24 @@ fn watch_loop(shared: Arc<Shared>) {
         }
         was = stall.clone();
         *shared.stall.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = stall;
+        // the performance mode: did the computer keep up this second?
+        let (mode, interval) = {
+            let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            (c.perf_mode.clone(), c.timing().0)
+        };
+        let sent = shared.preview_sent.load(std::sync::atomic::Ordering::Relaxed);
+        let want = 1000 / shared.preview_ms.load(std::sync::atomic::Ordering::Relaxed).max(1);
+        let second = load::Second {
+            late_frames: ps5::LATE_LAST_SECOND.swap(0, std::sync::atomic::Ordering::Relaxed),
+            read_ms: live.then(|| perf::recent_avg(PerfKind::Read, 2)).flatten(),
+            read_interval_ms: interval.max(perf::READ_FLOOR_MS.load(std::sync::atomic::Ordering::Relaxed)),
+            preview_sent: (shared.watching() && live && !changes_only).then_some((sent - sent_before, want)),
+        };
+        sent_before = sent;
+        let before = load.level;
+        if load.second(&mode, &second) != before {
+            vi_translator_core::vlog!("[load] level {} -> {} ({mode}; {second:?})", before, load.level);
+        }
         if ten.0.elapsed() >= Duration::from_secs(10) {
             let fps = (seq - ten.1) as f64 / ten.0.elapsed().as_secs_f64();
             let status = shared.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
@@ -1968,8 +2003,8 @@ fn main() {
                 vi_translator_core::log::spawn_supervised("vcam", move || vcam::run(c.clone(), s.clone()));
             }
             {
-                let s = shared.clone();
-                vi_translator_core::log::spawn_supervised("watch", move || watch_loop(s.clone()));
+                let (s, c) = (shared.clone(), cfg.clone());
+                vi_translator_core::log::spawn_supervised("watch", move || watch_loop(s.clone(), c.clone()));
             }
             {
                 let (h, c, s) = (handle.clone(), cfg.clone(), shared.clone());

@@ -67,6 +67,8 @@ pub struct Shared {
     /// What has stalled, when something has (no new picture, no reading, the translator stuck): shown
     /// in the status line instead of `status` while it lasts (see main.rs watch_loop).
     pub stall: Mutex<Option<String>>,
+    /// frames of the app's picture sent to its window so far (for the performance mode)
+    pub preview_sent: AtomicU64,
     /// Live preview, separate from the full frames read for text: a frame (≤ PREVIEW_W wide) at
     /// the preview rate, made only while someone watches (see `watching`), and its JPEG.
     pub preview_raw: Mutex<Option<Arc<FrameData>>>,
@@ -111,11 +113,26 @@ pub struct YuvColor {
     pub full_range: bool,
 }
 
-/// A YUY2 frame: 2 bytes per pixel, each pair of pixels stored as Y0 U Y1 V, rows `w * 2` bytes.
+/// How a raw frame's bytes are laid out.
+#[cfg_attr(not(windows), allow(dead_code))] // (YUY2: the Windows capture card reader's)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum YuvLayout {
+    /// 2 bytes per pixel, each pair of pixels stored as Y0 U Y1 V, rows `w * 2` bytes (a card's own)
+    Yuy2,
+    /// 1.5 bytes per pixel: the luma plane (`w * h`), then the two quarter-size chroma planes
+    /// (`w/2 * h/2` each); `w` and `h` even (the PS5's, as decoded)
+    I420,
+}
+
+/// A raw frame for the app's picture, turned into colour on the GPU.
 pub struct YuvFrame {
     pub w: u32,
     pub h: u32,
     pub color: YuvColor,
+    pub layout: YuvLayout,
+    /// the PS5's levels: studio range twice over, stretched once more on the GPU (see
+    /// ps::play::i420_to_yuy2's `stretch`)
+    pub stretch: bool,
     pub data: Vec<u8>,
 }
 
@@ -382,8 +399,9 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
     loop {
         let (want, obs_port, obs_password, source_crop, overlay_window, overlay_crop, picture_4k) = {
             let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            shared.capture_ms.store(1000 / c.capture_fps.clamp(1, 60) as u64, Ordering::Relaxed);
-            shared.preview_ms.store(1000 / c.preview_fps.clamp(1, 60) as u64, Ordering::Relaxed);
+            // (no faster than the performance mode allows now: load.rs)
+            shared.capture_ms.store((1000 / c.capture_fps.clamp(1, 60) as u64).max(crate::load::CAPTURE_FLOOR_MS.load(Ordering::Relaxed)), Ordering::Relaxed);
+            shared.preview_ms.store((1000 / c.preview_fps.clamp(1, 60) as u64).max(crate::load::PREVIEW_FLOOR_MS.load(Ordering::Relaxed)), Ordering::Relaxed);
             PREVIEW_MAX.store(if c.picture_4k { PREVIEW_W_4K } else { PREVIEW_W }, Ordering::Relaxed);
             (c.window_title.clone(), c.obs_port, c.obs_password.clone(), c.source_crop, c.overlay_window.clone(), c.overlay_crop, c.picture_4k)
         };

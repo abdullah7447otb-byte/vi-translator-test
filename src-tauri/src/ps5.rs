@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use vi_translator_ps as ps;
 
-use crate::capture::{Shared, YuvColor, YuvFrame};
+use crate::capture::{Shared, YuvColor, YuvFrame, YuvLayout};
 
 /// The source value for the PS5.
 pub const PREFIX: &str = "ps5:";
@@ -93,6 +93,10 @@ struct Global {
     /// smooth play as the settings say, read by the playing stream
     smooth: AtomicBool,
 }
+
+/// PS5 frames dropped in the last second because this computer decoded them too late (for the
+/// performance mode, load.rs; it takes the number and leaves 0).
+pub static LATE_LAST_SECOND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Smooth play: the frames read for text while the PS5 plays at most this often (20 a second), so
 /// the reading leaves the computer free to decode the picture. A line on screen is still read within
@@ -507,8 +511,10 @@ impl ps::play::Screen for ToShared {
         }
         if preview {
             t.1 = Instant::now();
-            let yuy2 = ps::play::i420_to_yuy2(&f, true);
-            self.shared.put_preview_yuv(YuvFrame { w, h: f.h, color: COLOR, data: yuy2 });
+            // (the planes as they are, packed: the window turns them into colour, levels stretched,
+            // on the GPU — a quarter fewer bytes than YUY2, and no conversion here)
+            let (pw, ph) = (w, f.h & !1);
+            self.shared.put_preview_yuv(YuvFrame { w: pw, h: ph, color: COLOR, layout: YuvLayout::I420, stretch: true, data: pack_i420(&f, pw, ph) });
         }
     }
 
@@ -532,6 +538,22 @@ impl ps::play::Screen for ToShared {
             vi_translator_core::vlog!("[ps5] {text}");
         }
     }
+}
+
+/// The planes packed without their rows' padding, `w` × `h` (even): Y, then U, then V.
+fn pack_i420(f: &ps::play::I420, w: u32, h: u32) -> Vec<u8> {
+    let (w, h) = (w as usize, h as usize);
+    let (cw, ch) = (w / 2, h / 2);
+    let mut out = Vec::with_capacity(w * h + 2 * cw * ch);
+    for y in 0..h {
+        out.extend_from_slice(&f.y[y * f.y_stride..y * f.y_stride + w]);
+    }
+    for plane in [&f.u, &f.v] {
+        for y in 0..ch {
+            out.extend_from_slice(&plane[y * f.uv_stride..y * f.uv_stride + cw]);
+        }
+    }
+    out
 }
 
 /// The PS5's planes as RGBA for the reading: the same picture as `yuy2_to_rgba(i420_to_yuy2(f, true))`
@@ -660,6 +682,7 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
                 let frames = st.frames.load(Ordering::Relaxed);
                 let now = (frames, st.net_lost.load(Ordering::Relaxed), st.late.load(Ordering::Relaxed));
                 window.push_back((now.0 - before.0, now.1 - before.1, now.2 - before.2));
+                LATE_LAST_SECOND.fetch_add(now.2 - before.2, Ordering::Relaxed);
                 before = now;
                 while window.len() > 10 {
                     window.pop_front();
@@ -708,6 +731,13 @@ mod tests {
         let f = ps::play::I420 { w, h, y, u, v, y_stride: ys, uv_stride: us };
         let two = crate::capture::yuy2_to_rgba(&ps::play::i420_to_yuy2(&f, true), w, h, COLOR);
         assert_eq!(i420_to_rgba(&f), two);
+    }
+
+    #[test]
+    fn the_planes_are_packed_without_padding() {
+        // 4 x 2, rows padded to 6 (luma) and 3 (chroma)
+        let f = ps::play::I420 { w: 4, h: 2, y: vec![1, 2, 3, 4, 0, 0, 5, 6, 7, 8, 0, 0], u: vec![9, 10, 0], v: vec![11, 12, 0], y_stride: 6, uv_stride: 3 };
+        assert_eq!(pack_i420(&f, 4, 2), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     }
 
     #[test]

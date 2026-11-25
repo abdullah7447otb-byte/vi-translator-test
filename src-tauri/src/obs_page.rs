@@ -47,17 +47,41 @@ fn state_json(cfg: &Mutex<Config>, shared: &Shared) -> Vec<u8> {
     serde_json::to_vec(&v).unwrap_or_default()
 }
 
+/// Addressed to this PC by its own name.
+fn host_ok(host: &str, port: u16) -> bool {
+    [format!("127.0.0.1:{port}"), format!("localhost:{port}"), format!("[::1]:{port}")].iter().any(|h| h == host)
+}
+
 fn handle(app: &AppHandle, cfg: &Mutex<Config>, shared: &Shared, s: TcpStream, port: u16) {
     let Some(req) = read_request(&s) else { return };
+    handle_request(app, cfg, shared, s, port, req)
+}
+
+fn handle_request(app: &AppHandle, cfg: &Mutex<Config>, shared: &Shared, s: TcpStream, port: u16, req: vi_translator_core::net::Request) {
     // Only requests addressed to this PC by its own name (OBS, the app's window): a website that
     // points its own domain name here (DNS rebinding) gets nothing.
-    if ![format!("127.0.0.1:{port}"), format!("localhost:{port}"), format!("[::1]:{port}")].contains(&req.host) {
+    if !host_ok(&req.host, port) {
         return respond(s, "403 Forbidden", "text/plain", b"not allowed");
     }
-    let (path, query) = (req.path.as_str(), req.query.as_str());
+    if req.path == "/preview" || req.path == "/preview.jpg" {
+        // (frame after frame on the same connection while the window keeps asking; anything else
+        // asked on it is answered as usual, and closes it)
+        let (mut s, mut req) = (s, req);
+        loop {
+            let origin = app_origin(&req.origin).then_some(req.origin.clone());
+            if !preview_frame(shared, &mut s, &req.query, origin.as_deref()) {
+                return;
+            }
+            let Some(next) = read_request(&s) else { return };
+            if next.path != "/preview" && next.path != "/preview.jpg" || !host_ok(&next.host, port) {
+                return handle_request(app, cfg, shared, s, port, next);
+            }
+            req = next;
+        }
+    }
+    let path = req.path.as_str();
     match path {
         "/state" => respond(s, "200 OK", "application/json; charset=utf-8", &state_json(cfg, shared)),
-        "/preview" | "/preview.jpg" => preview_frame(shared, s, query, app_origin(&req.origin).then_some(req.origin.as_str())),
         "/preview.mjpg" => stream_preview(shared, s),
         "/" | "/obs" => serve_asset(app, s, "obs.html"),
         p if !p.contains("..") => serve_asset(app, s, p.trim_start_matches('/')),
@@ -71,14 +95,18 @@ fn handle(app: &AppHandle, cfg: &Mutex<Config>, shared: &Shared, s: TcpStream, p
 /// never queue up on the way and the picture is never behind (an MJPEG stream, by contrast, keeps
 /// sending, and if the window draws a little slower the extra frames pile up in the connection).
 ///
-/// The frame is either a JPEG, or — from a capture card sending YUY2 — the card's own frame, raw
-/// (`application/x-yuy2`, size and colour standard in headers), which the window turns into colour
-/// on the GPU like OBS does: no encoding or decoding on the way.
-fn preview_frame(shared: &Shared, mut s: TcpStream, query: &str, origin: Option<&str>) {
+/// The frame is either a JPEG, or a raw frame the window turns into colour on the GPU like OBS does:
+/// a capture card's own YUY2 (`application/x-yuy2`) or the PS5's planes (`application/x-i420`, with
+/// `X-Stretch: 1` for its levels), size and colour standard in headers. No encoding or decoding on
+/// the way.
+///
+/// The connection stays open for the next frame (keep-alive): a frame is a request, and a new
+/// connection for each, 60 a second, cost the window's network process as much as the frame.
+fn preview_frame(shared: &Shared, s: &mut TcpStream, query: &str, origin: Option<&str>) -> bool {
     let after: u64 = query.split('&').find_map(|kv| kv.strip_prefix("after=")).and_then(|v| v.parse().ok()).unwrap_or(0);
     // (the picture is for the app's own window: no other website may read it)
     let expose = match origin {
-        Some(o) => format!("Access-Control-Allow-Origin: {o}\r\nVary: Origin\r\nAccess-Control-Expose-Headers: X-Seq, X-Width, X-Height, X-Matrix, X-Range\r\n"),
+        Some(o) => format!("Access-Control-Allow-Origin: {o}\r\nVary: Origin\r\nAccess-Control-Expose-Headers: X-Seq, X-Width, X-Height, X-Matrix, X-Range, X-Stretch\r\n"),
         None => String::new(),
     };
     let start = std::time::Instant::now();
@@ -94,31 +122,35 @@ fn preview_frame(shared: &Shared, mut s: TcpStream, query: &str, origin: Option<
         };
         if yuv_newer {
             if let Some((seq, f)) = yuv.filter(|(seq, _)| *seq != after) {
+                let kind = match f.layout {
+                    crate::capture::YuvLayout::Yuy2 => "application/x-yuy2",
+                    crate::capture::YuvLayout::I420 => "application/x-i420",
+                };
                 let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/x-yuy2\r\nContent-Length: {}\r\nX-Seq: {seq}\r\nX-Width: {}\r\nX-Height: {}\r\nX-Matrix: {}\r\nX-Range: {}\r\nCache-Control: no-store\r\n{expose}Connection: close\r\n\r\n",
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nX-Seq: {seq}\r\nX-Width: {}\r\nX-Height: {}\r\nX-Matrix: {}\r\nX-Range: {}\r\nX-Stretch: {}\r\nCache-Control: no-store\r\n{expose}Connection: keep-alive\r\n\r\n",
                     f.data.len(),
                     f.w,
                     f.h,
                     if f.color.bt709 { "709" } else { "601" },
                     if f.color.full_range { "full" } else { "limited" },
+                    u8::from(f.stretch),
                 );
                 let _ = s.set_nodelay(true);
-                let _ = s.write_all(head.as_bytes()).and_then(|_| s.write_all(&f.data));
-                return;
+                shared.preview_sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return s.write_all(head.as_bytes()).and_then(|_| s.write_all(&f.data)).is_ok();
             }
         } else if let Some((seq, jpeg)) = jpeg.filter(|(seq, _)| *seq != after) {
             let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Seq: {seq}\r\nCache-Control: no-store\r\n{expose}Connection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nX-Seq: {seq}\r\nCache-Control: no-store\r\n{expose}Connection: keep-alive\r\n\r\n",
                 jpeg.len()
             );
             let _ = s.set_nodelay(true);
-            let _ = s.write_all(head.as_bytes()).and_then(|_| s.write_all(&jpeg));
-            return;
+            shared.preview_sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return s.write_all(head.as_bytes()).and_then(|_| s.write_all(&jpeg)).is_ok();
         }
         if start.elapsed() >= Duration::from_secs(1) {
-            let head = format!("HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\n{expose}Content-Length: 0\r\nConnection: close\r\n\r\n");
-            let _ = s.write_all(head.as_bytes());
-            return;
+            let head = format!("HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\n{expose}Content-Length: 0\r\nConnection: keep-alive\r\n\r\n");
+            return s.write_all(head.as_bytes()).is_ok();
         }
         std::thread::sleep(Duration::from_millis(3));
     }

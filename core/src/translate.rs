@@ -117,7 +117,7 @@ pub struct LocalMt {
 #[cfg(feature = "offline")]
 impl LocalMt {
     /// Loads the model for `lang`, downloading it first (~110 MB, once) if it is missing.
-    pub fn load(dir: &Path, lang: &crate::langs::Lang, http: &reqwest::blocking::Client, status: &dyn Fn(String)) -> Result<Self> {
+    pub fn load(dir: &Path, lang: &crate::langs::Lang, http: &reqwest::blocking::Client, status: &dyn Fn(String), threads: usize) -> Result<Self> {
         let repo = lang.local.ok_or_else(|| {
             anyhow!("There is no free offline model for {}: choose another translation service in the Translator tab.", lang.name)
         })?;
@@ -145,8 +145,18 @@ impl LocalMt {
         let pad_id = conf["decoder_start_token_id"].as_i64().or(conf["pad_token_id"].as_i64()).context("model config: no start token")?;
         let eos_id = conf["eos_token_id"].as_i64().unwrap_or(0);
         let env = ort_env()?;
-        let enc = Session::builder(env)?.commit_from_file(dir.join(MODEL_FILES[0]))?;
-        let dec = Session::builder(env)?.commit_from_file(dir.join(MODEL_FILES[1]))?;
+        // (a few threads, not all of the computer's: the picture, its decoding and the reading run
+        // beside it, and a line is short)
+        let session = |f: &str| -> Result<Session> {
+            Ok(Session::builder(env)?
+                .with_intra_threads(threads)
+                .map_err(|e| anyhow!("translation model: {e}"))?
+                .with_inter_threads(1)
+                .map_err(|e| anyhow!("translation model: {e}"))?
+                .commit_from_file(dir.join(f))?)
+        };
+        let enc = session(MODEL_FILES[0])?;
+        let dec = session(MODEL_FILES[1])?;
         Ok(Self { tok, prefix_id, pad_id, eos_id, enc, dec })
     }
 
@@ -211,7 +221,7 @@ pub struct LocalMt;
 
 #[cfg(not(feature = "offline"))]
 impl LocalMt {
-    pub fn load(_dir: &Path, _lang: &crate::langs::Lang, _http: &reqwest::blocking::Client, _status: &dyn Fn(String)) -> Result<Self> {
+    pub fn load(_dir: &Path, _lang: &crate::langs::Lang, _http: &reqwest::blocking::Client, _status: &dyn Fn(String), _threads: usize) -> Result<Self> {
         bail!("The free offline translator is not part of this app: choose another translation service.")
     }
 
@@ -286,6 +296,18 @@ fn openai_text(v: &Value) -> Option<String> {
         return None;
     }
     Some(parts.iter().filter(|p| p["type"] == "output_text").filter_map(|p| p["text"].as_str()).collect())
+}
+
+/// The offline translator's threads: the setting's (1–8), or for 0 as suits this computer: 2 on
+/// 8 cores or fewer, 4 on more.
+pub fn ort_threads(setting: u32) -> usize {
+    match setting {
+        1..=8 => setting as usize,
+        _ => {
+            let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+            if cores <= 8 { 2 } else { 4 }
+        }
+    }
 }
 
 /// The translators that are language models (one prompt with tags, a cost per line).
@@ -573,7 +595,7 @@ impl Translator {
                     let lang = crate::langs::get(&cfg.target_lang);
                     // (Arabic's model stays where it always was; the others get their own folder)
                     let dir = if lang.code == "ar" { self.model_dir.clone() } else { self.model_dir.join(lang.code) };
-                    match LocalMt::load(&dir, lang, &self.http, status) {
+                    match LocalMt::load(&dir, lang, &self.http, status, ort_threads(cfg.ort_threads)) {
                         Ok(mt) => {
                             self.local = Some(mt);
                             self.local_failed = None;

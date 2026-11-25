@@ -329,6 +329,12 @@ pub struct Config {
     /// preferred), and the app's picture is shown up to 3840 wide (else 1920). For players with a
     /// 4K card or a 4K Remote Play window who play on the app's picture; it costs more CPU and GPU.
     pub picture_4k: bool,
+    /// How hard the app works: "auto" (lowers the reading's and the picture's rates while the
+    /// computer can't keep up, see the desktop app's load.rs), "light" (always low), "full" (never lowered).
+    pub perf_mode: String,
+    /// Threads of the free offline translator (0: as many as suit this computer: 2 on 8 cores or
+    /// fewer, 4 on more).
+    pub ort_threads: u32,
     /// Snapshots (the whole picture translated at once): the service ("" = the live translations'
     /// one; an engine id; "azure-image" = Azure's image translation, with its own endpoint and key).
     pub snap_service: String,
@@ -792,6 +798,8 @@ impl Default for Config {
             capture_fps: DEFAULT_TIMING.capture_fps,
             preview_fps: DEFAULT_TIMING.preview_fps,
             picture_4k: false,
+            perf_mode: "auto".into(),
+            ort_threads: 0,
             snap_service: String::new(),
             snap_azure_endpoint: String::new(),
             snap_azure_key: String::new(),

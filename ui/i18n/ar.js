@@ -419,4 +419,13 @@ I18N.add("ar", {
   "No new picture for {s} s: the source stopped sending": "ما وصلت صورة جديدة من {s} ث: المصدر وقف الإرسال",
   "The text hasn't been read for {s} s": "ما انقرأ النص من {s} ث",
   "The translator has been on one line for {s} s": "المترجم على نفس السطر من {s} ث",
+  "Lighter load: reading {r}/s, picture {p}/s": "حمل أخف: قراءة {r}/ث، الصورة {p}/ث",
+  "Performance mode": "وضع الأداء",
+  "Auto (lighter while the computer can't keep up)": "تلقائي (أخف وقت ما يلحق الجهاز)",
+  "Light (always the lighter rates)": "خفيف (دايماً بالمعدلات الأخف)",
+  "Full (the rates below, always)": "كامل (المعدلات اللي تحت، دايماً)",
+  "Auto reads the text less often, then shows the picture at a lower rate, while the picture or the reading can't keep up, and goes back when they can.": "التلقائي يقلل مرات قراءة النص، وبعدها معدل الصورة، وقت ما الجهاز ما يلحق، ويرجعها لما يلحق.",
+  "Offline translator threads": "أنوية المترجم المحلي",
+  "Automatic": "تلقائي",
+  "Fewer threads leave more of the computer to the picture; the change applies the next time the app starts.": "أنوية أقل تخلي الجهاز يركز أكثر على الصورة. التغيير يطبق من التشغيل الجاي للبرنامج.",
 });

@@ -1531,6 +1531,23 @@ function renderTiming() {
     <div class="muted small" style="margin:4px 0 0">${t("A 4K capture card runs at 4K, and the picture in this app is shown in 4K (also a 4K game window). For playing on this app's picture on a 4K screen. Needs a strong PC; text is read either way.")}</div>`;
   k4.querySelector("input").addEventListener("change", (e) => { cfg.picture_4k = e.target.checked; save(false); });
   form.appendChild(k4);
+  // Performance mode: how hard the app works (load.rs)
+  const pm = document.createElement("div");
+  pm.className = "field";
+  const modes = [["auto", t("Auto (lighter while the computer can't keep up)")], ["light", t("Light (always the lighter rates)")], ["full", t("Full (the rates below, always)")]];
+  pm.innerHTML = `<label for="perf-mode">${t("Performance mode")}</label>
+    <select id="perf-mode">${modes.map(([v, l]) => `<option value="${v}" ${(cfg.perf_mode || "auto") === v ? "selected" : ""}>${AS.esc(l)}</option>`).join("")}</select>
+    <div class="muted small" style="margin:4px 0 0">${t("Auto reads the text less often, then shows the picture at a lower rate, while the picture or the reading can't keep up, and goes back when they can.")}</div>`;
+  pm.querySelector("select").addEventListener("change", (e) => { cfg.perf_mode = e.target.value; save(false); });
+  form.appendChild(pm);
+  // the free offline translator's threads (0: as suits this computer)
+  const th = document.createElement("div");
+  th.className = "field";
+  th.innerHTML = `<label for="ort-threads">${t("Offline translator threads")}</label>
+    <select id="ort-threads">${[0, 1, 2, 3, 4, 6, 8].map((n) => `<option value="${n}" ${(cfg.ort_threads || 0) === n ? "selected" : ""}>${n === 0 ? AS.esc(t("Automatic")) : n}</option>`).join("")}</select>
+    <div class="muted small" style="margin:4px 0 0">${t("Fewer threads leave more of the computer to the picture; the change applies the next time the app starts.")}</div>`;
+  th.querySelector("select").addEventListener("change", (e) => { cfg.ort_threads = +e.target.value; save(false); });
+  form.appendChild(th);
   const fields = [
     ["capture_fps", "Frames captured for reading text (per second)", 1, 60, 1, "Full-size frames used for reading text, game pages and saved frames. Also how often the pause menu checks whether its text changed. 12 is plenty; more costs CPU, especially at 4K. From OBS, about 12 is the most it can deliver."],
     ["preview_fps", "Live preview frame rate (per second)", 5, 60, 5, "Only the picture in this app (small frames, made only while it's visible). Doesn't change how text is read."],
@@ -2054,6 +2071,11 @@ function yuvDraw(data, w, h, bt709, fullRange) {
   if (!YUV.gl && !yuvInit()) return false;
   const gl = YUV.gl;
   const canvas = $("frame-gl");
+  // (the I420 drawer may have been the last to use the context: this one's program and texture again)
+  gl.useProgram(YUV.prog);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, YUV.tex);
+  I420.w = 0;
   if (YUV.w !== w || YUV.h !== h) {
     canvas.width = w;
     canvas.height = h;
@@ -2072,6 +2094,99 @@ function yuvDraw(data, w, h, bt709, fullRange) {
   gl.uniform1f(u.cScale, fullRange ? 1 : 255 / 224);
   for (const [n, v] of [["kr", kr], ["kgu", kgu], ["kgv", kgv], ["kb", kb]]) gl.uniform1f(u[n], v);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+  return true;
+}
+
+// The PS5's frames: the three planes as they were decoded (Y full size, U and V a quarter), each an
+// 8-bit texture, turned into colour per pixel exactly as the YUY2 shader does. `stretch`: the PS5's
+// levels are studio range twice over, stretched once more first, with the same rounding as
+// ps::play::i420_to_yuy2 (so the picture is the one the YUY2 path showed).
+const I420 = { prog: null, tex: [], w: 0, h: 0, u: {} };
+function i420Init() {
+  if (!YUV.gl && !yuvInit()) return false;
+  const gl = YUV.gl;
+  const sh = (type, src) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, `#version 300 es
+    void main() { vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, `#version 300 es
+    precision highp float;
+    uniform highp sampler2D ty, tu, tv;
+    uniform int height, stretch;
+    uniform float yOff, yScale, cScale, kr, kgu, kgv, kb;
+    out vec4 color;
+    void main() {
+      ivec2 p = ivec2(gl_FragCoord.xy);
+      int row = height - 1 - p.y;
+      float Y = texelFetch(ty, ivec2(p.x, row), 0).r * 255.0;
+      float U = texelFetch(tu, ivec2(p.x >> 1, row >> 1), 0).r * 255.0;
+      float V = texelFetch(tv, ivec2(p.x >> 1, row >> 1), 0).r * 255.0;
+      Y = floor(Y + 0.5); U = floor(U + 0.5); V = floor(V + 0.5);
+      if (stretch == 1) {
+        Y = clamp(trunc(((Y - 16.0) * 255.0 + 109.0) / 219.0), 0.0, 255.0);
+        U = clamp(128.0 + trunc((U - 128.0) * 255.0 / 219.0), 0.0, 255.0);
+        V = clamp(128.0 + trunc((V - 128.0) * 255.0 / 219.0), 0.0, 255.0);
+      }
+      float y = (Y - yOff) * yScale;
+      float u = (U - 128.0) * cScale, v = (V - 128.0) * cScale;
+      color = vec4(clamp(vec3(y + kr * v, y - kgu * u - kgv * v, y + kb * u) / 255.0, 0.0, 1.0), 1.0);
+    }`));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  for (const n of ["ty", "tu", "tv", "height", "stretch", "yOff", "yScale", "cScale", "kr", "kgu", "kgv", "kb"]) I420.u[n] = gl.getUniformLocation(prog, n);
+  I420.tex = [0, 1, 2].map(() => {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    return t;
+  });
+  I420.prog = prog;
+  return true;
+}
+/** Draw one I420 frame (`data`: w × h luma, then w/2 × h/2 U, then V; w and h even). */
+function i420Draw(data, w, h, bt709, fullRange, stretch) {
+  if (!I420.prog && !i420Init()) return false;
+  const gl = YUV.gl;
+  const canvas = $("frame-gl");
+  gl.useProgram(I420.prog);
+  const cw = w >> 1, ch = h >> 1;
+  const planes = [[data.subarray(0, w * h), w, h], [data.subarray(w * h, w * h + cw * ch), cw, ch], [data.subarray(w * h + cw * ch, w * h + 2 * cw * ch), cw, ch]];
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  const resized = I420.w !== w || I420.h !== h || canvas.width !== w || canvas.height !== h;
+  if (resized) {
+    canvas.width = w;
+    canvas.height = h;
+    gl.viewport(0, 0, w, h);
+  }
+  planes.forEach(([px, pw, ph], i) => {
+    gl.activeTexture(gl.TEXTURE0 + i);
+    gl.bindTexture(gl.TEXTURE_2D, I420.tex[i]);
+    if (resized) gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, pw, ph, 0, gl.RED, gl.UNSIGNED_BYTE, px);
+    else gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, pw, ph, gl.RED, gl.UNSIGNED_BYTE, px);
+  });
+  Object.assign(I420, { w, h });
+  // (the YUY2 drawer keeps its own size: it sets its texture up again next time it draws)
+  YUV.w = 0;
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  const [kr, kgu, kgv, kb] = bt709 ? [1.5748, 0.1873, 0.4681, 1.8556] : [1.402, 0.3441, 0.7141, 1.772];
+  const u = I420.u;
+  gl.uniform1i(u.ty, 0);
+  gl.uniform1i(u.tu, 1);
+  gl.uniform1i(u.tv, 2);
+  gl.uniform1i(u.height, h);
+  gl.uniform1i(u.stretch, stretch ? 1 : 0);
+  gl.uniform1f(u.yOff, fullRange ? 0 : 16);
+  gl.uniform1f(u.yScale, fullRange ? 1 : 255 / 219);
+  gl.uniform1f(u.cScale, fullRange ? 1 : 255 / 224);
+  for (const [n, v] of [["kr", kr], ["kgu", kgu], ["kgv", kgv], ["kb", kb]]) gl.uniform1f(u[n], v);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.activeTexture(gl.TEXTURE0);
   return true;
 }
 
@@ -2116,18 +2231,18 @@ async function pullPreview(url, run) {
   let seq = 0;
   let shownUrl = null;
   let first = true;
-  // A YUY2 frame is drawn at the screen's next refresh, not the moment it arrives, and the next one is
-  // asked for meanwhile: frames come in evenly with the screen's own rhythm instead of whenever a
-  // request happened to finish (judder), and the next download doesn't wait for the drawing. A frame
-  // that arrives before the last was drawn takes its place (the newest is always the one shown).
+  // A raw frame is drawn at the screen's next refresh, not the moment it arrives: frames come in with
+  // the screen's own rhythm instead of whenever a request happened to finish (judder). The next frame
+  // is asked for once the last one is drawn, so while the window is hidden (no refreshes) nothing is
+  // asked for, and the app stops making frames for it.
   let pending = null;
-  let drawAsked = false;
+  let drawn = null;
   const drawPending = () => {
-    drawAsked = false;
     const f = pending;
     pending = null;
     if (!f || run !== pullRun) return;
-    if (yuvDraw(f.data, f.w, f.h, f.bt709, f.full)) {
+    const ok = f.i420 ? i420Draw(f.data, f.w, f.h, f.bt709, f.full, f.stretch) : yuvDraw(f.data, f.w, f.h, f.bt709, f.full);
+    if (ok) {
       frameShown();
       canvas.hidden = false;
       img.hidden = true;
@@ -2135,6 +2250,8 @@ async function pullPreview(url, run) {
     }
   };
   while (run === pullRun) {
+    if (drawn) { await drawn; drawn = null; }
+    if (run !== pullRun) break;
     try {
       const r = await fetch(`${url}?after=${seq}`, { cache: "no-store" });
       if (run !== pullRun) break;
@@ -2145,13 +2262,15 @@ async function pullPreview(url, run) {
         continue;
       }
       seq = Number(r.headers.get("X-Seq")) || 0;
-      if (r.headers.get("Content-Type") === "application/x-yuy2") {
+      const kind = r.headers.get("Content-Type");
+      if (kind === "application/x-yuy2" || kind === "application/x-i420") {
         const w = Number(r.headers.get("X-Width"));
         const h = Number(r.headers.get("X-Height"));
         const data = new Uint8Array(await r.arrayBuffer());
         if (run !== pullRun) break;
-        pending = { data, w, h, bt709: r.headers.get("X-Matrix") !== "601", full: r.headers.get("X-Range") === "full" };
-        if (!drawAsked) { drawAsked = true; requestAnimationFrame(drawPending); }
+        pending = { data, w, h, i420: kind === "application/x-i420", stretch: r.headers.get("X-Stretch") === "1",
+          bt709: r.headers.get("X-Matrix") !== "601", full: r.headers.get("X-Range") === "full" };
+        drawn = new Promise((res) => requestAnimationFrame(() => { drawPending(); res(); }));
         continue;
       }
       const blobUrl = URL.createObjectURL(await r.blob());
@@ -2173,6 +2292,8 @@ async function pullPreview(url, run) {
 }
 listen("frame", (e) => {
   const f = { ...e.payload, status: I18N.tMsg(e.payload.status) };
+  // (the performance mode lowered the rates: say so, with what they are now)
+  if (f.load > 0 && f.status) f.status += " · " + t("Lighter load: reading {r}/s, picture {p}/s", { r: f.read_fps, p: f.preview_fps });
   const pill = $("status");
   $("status-text").textContent = f.status || "…";
   pill.title = f.status || "";

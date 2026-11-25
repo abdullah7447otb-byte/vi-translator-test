@@ -905,6 +905,8 @@ impl Reader {
         let t0 = Instant::now();
         // (the player's, or the game's own: see Config::timing)
         let (interval_ms, stable_ms, clear_after_ms) = c.timing();
+        // (no more often than the performance mode allows now)
+        let interval_ms = interval_ms.max(crate::perf::READ_FLOOR_MS.load(std::sync::atomic::Ordering::Relaxed));
         if c.target_lang != last_lang {
             // another language: everything shown and cached is in the old one
             last_lang = c.target_lang.clone();
@@ -916,7 +918,7 @@ impl Reader {
             {
                 let mut mc = ctx.live.menu_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 mc.lang = c.target_lang.clone();
-                mc.map.clear();
+                mc.clear();
             }
             ctx.live.menu_failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
             if screen.is_some() {
@@ -1166,7 +1168,7 @@ impl Reader {
                         // when the layout's words don't have it)
                         let cached = || {
                             let cache = ctx.live.menu_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                            cache.map.get(&m.en).cloned().or_else(|| cache.map.iter().find(|(k, _)| ocr::similar(k, &m.en)).map(|(_, v)| v.clone()))
+                            cache.similar(&m.en)
                         };
                         let remembered = || {
                             ctx.memory
@@ -1557,8 +1559,7 @@ impl Reader {
                                 };
                                 let gave_up = cache.map.get(&p.en).is_some_and(|a| !has_words(a));
                                 let ar = ar
-                                    .or_else(|| cache.map.get(&p.en).cloned())
-                                    .or_else(|| cache.map.iter().find(|(k, _)| ocr::similar(k, &p.en)).map(|(_, v)| v.clone()))
+                                    .or_else(|| cache.similar(&p.en))
                                     .filter(|a| has_words(a))
                                     .or_else(|| cache.map.get(&cut_en).filter(|a| has_words(a)).map(|a| format!("{}…", a.trim_end_matches(['.', '…', ' ']))));
                                 let hex = |c: [u8; 3]| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
@@ -2183,17 +2184,30 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
     let Context { cfg, live: shared, memory, sink, paths } = ctx;
     // (started again after an error: no line is being translated any more)
     crate::perf::translating(false);
+    crate::perf::lower_this_thread();
     let mut tr = Translator::new(paths.model_dir());
     // Subtitle lines (and a page's reason) first; a page's menu text only when nothing else waits,
     // newest first (the tab on screen now before an old backlog): a menu full of text never holds a
     // subtitle up for more than the one menu line being translated.
     let (mut lines_q, mut menu_q) = (std::collections::VecDeque::new(), std::collections::VecDeque::<Job>::new());
+    // Lines that changed on screen before their translation was ready: translated when nothing else
+    // waits, into the memory only (not shown: they're gone), so the next time they show at once.
+    // The newest first, at most LATER of them.
+    const LATER: usize = 30;
+    let mut later_q = std::collections::VecDeque::<Job>::new();
     loop {
         if lines_q.is_empty() && menu_q.is_empty() {
-            match jobs.recv() {
+            // (with lines to do later, only a look at what has come; else a wait for it)
+            let got = if later_q.is_empty() {
+                jobs.recv().map_err(|_| true)
+            } else {
+                jobs.try_recv().map_err(|e| e == mpsc::TryRecvError::Disconnected)
+            };
+            match got {
                 Ok(j) if j.area == MENU_TEXT => menu_q.push_back(j),
                 Ok(j) => lines_q.push_back(j),
-                Err(_) => return,
+                Err(true) => return,
+                Err(false) => {}
             }
         }
         for j in jobs.try_iter() {
@@ -2203,16 +2217,31 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
                 lines_q.push_back(j);
             }
         }
-        let Some(job) = lines_q.pop_front().or_else(|| menu_q.pop_back()) else { continue };
-        // Skip text that was already replaced on screen while we were busy. (Pause-menu lines
+        let (job, later) = match lines_q.pop_front().or_else(|| menu_q.pop_back()) {
+            Some(j) => (j, false),
+            None => match later_q.pop_back() {
+                Some(j) => (j, true),
+                None => continue,
+            },
+        };
+        // Text that was already replaced on screen while we were busy: later. (Pause-menu lines
         // aren't an area: each is translated once and kept, so never skip those.)
-        if job.area != MENU_TEXT && latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&job.area).copied() != Some(job.seq) {
+        if !later && job.area != MENU_TEXT && latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&job.area).copied() != Some(job.seq) {
+            if job.area != SCREEN_REASON {
+                later_q.push_back(job);
+                if later_q.len() > LATER {
+                    later_q.pop_front();
+                }
+            }
             continue;
         }
         let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         // what the line is said in: a spoken line among the ones before it; a menu's or the phone's text
         // on its own, or with its screen round it (and never the next spoken line's context)
-        tr.set_context(if job.area == MENU_TEXT || job.area == SCREEN_REASON {
+        // (a line done later is out of its order: on its own, and not the next spoken line's context)
+        tr.set_context(if later {
+            translate::LineContext::Alone
+        } else if job.area == MENU_TEXT || job.area == SCREEN_REASON {
             job.context.clone().map(translate::LineContext::Given).unwrap_or(translate::LineContext::Alone)
         } else {
             translate::LineContext::Spoken
@@ -2256,6 +2285,10 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
         };
         crate::perf::translating(false);
         perf_note(PerfKind::Translate, t_translate.elapsed().as_secs_f64() * 1000.0);
+        // (done later: it's in the memory now; it isn't on screen any more)
+        if later {
+            continue;
+        }
         let hit_from = if hit { "memory" } else { "" };
         // time from the English line appearing to its Arabic being ready
         let ready_ms = job.en_start.elapsed().as_secs_f64() * 1000.0;
@@ -2281,7 +2314,7 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
                 // (an error, or nothing: asked again later, when it's read again — see ocr_loop)
                 shared.menu_failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(job.en.clone());
             } else {
-                mc.map.insert(job.en.clone(), ar.trim().to_string());
+                mc.insert(job.en.clone(), ar.trim().to_string());
             }
             continue;
         }
