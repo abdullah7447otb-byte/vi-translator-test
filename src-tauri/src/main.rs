@@ -422,9 +422,9 @@ fn ps5_set_sound(webview: tauri::Webview, on: bool, volume: u32) -> Result<(), S
 }
 
 #[tauri::command]
-fn ps5_set_resolution(webview: tauri::Webview, resolution: u32) -> Result<(), String> {
+fn ps5_set_resolution(webview: tauri::Webview, resolution: u32, high: Option<bool>) -> Result<(), String> {
     main_only(&webview)?;
-    ps5::set_resolution(resolution);
+    ps5::set_resolution(resolution, high.unwrap_or(false));
     Ok(())
 }
 

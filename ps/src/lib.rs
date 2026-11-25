@@ -348,6 +348,11 @@ impl Video {
     pub fn p1080(fps: u32) -> Self {
         Video { width: 1920, height: 1080, fps, bitrate: 15000, h265: false }
     }
+    /// 1080p at twice the bitrate: a sharper picture (small text, dark scenes) that needs a steady
+    /// network, best a cable for the PS5 and this computer.
+    pub fn p1080_high(fps: u32) -> Self {
+        Video { bitrate: 30000, ..Self::p1080(fps) }
+    }
     pub fn p720(fps: u32) -> Self {
         Video { width: 1280, height: 720, fps, bitrate: 10000, h265: false }
     }

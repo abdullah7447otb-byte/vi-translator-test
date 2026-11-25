@@ -410,4 +410,5 @@ I18N.add("ar", {
   "Moving above the lines is for the look \"Above the game's text\" (Game profile).": "الارتفاع فوق الأسطر لشكل «فوق نص اللعبة» (ملف تعريف اللعبة).",
   "A border in Vice City colours, to tell it apart": "إطار بألوان فايس سيتي، لتمييزه",
   "Only reviewed translations: a reading that matches none isn't shown": "الترجمات المراجَعة فقط: القراءة التي لا تطابق أيًّا منها لا تُعرض",
+  "1080p, sharper (needs a network cable)": "1080p أوضح (يحتاج كيبل إنترنت)",
 });

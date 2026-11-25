@@ -3,7 +3,7 @@
 //! it (both through SDL, as chiaki-ng does). The picture goes to the app through [`Screen`].
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,11 @@ pub struct I420 {
 
 /// Where a stream's picture and news go (on chiaki's threads).
 pub trait Screen: Send + Sync {
+    /// Would a picture be taken now? (False: the frame is still decoded, as H.264 needs every one,
+    /// but not copied out of the decoder.)
+    fn wants_frame(&self) -> bool {
+        true
+    }
     fn frame(&self, f: I420);
     fn event(&self, e: &Event);
     fn log(&self, _level: i32, _text: &str) {}
@@ -82,8 +87,14 @@ pub struct Player {
     session: Arc<Mutex<Option<Session>>>,
     stop: Arc<AtomicBool>,
     sdl: Option<std::thread::JoinHandle<()>>,
+    decoder: Option<std::thread::JoinHandle<()>>,
     pub stats: Arc<Stats>,
 }
+
+/// Encoded frames waiting for the decoder thread: about half a second at 60 frames a second. More
+/// than that waiting means this computer decodes slower than the PS5 sends, and the picture would
+/// fall further and further behind: what waits is dropped and the PS5 asked for a fresh key frame.
+const DECODE_QUEUE: usize = 30;
 
 /// What the stream's threads tell the SDL thread.
 enum ToSdl {
@@ -94,7 +105,11 @@ enum ToSdl {
 
 struct Inner {
     screen: Arc<dyn Screen>,
-    decoder: Mutex<Option<openh264::decoder::Decoder>>,
+    /// encoded frames to the decoder thread (decoding on chiaki's own thread held up its network
+    /// reading on slower computers: packets were lost and the picture broke up and stuttered)
+    to_decoder: Mutex<SyncSender<Vec<u8>>>,
+    /// a frame couldn't be queued: the decoder thread starts again from a key frame
+    resync: Arc<AtomicBool>,
     opus: Mutex<Option<(opus::Decoder, u32)>>,
     to_sdl: Mutex<Sender<ToSdl>>,
     stats: Arc<Stats>,
@@ -109,35 +124,16 @@ impl Handler for Inner {
     }
 
     fn video(&self, frame: &[u8], _frames_lost: i32) -> bool {
-        use openh264::formats::YUVSource;
-        let mut d = self.decoder.lock().unwrap();
-        let Some(dec) = d.as_mut() else { return true };
-        match dec.decode(frame) {
-            Ok(Some(yuv)) => {
-                let (w, h) = yuv.dimensions();
-                let (ys, us, _) = yuv.strides();
-                let f = I420 {
-                    w: w as u32,
-                    h: h as u32,
-                    y: yuv.y()[..ys * h].to_vec(),
-                    u: yuv.u()[..us * h.div_ceil(2)].to_vec(),
-                    v: yuv.v()[..us * h.div_ceil(2)].to_vec(),
-                    y_stride: ys,
-                    uv_stride: us,
-                };
-                drop(d);
-                self.stats.frames.fetch_add(1, Ordering::Relaxed);
-                self.screen.frame(f);
-                true
-            }
-            // (no picture yet: the decoder waits for more)
-            Ok(None) => true,
-            Err(e) => {
+        match self.to_decoder.lock().unwrap().try_send(frame.to_vec()) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
                 self.stats.bad_frames.fetch_add(1, Ordering::Relaxed);
-                self.screen.log(2, &format!("video: {e}"));
-                false
+                self.resync.store(true, Ordering::Relaxed);
             }
+            // (the player is stopping)
+            Err(TrySendError::Disconnected(_)) => {}
         }
+        true
     }
 
     fn audio_header(&self, channels: u32, rate: u32) {
@@ -174,16 +170,26 @@ impl Player {
     pub fn start(host: &str, regist_key: &[u8; 16], rp_key: &[u8; 16], video: Video, sound: Arc<Sound>, screen: Arc<dyn Screen>) -> Result<Self, Error> {
         let decoder = openh264::decoder::Decoder::new().map_err(|e| Error(format!("video decoder: {e}")))?;
         let (tx, rx) = channel();
+        let (to_dec, from_net) = sync_channel(DECODE_QUEUE);
+        let resync = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(Stats::default());
         let inner = Arc::new(Inner {
             screen: screen.clone(),
-            decoder: Mutex::new(Some(decoder)),
+            to_decoder: Mutex::new(to_dec),
+            resync: resync.clone(),
             opus: Mutex::new(None),
             to_sdl: Mutex::new(tx),
             stats: stats.clone(),
         });
         let session = Arc::new(Mutex::new(Some(Session::start(host, regist_key, rp_key, video, inner)?)));
         let stop = Arc::new(AtomicBool::new(false));
+        let decoder = {
+            let (session, stop, screen, stats) = (session.clone(), stop.clone(), screen.clone(), stats.clone());
+            std::thread::Builder::new()
+                .name("ps5-video".into())
+                .spawn(move || decode_thread(from_net, decoder, resync, session, stop, screen, stats))
+                .ok()
+        };
         let sdl = {
             let (session, stop, screen, stats) = (session.clone(), stop.clone(), screen.clone(), stats.clone());
             std::thread::Builder::new()
@@ -191,7 +197,7 @@ impl Player {
                 .spawn(move || sdl_thread(rx, session, stop, sound, screen, stats))
                 .ok()
         };
-        Ok(Player { session, stop, sdl, stats })
+        Ok(Player { session, stop, sdl, decoder, stats })
     }
 
     /// The account's login passcode, when the PS5 asks for it.
@@ -211,6 +217,73 @@ impl Drop for Player {
         // (ends the stream: chiaki's threads finish before the decoder goes)
         let s = self.session.lock().unwrap().take();
         drop(s);
+        if let Some(t) = self.decoder.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// The picture decoded on its own thread, frame by frame in the order they came.
+fn decode_thread(
+    rx: Receiver<Vec<u8>>,
+    mut dec: openh264::decoder::Decoder,
+    resync: Arc<AtomicBool>,
+    session: Arc<Mutex<Option<Session>>>,
+    stop: Arc<AtomicBool>,
+    screen: Arc<dyn Screen>,
+    stats: Arc<Stats>,
+) {
+    use openh264::formats::YUVSource;
+    // (asked at most twice a second: a burst of bad frames is one loss, not twenty)
+    let mut last_ask = Instant::now() - Duration::from_secs(1);
+    let mut key_frame = |why: &str| {
+        if last_ask.elapsed() >= Duration::from_millis(500) {
+            last_ask = Instant::now();
+            screen.log(3, &format!("video: {why}, asking for a key frame"));
+            if let Some(s) = session.lock().unwrap().as_ref() {
+                s.request_key_frame();
+            }
+        }
+    };
+    while !stop.load(Ordering::Relaxed) {
+        let frame = match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(f) => f,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+        if resync.swap(false, Ordering::Relaxed) {
+            // (frames were dropped: what waits is decoded from a picture that isn't there)
+            while rx.try_recv().is_ok() {}
+            key_frame("decoding fell behind");
+            continue;
+        }
+        match dec.decode(&frame) {
+            Ok(Some(yuv)) => {
+                stats.frames.fetch_add(1, Ordering::Relaxed);
+                if !screen.wants_frame() {
+                    continue;
+                }
+                let (w, h) = yuv.dimensions();
+                let (ys, us, _) = yuv.strides();
+                let f = I420 {
+                    w: w as u32,
+                    h: h as u32,
+                    y: yuv.y()[..ys * h].to_vec(),
+                    u: yuv.u()[..us * h.div_ceil(2)].to_vec(),
+                    v: yuv.v()[..us * h.div_ceil(2)].to_vec(),
+                    y_stride: ys,
+                    uv_stride: us,
+                };
+                screen.frame(f);
+            }
+            // (no picture yet: the decoder waits for more)
+            Ok(None) => {}
+            Err(e) => {
+                stats.bad_frames.fetch_add(1, Ordering::Relaxed);
+                screen.log(2, &format!("video: {e}"));
+                key_frame("a frame could not be decoded");
+            }
+        }
     }
 }
 

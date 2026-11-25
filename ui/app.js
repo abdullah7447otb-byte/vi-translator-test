@@ -619,9 +619,12 @@ function ps5SoundRow(s) {
 function ps5Linked(s) {
   const name = s.console.name || "PS5";
   const note = el("p", { class: "small muted" });
-  const quality = el("select", { id: "ps5-quality" }, el("option", { value: "1080" }, "1080p"), el("option", { value: "720" }, "720p"));
-  quality.value = String(s.resolution || 1080);
-  quality.addEventListener("change", () => invoke("ps5_set_resolution", { resolution: +quality.value }));
+  const quality = el("select", { id: "ps5-quality" },
+    el("option", { value: "1080hq" }, t("1080p, sharper (needs a network cable)")),
+    el("option", { value: "1080" }, "1080p"),
+    el("option", { value: "720" }, "720p"));
+  quality.value = s.resolution === 720 ? "720" : s.high_bitrate ? "1080hq" : "1080";
+  quality.addEventListener("change", () => invoke("ps5_set_resolution", { resolution: quality.value === "720" ? 720 : 1080, high: quality.value === "1080hq" }));
   return el("div", {},
     el("div", { class: "ps5-step done" },
       el("div", { class: "ps5-head" }, el("span", { class: "ps5-badge" }, "✓"),

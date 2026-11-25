@@ -1,0 +1,62 @@
+# A test build of this branch for Windows (x64) and macOS (Apple silicon and Intel in one .dmg),
+# without a release or signatures: run it from the Actions tab (Run workflow), or push to a branch
+# named test-*. The files are the run's artifacts, at the bottom of its page.
+name: Test build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["test-*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, runner: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: macos,   runner: macos-latest,   target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Test
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: Build (Windows)
+        if: matrix.os == 'windows'
+        working-directory: src-tauri
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          mkdir -p ../out
+          cp "../target/${{ matrix.target }}/release/vi-translator.exe" ../out/vi-translator-windows-x64-test.exe
+
+      - name: Build (macOS .dmg)
+        if: matrix.os == 'macos'
+        working-directory: src-tauri
+        run: |
+          rustup target add x86_64-apple-darwin
+          npx --yes @tauri-apps/cli@2.12.5 build --target universal-apple-darwin
+          mkdir -p ../out
+          cp ../target/universal-apple-darwin/release/bundle/dmg/*.dmg ../out/vi-translator-macos-test.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vi-translator-${{ matrix.os }}-test
+          path: out/*
+          if-no-files-found: error

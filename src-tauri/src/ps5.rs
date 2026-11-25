@@ -64,6 +64,9 @@ pub struct Saved {
     /// the stream's height: 1080 or 720 (0: 1080)
     #[serde(default)]
     pub resolution: u32,
+    /// 1080p at the higher bitrate (ps::Video::p1080_high)
+    #[serde(default)]
+    pub high_bitrate: bool,
     /// the PS5's sound on this computer: off, and its volume (0–100; none: 100)
     #[serde(default)]
     pub sound_off: bool,
@@ -130,6 +133,7 @@ pub fn status() -> serde_json::Value {
         "account": s.account_name,
         "account_id": s.account_id,
         "resolution": if s.resolution == 720 { 720 } else { 1080 },
+        "high_bitrate": s.high_bitrate && s.resolution != 720,
         "sound": !s.sound_off,
         "volume": s.volume.unwrap_or(100),
         "console": s.console.as_ref().map(|c| serde_json::json!({ "name": c.nickname, "host": c.host })),
@@ -287,9 +291,10 @@ pub fn set_account_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn set_resolution(r: u32) {
+pub fn set_resolution(r: u32, high_bitrate: bool) {
     let mut s = saved();
     s.resolution = if r == 720 { 720 } else { 1080 };
+    s.high_bitrate = high_bitrate && s.resolution == 1080;
     save(&s);
     g().restart.store(true, Ordering::Relaxed);
 }
@@ -440,6 +445,12 @@ struct ToShared {
 const COLOR: YuvColor = YuvColor { bt709: true, full_range: false };
 
 impl ps::play::Screen for ToShared {
+    // (most frames go nowhere: neither the reading nor the preview is due; they aren't copied out)
+    fn wants_frame(&self) -> bool {
+        let t = self.times.lock().unwrap();
+        self.shared.full_due(t.0) || self.shared.preview_due(t.1)
+    }
+
     fn frame(&self, f: ps::play::I420) {
         let (full, preview) = {
             let t = self.times.lock().unwrap();
@@ -448,15 +459,16 @@ impl ps::play::Screen for ToShared {
         if !full && !preview {
             return;
         }
-        let yuy2 = ps::play::i420_to_yuy2(&f, true);
         let w = f.w & !1;
         let mut t = self.times.lock().unwrap();
         if full {
             t.0 = Instant::now();
-            self.shared.put_full(w, f.h, crate::capture::yuy2_to_rgba(&yuy2, w, f.h, COLOR));
+            // (straight from the planes: no YUY2 picture in between when only the reading wants it)
+            self.shared.put_full(w, f.h, i420_to_rgba(&f));
         }
         if preview {
             t.1 = Instant::now();
+            let yuy2 = ps::play::i420_to_yuy2(&f, true);
             self.shared.put_preview_yuv(YuvFrame { w, h: f.h, color: COLOR, data: yuy2 });
         }
     }
@@ -481,6 +493,44 @@ impl ps::play::Screen for ToShared {
             eprintln!("[ps5] {text}");
         }
     }
+}
+
+/// The PS5's planes as RGBA for the reading: the same picture as `yuy2_to_rgba(i420_to_yuy2(f, true))`
+/// (the second studio range stretched out, then BT.709 studio range to RGB), in one pass.
+fn i420_to_rgba(f: &ps::play::I420) -> Vec<u8> {
+    // the stretch (play::i420_to_yuy2) and the conversion (capture::yuy2_to_rgba), as tables
+    let mut ly = [0i32; 256];
+    let mut lc = [0i32; 256];
+    for i in 0..256 {
+        let sy = (((i as i32 - 16) * 255 + 109) / 219).clamp(0, 255);
+        let sc = (128 + ((i as i32 - 128) * 255) / 219).clamp(0, 255);
+        ly[i] = (sy - 16) * (255.0f64 / 219.0 * 1024.0).round() as i32;
+        lc[i] = sc - 128;
+    }
+    let k = |v: f64| (v * 255.0 / 224.0 * 1024.0).round() as i32;
+    let (cr, cgu, cgv, cb) = (k(1.5748), k(0.1873), k(0.4681), k(1.8556));
+    let clamp = |v: i32| ((v + 512) >> 10).clamp(0, 255) as u8;
+    let (w, h) = (f.w as usize & !1, f.h as usize);
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h {
+        let yr = &f.y[y * f.y_stride..];
+        let ur = &f.u[(y / 2) * f.uv_stride..];
+        let vr = &f.v[(y / 2) * f.uv_stride..];
+        let o = &mut out[y * w * 4..(y + 1) * w * 4];
+        for x in (0..w).step_by(2) {
+            let (u, v) = (lc[ur[x / 2] as usize], lc[vr[x / 2] as usize]);
+            let (dr, dg, db) = (cr * v, cgu * u + cgv * v, cb * u);
+            for j in 0..2 {
+                let l = ly[yr[x + j] as usize];
+                let p = &mut o[(x + j) * 4..(x + j) * 4 + 4];
+                p[0] = clamp(l + dr);
+                p[1] = clamp(l - dg);
+                p[2] = clamp(l + db);
+                p[3] = 255;
+            }
+        }
+    }
+    out
 }
 
 /// Connects to the registered PS5 (waking it if it rests) and plays until stopped, the stream ends
@@ -525,7 +575,12 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
             times: Mutex::new((Instant::now() - Duration::from_secs(1), Instant::now() - Duration::from_secs(1))),
             state: Mutex::new(None),
         });
-        let video = if saved().resolution == 720 { ps::Video::p720(60) } else { ps::Video::p1080(60) };
+        let s = saved();
+        let video = match (s.resolution, s.high_bitrate) {
+            (720, _) => ps::Video::p720(60),
+            (_, true) => ps::Video::p1080_high(60),
+            _ => ps::Video::p1080(60),
+        };
         let player = match ps::play::Player::start(&host, &rk, &rp, video, g().sound.clone(), screen.clone()) {
             Ok(p) => p,
             Err(e) => {
@@ -582,6 +637,18 @@ mod tests {
         assert_eq!(code_in("not an address"), None);
         assert!(valid_account_id("AQAAAAAAAAA="));
         assert!(!valid_account_id("AQAA"));
+    }
+
+    #[test]
+    fn the_one_pass_colour_is_the_two_pass_one() {
+        // every luma value, and chroma across its range, on a 32 x 16 picture with padded rows
+        let (w, h, ys, us) = (32u32, 16u32, 40usize, 24usize);
+        let y: Vec<u8> = (0..ys * h as usize).map(|i| (i * 7 % 256) as u8).collect();
+        let u: Vec<u8> = (0..us * 8).map(|i| (i * 13 % 256) as u8).collect();
+        let v: Vec<u8> = (0..us * 8).map(|i| (255 - i * 11 % 256) as u8).collect();
+        let f = ps::play::I420 { w, h, y, u, v, y_stride: ys, uv_stride: us };
+        let two = crate::capture::yuy2_to_rgba(&ps::play::i420_to_yuy2(&f, true), w, h, COLOR);
+        assert_eq!(i420_to_rgba(&f), two);
     }
 
     #[test]

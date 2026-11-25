@@ -336,27 +336,39 @@ mod mac {
         all.into_iter().nth(idx)
     }
 
+    /// Windows at least this wide (in points) are read at one pixel per point, not at the Retina
+    /// screen's two: the picture in them (a 1080p stream at most) has no more detail than that, and
+    /// four times the pixels made every frame four times the work for nothing.
+    const NOMINAL_FROM_W: f64 = 1280.0;
+
     /// One frame of the window (RGBA).
     fn capture(w: &Win) -> Option<(u32, u32, Vec<u8>)> {
+        let mut opt = CGWindowImageOption::BoundsIgnoreFraming;
+        if w.rect.size.width >= NOMINAL_FROM_W {
+            opt |= CGWindowImageOption::NominalResolution;
+        }
         #[allow(unused_unsafe)]
-        let img = unsafe { CGWindowListCreateImage(w.rect, CGWindowListOption::OptionIncludingWindow, w.id, CGWindowImageOption::BoundsIgnoreFraming) };
+        let img = unsafe { CGWindowListCreateImage(w.rect, CGWindowListOption::OptionIncludingWindow, w.id, opt) };
         let (width, height) = (CGImage::width(img.as_deref()), CGImage::height(img.as_deref()));
         if width == 0 || height == 0 {
             return None;
         }
         let data = CGDataProvider::data(CGImage::data_provider(img.as_deref()).as_deref())?.to_vec();
         let row = CGImage::bytes_per_row(img.as_deref());
-        if row < width * 4 {
+        if row < width * 4 || data.len() < row * height {
             return None;
         }
-        let mut rgba = Vec::with_capacity(width * height * 4);
-        for line in data.chunks_exact(row).take(height) {
-            rgba.extend_from_slice(&line[..width * 4]);
+        // BGRA rows (with padding) -> packed RGBA, in one pass
+        let mut rgba = vec![0u8; width * height * 4];
+        for (line, out) in data.chunks_exact(row).take(height).zip(rgba.chunks_exact_mut(width * 4)) {
+            for (src, dst) in line[..width * 4].chunks_exact(4).zip(out.chunks_exact_mut(4)) {
+                dst[0] = src[2];
+                dst[1] = src[1];
+                dst[2] = src[0];
+                dst[3] = src[3];
+            }
         }
-        for px in rgba.chunks_exact_mut(4) {
-            px.swap(0, 2); // BGRA -> RGBA
-        }
-        (rgba.len() == width * height * 4).then_some((width as u32, height as u32, rgba))
+        Some((width as u32, height as u32, rgba))
     }
 
     pub fn list_windows(own_title: &str) -> Vec<WindowInfo> {
@@ -386,12 +398,19 @@ mod mac {
             let ago = Instant::now() - Duration::from_secs(1);
             let (mut last, mut last_preview) = (ago, ago);
             let mut misses = 0;
+            // (where the window is: looked up again twice a second, not for every frame, as listing
+            // the windows costs about as much as reading one)
+            let mut win = Some(win);
+            let mut looked = Instant::now();
             while !flag.load(Ordering::Relaxed) {
                 let full = shared.full_due(last);
                 let preview = shared.preview_due(last_preview);
                 if full || preview {
-                    // (where the window is now: it can move or change size)
-                    match by_id(id).as_ref().and_then(capture) {
+                    if win.is_none() || looked.elapsed() >= Duration::from_millis(500) {
+                        win = by_id(id);
+                        looked = Instant::now();
+                    }
+                    match win.as_ref().and_then(capture) {
                         Some((w, h, rgba)) => {
                             misses = 0;
                             if preview {
@@ -406,6 +425,8 @@ mod mac {
                         // the window closed (or can't be read any more): end, so the manager restarts
                         None => {
                             misses += 1;
+                            // (look it up again at once: it may have moved or closed)
+                            win = None;
                             if misses > 20 {
                                 break;
                             }
