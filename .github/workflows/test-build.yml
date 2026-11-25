@@ -125,6 +125,7 @@ jobs:
         if: matrix.os == 'macos'
         run: |
           python3 tools/ui_render.py target/universal-apple-darwin/release/vi-translator "$VIT_FRAMES" ui ui-renders
+          cat ui-renders/ui-renders.md
 
       - uses: actions/upload-artifact@v4
         if: always() && matrix.os == 'macos'
@@ -140,6 +141,7 @@ jobs:
           if [ "${{ matrix.os }}" = windows ]; then APP="target/${{ matrix.target }}/release/vi-translator.exe"; PY=python; else APP=target/universal-apple-darwin/release/vi-translator; PY=python3; fi
           mkdir -p video-bench
           $PY tools/subtitle_accuracy.py "$APP" "$VIT_FRAMES" "video-bench/subtitle-accuracy-${{ matrix.os }}.md"
+          cat "video-bench/subtitle-accuracy-${{ matrix.os }}.md"
 
       # The PS5 picture drawn by the app's own page at a steady 60 frames a second (Smooth, Lowest delay; with
       # the in-place phone layer and the picture panel). The Mac runner has a GPU and gates on it; the Windows
@@ -160,6 +162,7 @@ jobs:
           mkdir -p video-bench
           "$APP" --soak 30 "video-bench/soak-${{ matrix.os }}.md" "$F/gta6-telefon-sohbet-1.jpg" "$F/gta6-01-lucia.jpg" "$F/gta6-telefon-ana-1.jpg" "$F/gta6-14-iki-satir.jpg" "$F/gta6-telefon-sohbet-2.jpg" "$F/gta6-20-gorev.jpg" 2>&1 | tee video-bench/soak-${{ matrix.os }}.log | grep -E "^- |\[soak\] pass [0-9]*0:" || true
           ! grep -q "panicked" video-bench/soak-${{ matrix.os }}.log
+          cat "video-bench/soak-${{ matrix.os }}.md" | head -12
           grep -q "pass$" <(grep "^- Memory" "video-bench/soak-${{ matrix.os }}.md") && grep -q "pass$" <(grep "^- Reading" "video-bench/soak-${{ matrix.os }}.md")
 
       # A window that changes 60 times a second, captured as the app captures (ScreenCaptureKit, then the
@@ -225,7 +228,9 @@ jobs:
         run: |
           ls -l out
           TAG="test-$(date -u +%Y%m%d)-${{ github.run_number }}"
-          gh release create "$TAG" out/vi-translator-windows-x64.exe out/VI-Translator-macos.dmg \
+          # (the test reports and the renders, for whoever checks the build)
+          (cd out && zip -q -r ../test-reports.zip . -x 'vi-translator-windows-x64.exe' 'VI-Translator-macos.dmg')
+          gh release create "$TAG" out/vi-translator-windows-x64.exe out/VI-Translator-macos.dmg test-reports.zip \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
             --title "VI Translator test build $TAG" \
             --notes "Test build of ${GITHUB_REF_NAME} (${GITHUB_SHA::7}). Not signed; it doesn't update itself."
