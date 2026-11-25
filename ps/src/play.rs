@@ -380,7 +380,14 @@ fn decode_thread(
 }
 
 fn dequeued(stats: &Stats) {
-    let _ = stats.queued.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| Some(n.saturating_sub(1)));
+    // (never below 0)
+    let mut n = stats.queued.load(Ordering::Relaxed);
+    while n > 0 {
+        match stats.queued.compare_exchange_weak(n, n - 1, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(now) => n = now,
+        }
+    }
 }
 
 /// Whether an H.264 frame (Annex B) starts a new picture on its own: an IDR slice, or the

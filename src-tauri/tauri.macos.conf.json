@@ -1,7 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
+    "targets": ["dmg"],
+    "icon": ["icons/icon.png"],
     "macOS": {
+      "signingIdentity": "-",
+      "hardenedRuntime": false,
+      "minimumSystemVersion": "11.0",
       "files": {
         "MacOS/vit-apple-translate": "./apple/build/vit-apple-translate"
       }
