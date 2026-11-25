@@ -1,6 +1,7 @@
 # A test build of this branch for Windows (x64) and macOS (Apple silicon and Intel in one .dmg),
-# without a release or signatures: run it from the Actions tab (Run workflow), or push to a branch
-# named test-*. The files are the run's artifacts, at the bottom of its page.
+# without the official signatures: run it from the Actions tab (Run workflow), or push to a branch
+# named test-*. Once both build, a pre-release test-YYYYMMDD-N gets the two files
+# (vi-translator-windows-x64.exe, VI-Translator-macos.dmg); they're also the run's artifacts.
 name: Test build
 
 on:
@@ -47,7 +48,7 @@ jobs:
         run: |
           cargo build --release --target ${{ matrix.target }}
           mkdir -p ../out
-          cp "../target/${{ matrix.target }}/release/vi-translator.exe" ../out/vi-translator-windows-x64-test.exe
+          cp "../target/${{ matrix.target }}/release/vi-translator.exe" ../out/vi-translator-windows-x64.exe
 
       - name: Build (macOS .dmg)
         if: matrix.os == 'macos'
@@ -56,10 +57,32 @@ jobs:
           rustup target add x86_64-apple-darwin
           npx --yes @tauri-apps/cli@2.12.5 build --target universal-apple-darwin
           mkdir -p ../out
-          cp ../target/universal-apple-darwin/release/bundle/dmg/*.dmg ../out/vi-translator-macos-test.dmg
+          cp ../target/universal-apple-darwin/release/bundle/dmg/*.dmg ../out/VI-Translator-macos.dmg
 
       - uses: actions/upload-artifact@v4
         with:
           name: vi-translator-${{ matrix.os }}-test
           path: out/*
           if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: out
+          merge-multiple: true
+      - name: Pre-release with the two files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l out
+          TAG="test-$(date -u +%Y%m%d)-${{ github.run_number }}"
+          gh release create "$TAG" out/vi-translator-windows-x64.exe out/VI-Translator-macos.dmg \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "VI Translator test build $TAG" \
+            --notes "Test build of ${GITHUB_REF_NAME} (${GITHUB_SHA::7}). Not signed; it doesn't update itself."
+
