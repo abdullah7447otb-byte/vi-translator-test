@@ -327,9 +327,17 @@ pub fn chat_view(phone: &serde_json::Value) -> serde_json::Value {
         let en = p["en"].as_str().unwrap_or("");
         // ("New messages", a day: short, alone in the middle, no bubble round it)
         let divider = (mid - 0.5).abs() < 0.06 && r[2] / sw < 0.45 && en.split_whitespace().count() <= 3 && p["box_uv"].is_null();
-        let me = match (usual, blue(p)) {
-            (Some(u), Some(b)) => b - u > 15.0,
-            _ => left > right * 2.0 && left > 0.08,
+        // (the phone's own rules first, phone_chat: incoming / outgoing / note; a message leaning
+        // on neither side, or none known, goes by its colour)
+        let role = p["role"].as_str().unwrap_or("");
+        let divider = divider || role == "note";
+        let me = match role {
+            "outgoing" => true,
+            "incoming" | "note" | "header" | "contact" | "preview" | "heading" | "home" => false,
+            _ => match (usual, blue(p)) {
+                (Some(u), Some(b)) => b - u > 15.0,
+                _ => left > right * 2.0 && left > 0.08,
+            },
         };
         items.push((
             r[1],

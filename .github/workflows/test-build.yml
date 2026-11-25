@@ -21,7 +21,7 @@ jobs:
           - { os: windows, runner: windows-latest, target: x86_64-pc-windows-msvc }
           - { os: macos,   runner: macos-15,       target: aarch64-apple-darwin }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 150
     defaults:
       run:
         shell: bash
@@ -116,6 +116,49 @@ jobs:
           "$APP" --probe-phone phone-renders/probe.json "$F/gta6-telefon-sohbet-1.jpg" "$F/gta6-telefon-sohbet-2.jpg" "$F/gta6-telefon-ana-1.jpg" "$F/gta6-telefon-ana-2.jpg" "$F/gta6-n4-bildirim.jpg"
           python3 -m pip install --quiet --break-system-packages playwright==1.63.0 || python3 -m pip install --quiet playwright==1.63.0
           python3 tools/phone_render.py phone-renders/probe.json ui phone-renders --app "$APP"
+
+      # GTA VI's screen-fixed UI (mission menus, the map and its card, GPS and mission lines) through the app's
+      # snapshot on CouchSubs' frames, drawn by ui/snapshot.js: before/after PNGs and which blocks were translated.
+      - name: UI renders (macOS)
+        if: matrix.os == 'macos'
+        run: |
+          python3 tools/ui_render.py target/universal-apple-darwin/release/vi-translator "$VIT_FRAMES" ui ui-renders
+
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.os == 'macos'
+        with:
+          name: ui-renders
+          path: ui-renders/*
+          if-no-files-found: warn
+
+      # The subtitle reader (the host's OCR: Vision here, Windows OCR there) on CouchSubs' GTA VI subtitle
+      # frames against their ground truth: word accuracy and every miss, in the video-bench artifact.
+      - name: Subtitle accuracy
+        run: |
+          if [ "${{ matrix.os }}" = windows ]; then APP="target/${{ matrix.target }}/release/vi-translator.exe"; PY=python; else APP=target/universal-apple-darwin/release/vi-translator; PY=python3; fi
+          mkdir -p video-bench
+          $PY tools/subtitle_accuracy.py "$APP" "$VIT_FRAMES" "video-bench/subtitle-accuracy-${{ matrix.os }}.md"
+
+      # The PS5 picture drawn by the app's own page at a steady 60 frames a second (Smooth, Lowest delay; with
+      # the in-place phone layer and the picture panel). The Mac runner has a GPU and gates on it; the Windows
+      # runner has none (WARP), so there the numbers are reported, not gated.
+      - name: Smoothness
+        continue-on-error: ${{ matrix.os == 'windows' }}
+        run: |
+          if [ "${{ matrix.os }}" = windows ]; then PY=python; else PY=python3; fi
+          $PY -m pip install --quiet playwright==1.63.0 || true
+          mkdir -p video-bench
+          $PY tools/smoothness.py ui "video-bench/smoothness-${{ matrix.os }}.md" --seconds 60 --size 1920x1080
+
+      # 30 minutes of the phone and subtitle frames through the engine: memory, the reading's time, no panic.
+      - name: Soak (30 min)
+        run: |
+          if [ "${{ matrix.os }}" = windows ]; then APP="target/${{ matrix.target }}/release/vi-translator.exe"; else APP=target/universal-apple-darwin/release/vi-translator; fi
+          F="$VIT_FRAMES"
+          mkdir -p video-bench
+          "$APP" --soak 30 "video-bench/soak-${{ matrix.os }}.md" "$F/gta6-telefon-sohbet-1.jpg" "$F/gta6-01-lucia.jpg" "$F/gta6-telefon-ana-1.jpg" "$F/gta6-14-iki-satir.jpg" "$F/gta6-telefon-sohbet-2.jpg" "$F/gta6-20-gorev.jpg" 2>&1 | tee video-bench/soak-${{ matrix.os }}.log | grep -E "^- |\[soak\] pass [0-9]*0:" || true
+          ! grep -q "panicked" video-bench/soak-${{ matrix.os }}.log
+          grep -q "pass$" <(grep "^- Memory" "video-bench/soak-${{ matrix.os }}.md") && grep -q "pass$" <(grep "^- Reading" "video-bench/soak-${{ matrix.os }}.md")
 
       # A window that changes 60 times a second, captured as the app captures (ScreenCaptureKit, then the
       # old CoreGraphics way to compare). Needs the runner to allow screen recording: if it doesn't,

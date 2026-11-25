@@ -1950,6 +1950,22 @@ fn main() {
         }
         return;
     }
+    // `--soak <minutes> <out.md> <frame>…`: the engine for a long session (see probe.rs)
+    if let Some(i) = args.iter().position(|a| a == "--soak") {
+        let (Some(min), Some(out)) = (args.get(i + 1).and_then(|m| m.parse::<f64>().ok()), args.get(i + 2)) else {
+            vi_translator_core::vlog!("usage: --soak <minutes> <out.md> <frame>…");
+            std::process::exit(2);
+        };
+        match probe::soak(min, out, &args[i + 3..]) {
+            Ok(true) => {}
+            Ok(false) => std::process::exit(1),
+            Err(e) => {
+                vi_translator_core::vlog!("soak: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--ocr-boxes") {
         let (Some(pic), Some(boxes)) = (args.get(i + 1), args.get(i + 2)) else {
             vi_translator_core::vlog!("usage: --ocr-boxes <picture> <boxes.json>");

@@ -586,3 +586,126 @@ mod tests {
         assert!(menu_rects(&ScreenLayout::default()).is_none());
     }
 }
+
+/// The screen's looks, locked while it's up (style_lock), and each text's box as first measured
+/// while readings stay near it: a page read again doesn't jitter in size, weight, colour or place.
+static STEADY: std::sync::Mutex<Option<(String, crate::style_lock::StyleLock, std::collections::HashMap<String, Rect>)>> = std::sync::Mutex::new(None);
+
+fn steady_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+/// A box read again near where it was (each edge within half a line): the first one.
+fn near_box(old: &Rect, new: &Rect, line: f64) -> bool {
+    let t = (line * 0.5).max(0.002);
+    (old.x - new.x).abs() <= t * 2.0 && (old.x + old.w - new.x - new.w).abs() <= t * 2.0 && (old.y - new.y).abs() <= t && (old.y + old.h - new.y - new.h).abs() <= t
+}
+
+/// The layout as it's drawn: its texts' and cards' looks locked, their boxes kept (see `STEADY`).
+pub fn steady_layout(l: &mut ScreenLayout) {
+    steady_layout_at(l, steady_ms());
+}
+
+pub fn steady_layout_at(l: &mut ScreenLayout, now: u64) {
+    use crate::style_lock::Item;
+    let mut g = STEADY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // (another page: measured afresh)
+    if g.as_ref().is_some_and(|(id, ..)| *id != l.id) {
+        *g = None;
+    }
+    let (_, lock, boxes) = g.get_or_insert_with(|| (l.id.clone(), Default::default(), Default::default()));
+    let upper = |s: &str| s.chars().any(|c| c.is_alphabetic()) && !s.chars().any(|c| c.is_lowercase());
+    let mut items: Vec<Item> = l
+        .menu
+        .iter()
+        .map(|m| Item {
+            source: m.en.clone(),
+            line: m.line_h,
+            upper: upper(&m.en),
+            bold: m.weight >= 600,
+            condensed: false,
+            rows: m.lines.max(1),
+            icons: m.icons.len(),
+            fg: m.fg.clone(),
+            bg: m.bg.clone(),
+            bubble: false,
+            // (private text isn't drawn over; a fixed one keeps its own)
+            look: !m.private,
+        })
+        .collect();
+    for c in &l.cards {
+        items.push(Item { source: format!("card|{}", c.title_en), line: c.title_h, upper: upper(&c.title_en), bold: true, condensed: false, rows: 1, icons: 0, fg: String::new(), bg: c.bg.clone(), bubble: false, look: true });
+        items.push(Item { source: format!("card|{}|text", c.title_en), line: c.text_h, upper: false, bold: false, condensed: false, rows: 2, icons: 0, fg: String::new(), bg: c.bg.clone(), bubble: false, look: true });
+    }
+    let got = lock.steady(&items, now);
+    for (m, s) in l.menu.iter_mut().zip(got.iter()) {
+        if m.private {
+            continue;
+        }
+        m.line_h = s.line;
+        (m.fg, m.bg) = (s.fg.clone(), s.bg.clone());
+        // (the weight follows the locked one only where it differs: 700 bold, 500 the usual)
+        if (m.weight >= 600) != s.bold {
+            m.weight = if s.bold { 700 } else { 500 };
+        }
+        let key = format!("menu|{}", m.en);
+        match boxes.get(&key) {
+            Some(old) if near_box(old, &m.rect, m.line_h) => m.rect = old.clone(),
+            _ => {
+                boxes.insert(key, m.rect.clone());
+            }
+        }
+    }
+    for (i, c) in l.cards.iter_mut().enumerate() {
+        let k = l.menu.len() + i * 2;
+        if let (Some(t), Some(x)) = (got.get(k), got.get(k + 1)) {
+            (c.title_h, c.text_h, c.bg) = (t.line, x.line, t.bg.clone());
+        }
+        let key = format!("card|{}", c.title_en);
+        match boxes.get(&key) {
+            Some(old) if near_box(old, &c.rect, c.title_h) => c.rect = old.clone(),
+            _ => {
+                boxes.insert(key, c.rect.clone());
+            }
+        }
+    }
+    if boxes.len() > 512 {
+        boxes.clear();
+    }
+}
+
+/// The screen is gone: the next one is measured afresh.
+pub fn steady_reset() {
+    *STEADY.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
+#[cfg(test)]
+mod steady_tests {
+    use super::*;
+
+    fn layout(line: f64, x: f64, fg: &str) -> ScreenLayout {
+        ScreenLayout {
+            id: "pause".into(),
+            menu: vec![MenuText { en: "MAP".into(), rect: Rect { x, y: 0.1, w: 0.1, h: line }, line_h: line, fg: fg.into(), bg: "#101010".into(), weight: 700, lines: 1, ..Default::default() }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_menu_read_again_keeps_its_size_colour_and_box() {
+        steady_reset();
+        let mut a = layout(0.03, 0.2, "#FFFFFF");
+        steady_layout_at(&mut a, 0);
+        let mut b = layout(0.033, 0.203, "#F0F0F0");
+        steady_layout_at(&mut b, 300);
+        assert_eq!(b.menu[0].line_h, 0.03);
+        assert_eq!(b.menu[0].fg, "#FFFFFF");
+        assert_eq!(b.menu[0].rect, a.menu[0].rect);
+        // (moved for real: the new place)
+        let mut c = layout(0.03, 0.5, "#FFFFFF");
+        steady_layout_at(&mut c, 600);
+        assert_eq!(c.menu[0].rect.x, 0.5);
+        steady_reset();
+    }
+}

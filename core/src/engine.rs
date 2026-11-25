@@ -1368,6 +1368,9 @@ impl Reader {
                                 );
                             }
                         }
+                        // (looks and boxes as first measured while the page stays: screens::steady_layout)
+                        let mut layout = layout;
+                        crate::screens::steady_layout(&mut layout);
                         *ctx.live.screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = serde_json::to_value(&layout).ok();
                         ctx.sink.emit("screen", serde_json::to_value(Some(&layout)).unwrap_or_default());
                         ctx.live.screen_active.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1681,6 +1684,11 @@ impl Reader {
                             }
                         }
                         let sbg = crate::phone::screen_bg(fr, f.w, f.h, scr, scr.1, scr.1 + scr.3);
+                        // (what each piece is, by CouchSubs' rules on the phone's pose: incoming or
+                        // outgoing, a note, a contact or a preview, the home screen's: phone_chat)
+                        if let Some(pose) = PHONE_TRACKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).shown() {
+                            tag_roles(&mut out, &pose, f.w as f64 / f.h.max(1) as f64);
+                        }
                         let v = serde_json::json!({ "screen": frac(scr), "screen_bg": format!("#{:02x}{:02x}{:02x}", sbg[0], sbg[1], sbg[2]), "pieces": out, "list": pieces.iter().any(|p| p.avatar.is_some() && !p.title), "buttons": btns, "turn": turn, "slant": slant, "screen_own": screen_own.map(frac), "quad": quad.map(|q| q.map(|(x, y)| [x / w, y / h])), "photos": photos, "stickers": stickers, "anchor": anchor_gen });
                         let mut up = ctx.live.phone.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         if up.as_ref() != Some(&v) {
@@ -2245,6 +2253,31 @@ static PHONE_QUAD: Mutex<Option<([(f64, f64); 4], [(f64, f64); 4], Instant)>> = 
 /// The phone screen's place as last read, and when (phone::steady_screen).
 /// When a chat's header was last read on the phone (a chat's overlay only: see the phone block).
 static PHONE_CHAT_AT: Mutex<Option<Instant>> = Mutex::new(None);
+/// Each phone piece's role (phone_chat::groups on the pieces' English and boxes), as "role":
+/// a piece in a group gets the group's.
+fn tag_roles(out: &mut [serde_json::Value], pose: &crate::phone_pose::Pose, aspect: f64) {
+    use crate::phone_chat::{Box4, Handset, Line, groups};
+    let h = Handset { top_x: pose.top_x, top_y: pose.top_y, bottom_x: pose.bottom_x, bottom_y: pose.bottom_y, aspect };
+    let mut idx = Vec::new();
+    let mut lines = Vec::new();
+    for (i, p) in out.iter().enumerate() {
+        let r: Vec<f64> = p["rect"].as_array().map(|a| a.iter().filter_map(|v| v.as_f64()).collect()).unwrap_or_default();
+        // (the English it covers; a title's is its Arabic name's source, kept as the name)
+        let en = p["en"].as_str().or_else(|| p["title"].as_bool().and_then(|t| t.then(|| p["ar"].as_str()).flatten())).unwrap_or("");
+        if r.len() == 4 && !en.trim().is_empty() {
+            idx.push(i);
+            lines.push(Line { text: en.to_string(), frame_box: Box4::new(r[0], r[1], r[0] + r[2], r[1] + r[3]) });
+        }
+    }
+    for g in groups(&lines, &h) {
+        for l in g.lines {
+            if let Some(&i) = idx.get(l) {
+                out[i]["role"] = serde_json::json!(g.role.wire());
+            }
+        }
+    }
+}
+
 /// The phone held in the hand over time (phone_pose::Tracker).
 static PHONE_TRACKER: Mutex<crate::phone_pose::Tracker> = Mutex::new(crate::phone_pose::Tracker::new());
 /// The chat's messages as last shown (their words, lower case): a reading that misses the header but shows
@@ -2892,6 +2925,7 @@ fn hide_screen(sink: &dyn Sink, shared: &Live, latest: &Mutex<HashMap<String, u6
     shared.screen_private.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
     *shared.screen_reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = serde_json::json!([]);
     sink.emit("screen", serde_json::Value::Null);
+    crate::screens::steady_reset();
 }
 
 #[cfg(test)]
