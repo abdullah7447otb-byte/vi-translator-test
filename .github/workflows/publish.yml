@@ -1,0 +1,109 @@
+# Barqawi published at once from a commit whose full test build already passed but for a check
+# fixed since (the full Test build still runs and its reports are added to the release after):
+# pushed to the branch publish-barqawi only. Same build steps as test-build.yml.
+name: Publish Barqawi
+
+on:
+  push:
+    branches: [publish-barqawi]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, runner: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: macos,   runner: macos-15-intel, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      VIT_TEST_BUILD: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Build (Windows)
+        if: matrix.os == 'windows'
+        working-directory: src-tauri
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          mkdir -p ../out
+          cp "../target/${{ matrix.target }}/release/vi-translator.exe" ../out/vi-translator-windows-x64.exe
+
+      - name: Apple translation helper (macOS)
+        if: matrix.os == 'macos'
+        working-directory: src-tauri/apple
+        run: |
+          mkdir -p build
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$X" ]; then sudo xcode-select -s "$X"; fi
+          echo "SDK: $(xcrun --show-sdk-version)"
+          if swiftc -O -parse-as-library -target arm64-apple-macos11 vit-apple-translate.swift -o build/arm64 \
+             && swiftc -O -parse-as-library -target x86_64-apple-macos11 vit-apple-translate.swift -o build/x86_64; then
+            lipo -create build/arm64 build/x86_64 -output build/vit-apple-translate
+            echo "built with Apple's Translation framework"
+          else
+            cp stub.sh build/vit-apple-translate
+            echo "::warning::no macOS 26 SDK on this runner: the Apple engine is a stand-in in this build"
+          fi
+          chmod +x build/vit-apple-translate
+          codesign -s - -f build/vit-apple-translate || true
+          echo "status on this runner: $(build/vit-apple-translate --status en ar || echo failed)"
+
+      - name: Build (macOS .dmg)
+        if: matrix.os == 'macos'
+        working-directory: src-tauri
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          npx --yes @tauri-apps/cli@2.12.5 build --target universal-apple-darwin
+          mkdir -p ../out
+          cp ../target/universal-apple-darwin/release/bundle/dmg/*.dmg ../out/VI-Translator-macos.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: barqawi-${{ matrix.os }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: Cargo.toml
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v5
+        with:
+          path: out
+          merge-multiple: true
+      - name: Release with the two files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l out
+          V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          # (a release of its own, not the developer's update channel: the build doesn't update itself,
+          # so an update from the original app never replaces Barqawi; the tag isn't vX.Y.Z, so the
+          # signed-release workflow doesn't start)
+          TAG="barqawi-$V"
+          # (the test reports and the renders, for whoever checks the build)
+          gh release create "$TAG" out/vi-translator-windows-x64.exe out/VI-Translator-macos.dmg \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+            --title "Barqawi $V" \
+            --notes "Barqawi $V from ${GITHUB_REF_NAME} (${GITHUB_SHA::7}): the full test build passed on macOS and Windows; the test reports are added to this release when the final run ends. Not signed with the original app's update key; it doesn't update itself."
