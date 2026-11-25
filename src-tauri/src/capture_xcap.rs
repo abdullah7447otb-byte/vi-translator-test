@@ -387,18 +387,32 @@ mod mac {
         out
     }
 
+    /// What to do when the Screen Recording permission is missing (the Source tab shows a button that
+    /// opens the setting: see main.rs open_screen_recording_settings).
+    pub const SCREEN_RECORDING: &str = "Screen Recording is off for VI Translator: turn it on in System Settings › Privacy & Security › Screen Recording, then open VI Translator again.";
+
     pub fn start_window(title: &str, shared: Arc<Shared>) -> Result<(WindowCapture, isize)> {
         let win = find(title).ok_or_else(|| anyhow!("Window \"{title}\" not found. Open it, or pick another window."))?;
         if !win.shareable {
             return Err(anyhow!(
-                "\"{}\" keeps its window out of screen captures, so it can't be read. Use a capture card or an OBS source instead.",
+                "\"{}\" keeps its window out of screen captures, so it can't be read. Use the PS5 in VI Translator (Source › PS5), a capture card or an OBS source instead.",
                 win.label
             ));
         }
-        // one frame now: fails fast when capture isn't allowed (the Screen Recording permission)
-        capture(&win).ok_or_else(|| {
-            anyhow!("Capture failed: allow VI Translator in System Settings > Privacy & Security > Screen Recording, then restart it.")
-        })?;
+        // The Screen Recording permission, asked for once: without it macOS hands over a picture with
+        // the window's contents left out, not an error, and nothing would ever be read.
+        if !objc2_core_graphics::CGPreflightScreenCaptureAccess() {
+            static ASKED: std::sync::Once = std::sync::Once::new();
+            ASKED.call_once(|| {
+                objc2_core_graphics::CGRequestScreenCaptureAccess();
+            });
+            return Err(anyhow!(SCREEN_RECORDING));
+        }
+        // one frame now: fails fast when capture isn't allowed
+        let first = capture(&win).ok_or_else(|| anyhow!(SCREEN_RECORDING))?;
+        if first.2.chunks_exact(4).all(|p| p[..3] == first.2[..3]) && first.0 * first.1 > 10_000 {
+            vi_translator_core::vlog!("[capture] \"{}\": its first picture is one colour (blank, or a plain screen)", win.label);
+        }
         let id = win.id;
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();

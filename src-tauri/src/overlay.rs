@@ -267,8 +267,8 @@ mod win_ops {
     }
 }
 
-/// Linux and macOS: Tauri's own window calls (unfocusable, always on top, click-through once shown).
-#[cfg(not(windows))]
+/// Linux: Tauri's own window calls (unfocusable, always on top, click-through once shown).
+#[cfg(all(not(windows), not(target_os = "macos")))]
 mod win_ops {
     use tauri::{PhysicalPosition, PhysicalSize};
 
@@ -291,3 +291,50 @@ mod win_ops {
         let _ = win.hide();
     }
 }
+
+/// macOS: the game window's place comes from CoreGraphics in points (a Retina screen has two pixels
+/// a point), so the overlays are placed in points too (Tauri's logical units); placed in pixels they
+/// came out half size and half way across. They float above full-screen windows, on every Space,
+/// never take focus, and clicks go through.
+#[cfg(target_os = "macos")]
+mod win_ops {
+    use tauri::{LogicalPosition, LogicalSize};
+
+    // NSWindowCollectionBehavior: CanJoinAllSpaces | Stationary | IgnoresCycle | FullScreenAuxiliary
+    const BEHAVIOR: usize = (1 << 0) | (1 << 4) | (1 << 6) | (1 << 8);
+    // NSStatusWindowLevel: above normal and floating windows, and full-screen ones
+    const LEVEL: isize = 25;
+
+    pub fn never_focus(win: &tauri::WebviewWindow) {
+        let _ = win.set_focusable(false);
+        let w = win.clone();
+        // (AppKit's windows are changed on the main thread only)
+        let _ = win.run_on_main_thread(move || {
+            let Ok(ptr) = w.ns_window() else { return };
+            if ptr.is_null() {
+                return;
+            }
+            let ns = unsafe { &*(ptr as *const objc2::runtime::AnyObject) };
+            unsafe {
+                let _: () = objc2::msg_send![ns, setCollectionBehavior: BEHAVIOR];
+                let _: () = objc2::msg_send![ns, setLevel: LEVEL];
+                let _: () = objc2::msg_send![ns, setHidesOnDeactivate: false];
+            }
+        });
+    }
+
+    pub fn place(win: &tauri::WebviewWindow, r: (i32, i32, i32, i32)) {
+        let _ = win.set_position(LogicalPosition::new(r.0 as f64, r.1 as f64));
+        let _ = win.set_size(LogicalSize::new(r.2.max(1) as f64, r.3.max(1) as f64));
+    }
+
+    pub fn show(win: &tauri::WebviewWindow) {
+        let _ = win.show();
+        let _ = win.set_ignore_cursor_events(true);
+    }
+
+    pub fn hide(win: &tauri::WebviewWindow) {
+        let _ = win.hide();
+    }
+}
+

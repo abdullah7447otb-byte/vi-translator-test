@@ -1923,6 +1923,9 @@ async function savePreview() {
   }
 }
 
+// macOS only: the Screen Recording setting, one click away
+if (/Mac/.test(navigator.platform)) for (const e of document.querySelectorAll(".mac-only")) e.hidden = false;
+$("open-screen-rec").addEventListener("click", () => invoke("open_screen_recording_settings").catch((e) => log({ error: String(e) })));
 $("open-log").addEventListener("click", async () => {
   try {
     const dir = await invoke("open_log_folder");

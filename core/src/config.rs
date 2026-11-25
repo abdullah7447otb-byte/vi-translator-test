@@ -332,6 +332,8 @@ pub struct Config {
     /// How hard the app works: "auto" (lowers the reading's and the picture's rates while the
     /// computer can't keep up, see the desktop app's load.rs), "light" (always low), "full" (never lowered).
     pub perf_mode: String,
+    /// macOS: the player was told once that the bare program can't reach the home network (main.rs)
+    pub bare_mac_noticed: bool,
     /// Threads of the free offline translator (0: as many as suit this computer: 2 on 8 cores or
     /// fewer, 4 on more).
     pub ort_threads: u32,
@@ -800,6 +802,7 @@ impl Default for Config {
             picture_4k: false,
             perf_mode: "auto".into(),
             ort_threads: 0,
+            bare_mac_noticed: false,
             snap_service: String::new(),
             snap_azure_endpoint: String::new(),
             snap_azure_key: String::new(),

@@ -56,7 +56,7 @@ tesseract = "0.15"
 # macOS OCR: Apple Vision
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSDictionary", "NSString", "NSError", "NSValue", "NSGeometry"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSDictionary", "NSString", "NSError", "NSValue", "NSGeometry", "NSRange"] }
 objc2-vision = { version = "0.3", features = ["VNRequest", "VNRecognizeTextRequest", "VNRequestHandler", "VNObservation", "VNTypes", "objc2-core-graphics", "objc2-core-foundation"] }
 objc2-core-graphics = { version = "0.3", features = ["CGImage", "CGColorSpace", "CGDataProvider", "CGWindow", "CGGeometry"] }
 objc2-core-foundation = { version = "0.3", features = ["CFData", "CFCGTypes", "CFArray", "CFDictionary", "CFNumber", "CFString"] }

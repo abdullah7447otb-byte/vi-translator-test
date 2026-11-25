@@ -1,7 +1,7 @@
 //! OCR engine on macOS: Apple Vision (VNRecognizeTextRequest, English, accurate).
 //!
-//! Vision reports lines; each line's box is shared out between its words by character position
-//! (close enough for placing words; button icons between words may be found less reliably).
+//! Vision reports lines; each word's box is Vision's own for its characters (boundingBoxForRange),
+//! else the line's box shared out between its words by character position.
 //!
 //! Not tested on a Mac yet: built only by the release workflow on macOS runners.
 
@@ -11,7 +11,7 @@ use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::AnyObject;
 use objc2_core_foundation::CFData;
 use objc2_core_graphics::{CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo};
-use objc2_foundation::{NSArray, NSDictionary, NSString};
+use objc2_foundation::{NSArray, NSDictionary, NSRange, NSString};
 use objc2_vision::{
     VNImageOption, VNImageRequestHandler, VNRecognizeTextRequest, VNRequest, VNRequestTextRecognitionLevel,
 };
@@ -88,20 +88,22 @@ unsafe fn recognize(grey: &[u8], w: u32, h: u32) -> Result<Vec<RawWord>> {
         );
         let total = text.chars().count().max(1) as f64;
         let mut pos = 0usize;
-        // share the line's width out by characters
+        // (where each word starts in UTF-16 units, as Vision counts)
+        let mut utf16_at = 0usize;
         for part in text.split(' ') {
             let len = part.chars().count();
+            let len16 = part.encode_utf16().count();
             if !part.is_empty() {
-                words.push(RawWord {
-                    line: line_no as u32,
-                    text: part.to_string(),
-                    x: lx + lw * pos as f64 / total,
-                    y: ly,
-                    w: lw * len as f64 / total,
-                    h: lh,
-                });
+                // the word's own box from Vision; else the line's width shared out by characters
+                let own = unsafe { best.boundingBoxForRange_error(NSRange::new(utf16_at, len16)) }.ok().map(|r| unsafe { r.boundingBox() });
+                let (x, y, ww, hh) = match own.filter(|r| r.size.width > 0.0 && r.size.height > 0.0) {
+                    Some(r) => (r.origin.x * w as f64, (1.0 - r.origin.y - r.size.height) * h as f64, r.size.width * w as f64, r.size.height * h as f64),
+                    None => (lx + lw * pos as f64 / total, ly, lw * len as f64 / total, lh),
+                };
+                words.push(RawWord { line: line_no as u32, text: part.to_string(), x, y, w: ww, h: hh });
             }
             pos += len + 1;
+            utf16_at += len16 + 1;
         }
     }
     Ok(words)

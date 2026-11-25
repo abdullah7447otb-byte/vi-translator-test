@@ -102,6 +102,8 @@ window.I18N = (() => {
       "No new picture for {s} s: the source stopped sending",
       "The text hasn't been read for {s} s",
       "The translator has been on one line for {s} s",
+      "Screen Recording is off for VI Translator: turn it on in System Settings › Privacy & Security › Screen Recording, then open VI Translator again.",
+      "Open VI Translator from its .dmg (VI Translator.app in Applications): run as a bare program, macOS doesn't let it reach the PS5 or the phone page on your home network.",
       "Playing on {name} ({pads} controller(s)) · {fps} fps · lost on the network: {net} · too late to decode: {late} (last 10 s)"
   ];
   const MSG_RE = MSGS.map((m) => {

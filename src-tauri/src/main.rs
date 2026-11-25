@@ -681,6 +681,20 @@ fn open_frames_folder(webview: tauri::Webview, state: tauri::State<AppState>) ->
     Ok(dir.display().to_string())
 }
 
+/// macOS: System Settings at Privacy & Security › Screen Recording.
+#[tauri::command]
+fn open_screen_recording_settings(webview: tauri::Webview) -> Result<(), String> {
+    main_only(&webview)?;
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// The log's folder, opened in the file manager.
 #[tauri::command]
 fn open_log_folder(webview: tauri::Webview) -> Result<String, String> {
@@ -1945,7 +1959,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(hotkey::plugin())
         .manage(AppState { cfg: cfg.clone(), shared: shared.clone(), saver: saver.clone(), memory: memory.clone(), update: update.clone() })
-        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin])
+        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin])
         .setup(move |app| {
             if let Some(w) = app.get_webview_window("main") {
                 let test = if updater::TEST_BUILD { " (test build · updates off)" } else { "" };
@@ -1959,6 +1973,28 @@ fn main() {
                 }
             }
             ps5::init(app.handle().clone(), &data_dir());
+            // macOS: the bare program (not the app from the .dmg) has no Info.plist, so macOS gives it
+            // no Local Network access (the PS5, the phone page) and no permission prompts: said once
+            #[cfg(target_os = "macos")]
+            if !updater::in_app_bundle() {
+                vi_translator_core::vlog!("[mac] running outside VI Translator.app: the PS5 and the home-network page need the app from the .dmg");
+                let first = {
+                    let mut c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let first = !c.bare_mac_noticed;
+                    if first {
+                        c.bare_mac_noticed = true;
+                        let _ = c.save(&config_path());
+                    }
+                    first
+                };
+                if first {
+                    let h = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(3));
+                        let _ = h.emit_to("main", "status-msg", "Open VI Translator from its .dmg (VI Translator.app in Applications): run as a bare program, macOS doesn't let it reach the PS5 or the phone page on your home network.");
+                    });
+                }
+            }
             // Xbox in the app as the source (or `--xbox`): its player opens with the app
             if xbox::available() && (cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).window_title == xbox::TITLE || args.iter().any(|a| a == "--xbox")) {
                 if let Err(e) = xbox::open(app.handle(), &data_dir()) {

@@ -428,4 +428,8 @@ I18N.add("ar", {
   "Offline translator threads": "أنوية المترجم المحلي",
   "Automatic": "تلقائي",
   "Fewer threads leave more of the computer to the picture; the change applies the next time the app starts.": "أنوية أقل تخلي الجهاز يركز أكثر على الصورة. التغيير يطبق من التشغيل الجاي للبرنامج.",
+  "Screen Recording is off for VI Translator: turn it on in System Settings › Privacy & Security › Screen Recording, then open VI Translator again.": "تسجيل الشاشة مقفل لـ VI Translator: شغّله من System Settings › Privacy & Security › Screen Recording، بعدين افتح VI Translator من جديد.",
+  "Open VI Translator from its .dmg (VI Translator.app in Applications): run as a bare program, macOS doesn't let it reach the PS5 or the phone page on your home network.": "افتح VI Translator من ملف الـ dmg (تطبيق VI Translator في Applications): لو شغّلته كملف مفرد، الماك ما يسمح له يوصل للسوني ولا لصفحة الجوال في شبكة البيت.",
+  "Open Screen Recording settings": "افتح إعدادات تسجيل الشاشة",
+  "macOS: VI Translator needs it to read a window.": "الماك: VI Translator يحتاجه عشان يقرأ أي نافذة.",
 });
