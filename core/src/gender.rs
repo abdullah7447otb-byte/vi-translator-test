@@ -35,10 +35,10 @@ fn feminine_word(w: &str) -> Option<String> {
     }
     // (with "and" or "then" in front: «واضغط», «فاضغط»)
     for p in ["و", "ف"] {
-        if let Some(rest) = w.strip_prefix(p) {
-            if let Some((_, f)) = VERBS.iter().find(|(m, _)| *m == rest) {
-                return Some(format!("{p}{f}"));
-            }
+        if let Some(rest) = w.strip_prefix(p)
+            && let Some((_, f)) = VERBS.iter().find(|(m, _)| *m == rest)
+        {
+            return Some(format!("{p}{f}"));
         }
     }
     None

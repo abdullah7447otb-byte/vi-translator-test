@@ -1224,11 +1224,11 @@ fn check_report(webview: tauri::Webview, state: tauri::State<AppState>) -> Resul
     write("health.json", &health_json(&state)).map_err(|e| e.to_string())?;
     write("areas.json", &serde_json::to_value(&*state.shared.live.area_debug.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).unwrap_or_default()).map_err(|e| e.to_string())?;
     // (the log's files, newest first: the last few MB cover well over 15 minutes)
-    if let Some(logs) = vi_translator_core::log::folder() {
-        if let Ok(files) = std::fs::read_dir(&logs) {
-            for f in files.flatten().filter(|f| f.file_name().to_string_lossy().contains(".log")) {
-                let _ = std::fs::copy(f.path(), dir.join(f.file_name()));
-            }
+    if let Some(logs) = vi_translator_core::log::folder()
+        && let Ok(files) = std::fs::read_dir(&logs)
+    {
+        for f in files.flatten().filter(|f| f.file_name().to_string_lossy().contains(".log")) {
+            let _ = std::fs::copy(f.path(), dir.join(f.file_name()));
         }
     }
     vi_translator_core::vlog!("[check] report written to {}", dir.display());

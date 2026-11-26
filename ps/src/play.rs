@@ -363,20 +363,20 @@ fn decode_thread(
         // (fallen back to OpenH264 a while ago: the hardware tried again on a key frame, kept if it decodes)
         if decode == crate::hwdec::Decode::Auto && !hevc && key && !dec.is_hardware() && fell_back_at.is_some_and(|t| now.saturating_duration_since(t) >= RETRY_HARDWARE) {
             fell_back_at = None;
-            if let Ok(mut hw) = crate::hwdec::VideoDecoder::new(crate::hwdec::Decode::Auto) {
-                if hw.is_hardware() {
-                    if let Ok(Some(f)) = hw.decode(&frame, true) {
-                        screen.log(3, &format!("[video] {} works again: back from OpenH264", hw.name()));
-                        dec = hw;
-                        named(&dec);
-                        stats.frames.fetch_add(1, Ordering::Relaxed);
-                        if screen.wants_frame() {
-                            screen.frame(f);
-                        }
-                        continue;
+            if let Ok(mut hw) = crate::hwdec::VideoDecoder::new(crate::hwdec::Decode::Auto)
+                && hw.is_hardware()
+            {
+                if let Ok(Some(f)) = hw.decode(&frame, true) {
+                    screen.log(3, &format!("[video] {} works again: back from OpenH264", hw.name()));
+                    dec = hw;
+                    named(&dec);
+                    stats.frames.fetch_add(1, Ordering::Relaxed);
+                    if screen.wants_frame() {
+                        screen.frame(f);
                     }
-                    fell_back_at = Some(now);
+                    continue;
                 }
+                fell_back_at = Some(now);
             }
         }
         match dec.decode(&frame, key) {
