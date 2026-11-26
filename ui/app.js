@@ -1648,7 +1648,10 @@ $("glossary").addEventListener("input", (e) => { cfg.glossary = e.target.value; 
 function renderCharacter() {
   const c = $("character");
   if (c && cfg) c.value = cfg.character === "lucia" ? "lucia" : "jason";
+  const p = $("phone-display");
+  if (p && cfg) p.value = ["panel", "inplace", "both"].includes(cfg.phone_display) ? cfg.phone_display : "panel";
 }
+$("phone-display")?.addEventListener("change", (e) => { cfg.phone_display = e.target.value; save(false); });
 $("character")?.addEventListener("change", (e) => { cfg.character = e.target.value; save(false); });
 
 function renderTiming() {

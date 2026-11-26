@@ -354,6 +354,9 @@ pub struct Config {
     /// The Mac: the translation memory and corrections kept in /Users/Shared, the same for every user of
     /// this Mac (takes effect when the app starts again).
     pub shared_memory: bool,
+    /// How the phone's Arabic is shown: "panel" (a steady panel beside the phone: the contact's picture and
+    /// name, the messages as bubbles), "inplace" (on the game's phone, following it), or "both".
+    pub phone_display: String,
     /// macOS: the player was told once that the bare program can't reach the home network (main.rs)
     pub bare_mac_noticed: bool,
     /// Threads of the free offline translator (0: as many as suit this computer: 2 on 8 cores or
@@ -877,6 +880,7 @@ impl Default for Config {
             glossary: String::new(),
             character: "jason".into(),
             shared_memory: false,
+            phone_display: "panel".into(),
             picture: serde_json::Value::Null,
             snap_service: String::new(),
             snap_azure_endpoint: String::new(),
@@ -1125,6 +1129,12 @@ impl Config {
     ///    that profile's: a built-in one exactly as it is (it can't be changed), one of the
     ///    player's as they last saved it.
     pub fn normalize(&mut self) {
+        if !matches!(self.phone_display.as_str(), "panel" | "inplace" | "both") {
+            self.phone_display = "panel".into();
+        }
+        if !matches!(self.character.as_str(), "jason" | "lucia") {
+            self.character = "jason".into();
+        }
         self.source_crop = self.source_crop.and_then(clean_crop);
         self.overlay_crop = self.overlay_crop.and_then(clean_crop);
         for id in BUILTINS {

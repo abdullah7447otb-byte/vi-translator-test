@@ -1729,7 +1729,7 @@ impl Reader {
                         if let Some(pose) = PHONE_TRACKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).shown() {
                             tag_roles(&mut out, &pose, f.w as f64 / f.h.max(1) as f64);
                         }
-                        let v = serde_json::json!({ "screen": frac(scr), "screen_bg": format!("#{:02x}{:02x}{:02x}", sbg[0], sbg[1], sbg[2]), "pieces": out, "list": pieces.iter().any(|p| p.avatar.is_some() && !p.title), "buttons": btns, "turn": turn, "slant": slant, "screen_own": screen_own.map(frac), "quad": quad.map(|q| q.map(|(x, y)| [x / w, y / h])), "photos": photos, "stickers": stickers, "anchor": anchor_gen });
+                        let v = serde_json::json!({ "screen": frac(scr), "screen_bg": format!("#{:02x}{:02x}{:02x}", sbg[0], sbg[1], sbg[2]), "pieces": out, "list": pieces.iter().any(|p| p.avatar.is_some() && !p.title), "buttons": btns, "turn": turn, "slant": slant, "screen_own": screen_own.map(frac), "quad": quad.map(|q| q.map(|(x, y)| [x / w, y / h])), "photos": photos, "stickers": stickers, "anchor": anchor_gen, "display": c.phone_display });
                         let mut up = ctx.live.phone.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         if up.as_ref() != Some(&v) {
                             *up = Some(v.clone());

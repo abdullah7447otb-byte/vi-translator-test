@@ -459,8 +459,10 @@ window.AS = (() => {
     // (the Arabic inside the game's phone: see renderPhoneInPlace. The second phone beside it, below, only
     // with the hidden legacy switch)
     if (!(typeof window !== "undefined" && window.VIT_SIDE_PHONE)) {
+      const mode = (P && P.display) || "panel";
       if (P && P.chat) renderChatInPlace(root, P.chat);
-      if (P && P.pieces && P.pieces.length) renderPhoneInPlace(root, P);
+      if (mode !== "panel" && P && P.pieces && P.pieces.length) renderPhoneInPlace(root, P);
+      if (mode !== "inplace") renderPhonePanel(root, P);
       return;
     }
     if (P && P.chat) renderChat(root, P.chat);
@@ -2037,6 +2039,65 @@ window.AS = (() => {
 
   // GTA VI's message bubble at the bottom right: its Arabic over the game's bubble, in its colours (the
   // bubble is fixed on the screen: no anchor)
+  // The phone's Arabic in a steady panel beside the phone (the default): the contact's picture and name on top,
+  // the messages as bubbles — the player's on one side in the game's colour, the others' on the other, notes in
+  // the middle. It doesn't follow the phone's sway: it moves only when the phone jumps (more than 15 % of the
+  // picture), and stays 3 s after the phone is put away, so the last message can be read.
+  const PANEL = { side: null, top: null, at: 0, P: null, key: "" };
+  function renderPhonePanel(root, P) {
+    const W = root.clientWidth, H = root.clientHeight;
+    if (!W || !H) return;
+    const has = P && P.pieces && P.pieces.some((p) => !p.title && p.ar);
+    if (has) [PANEL.P, PANEL.at] = [P, Date.now()];
+    else if (!PANEL.P || Date.now() - PANEL.at > 3000) return;
+    const Q = has ? P : PANEL.P;
+    const scr = Q.screen || [0.6, 0.2, 0.2, 0.6];
+    // (where it goes: the free side of the phone, kept until the phone jumps)
+    const mid = scr[0] + scr[2] / 2;
+    const side = mid > 0.5 ? "left" : "right";
+    if (PANEL.side === null || PANEL.side !== side && Math.abs(mid - 0.5) > 0.15 || PANEL.top === null || Math.abs(scr[1] - PANEL.top) > 0.15) {
+      [PANEL.side, PANEL.top] = [side, scr[1]];
+    }
+    const fs = Math.max(13, 0.022 * H);
+    const pw = Math.min(0.3 * W, 26 * fs);
+    const gap = 0.02 * W;
+    const left = PANEL.side === "left" ? Math.max(gap, scr[0] * W - pw - gap) : Math.min(W - pw - gap, (scr[0] + scr[2]) * W + gap);
+    const top = Math.max(0.04 * H, Math.min(PANEL.top * H, 0.55 * H));
+    const d = document.createElement("div");
+    d.className = "phone-panel";
+    Object.assign(d.style, {
+      position: "absolute", left: `${left}px`, top: `${top}px`, width: `${pw}px`, maxHeight: `${0.9 * H - top}px`, overflow: "hidden",
+      boxSizing: "border-box", padding: `${0.6 * fs}px`, borderRadius: `${0.8 * fs}px`, background: "rgba(14, 16, 26, .86)",
+      color: "#f2f2f5", fontFamily: `"Noto Sans Arabic Medium", ${fonts()}`, fontSize: `${fs}px`, lineHeight: "1.45",
+      direction: dir(), display: "flex", flexDirection: "column", gap: `${0.45 * fs}px`, boxShadow: "0 6px 24px rgba(0,0,0,.45)",
+    });
+    const title = Q.pieces.find((p) => p.title);
+    if (title) {
+      const av = 2.2 * fs;
+      const pic = title.avatar ? `<img src="${title.avatar}" style="width:${av}px;height:${av}px;border-radius:50%;object-fit:cover;flex:none">` : `<div style="width:${av}px;height:${av}px;border-radius:50%;background:#3a3d4a;flex:none"></div>`;
+      const en = title.en && title.en !== title.ar ? `<div style="font-size:.7em;opacity:.65;direction:ltr;text-align:start">${esc(title.en)}</div>` : "";
+      d.insertAdjacentHTML("beforeend", `<div style="display:flex;align-items:center;gap:${(0.6 * fs).toFixed(1)}px;padding-bottom:${(0.4 * fs).toFixed(1)}px;border-bottom:1px solid rgba(255,255,255,.12)">${pic}<div><div style="font-weight:700;unicode-bidi:plaintext">${esc(title.ar || title.en || "")}</div>${en}</div></div>`);
+    }
+    const msgs = Q.pieces.filter((p) => !p.title && p.ar).sort((a, b) => (a.rect ? a.rect[1] : 0) - (b.rect ? b.rect[1] : 0));
+    for (const m of msgs) {
+      const mine = m.role === "outgoing";
+      const note = m.role === "note" || m.role === "heading";
+      const b = document.createElement("div");
+      Object.assign(b.style, note ? { alignSelf: "center", fontSize: ".75em", opacity: ".7" } : {
+        alignSelf: mine ? "flex-end" : "flex-start", maxWidth: "85%", padding: `${0.35 * fs}px ${0.6 * fs}px`, borderRadius: `${0.7 * fs}px`,
+        background: mine ? (m.bg || "#2f7cf6") : "#2b2e3a", color: mine ? "#fff" : "#eef0f4", unicodeBidi: "plaintext", whiteSpace: "pre-wrap",
+      });
+      b.innerHTML = m.photo ? "📷 " + esc(m.ar) : withEmoji(m.ar, m.emoji);
+      d.appendChild(b);
+    }
+    root.appendChild(d);
+    // (the newest messages are the ones to read: a long chat shows its end)
+    d.scrollTop = d.scrollHeight;
+    if (d.scrollHeight > d.clientHeight) {
+      while (d.children.length > 2 && d.scrollHeight > d.clientHeight) d.removeChild(d.children[title ? 1 : 0]);
+    }
+  }
+
   function renderChatInPlace(root, C) {
     const W = root.clientWidth, H = root.clientHeight;
     if (!C || !C.ar || !W || !H) return;
@@ -2058,5 +2119,5 @@ window.AS = (() => {
     // (a longer Arabic grows upward from the bubble's bottom, as the game's does)
     if (d.offsetHeight > h) d.style.top = `${y + h - d.offsetHeight}px`;
   }
-  return { _phone: { PHONE_BOX: PHONE_BOX, PHONE_FIT: PHONE_FIT, PHONE_QUAD: PHONE_QUAD }, STEADY, steady, setLang, styleOf, esc, segHtml, rectFor, alignOf, anchor, renderBox, renderScreen, matchedPx, placeUnderText, atText, placeAtText, look, COVER, fxOf, coverLook, drawLine, ridePlace, measureBox, renderPhone, renderPhoneInPlace, renderChatInPlace, phoneAnchor, picturePainted, pictureStopped, _inplace: INPLACE, _sync: SYNC };
+  return { _phone: { PHONE_BOX: PHONE_BOX, PHONE_FIT: PHONE_FIT, PHONE_QUAD: PHONE_QUAD }, STEADY, steady, setLang, styleOf, esc, segHtml, rectFor, alignOf, anchor, renderBox, renderScreen, matchedPx, placeUnderText, atText, placeAtText, look, COVER, fxOf, coverLook, drawLine, ridePlace, measureBox, renderPhone, renderPhoneInPlace, renderPhonePanel, renderChatInPlace, phoneAnchor, picturePainted, pictureStopped, _inplace: INPLACE, _sync: SYNC };
 })();

@@ -27,3 +27,6 @@ Each choice that was open, what was chosen, and why.
    checked here. The offline translator gets a warm start instead, so the first line isn't slow, plus the
    name glossary and the instant memory path it already had. Apple's translation is the stronger one on
    macOS 26 and it heals itself now.
+8. **The phone's Arabic defaults to the steady panel.** Following the phone's sway is what made it hard
+   to read. «On the phone» stays an option, and so does «Both». The in-place drawing is unchanged (no new
+   dead-zone): changing its easing without real phone frames on a Mac could make it lag the phone.

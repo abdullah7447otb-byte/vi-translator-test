@@ -71,7 +71,8 @@ def main():
                   AS.setLang("ar");
                   const ph = document.getElementById("ph");
                   if (anchor) AS.phoneAnchor(anchor);
-                  AS.renderPhone(ph, phone);
+                  // (both: the in-place layer is checked as before, and the steady panel beside it)
+                  AS.renderPhone(ph, phone ? Object.assign({}, phone, { display: "both" }) : phone);
                   document.fonts.ready.then(() => requestAnimationFrame(() => requestAnimationFrame(() => {
                     const layer = ph.querySelector(".phone-inplace");
                     const boxes = [];
@@ -92,6 +93,11 @@ def main():
                         out.boxes.push([r.left / innerWidth, r.top / innerHeight, r.width / innerWidth, r.height / innerHeight, d.textContent]);
                       }
                     }
+                    const panel = ph.querySelector(".phone-panel");
+                    if (panel) {
+                      const r = panel.getBoundingClientRect();
+                      out.panel = { rect: [r.left / innerWidth, r.top / innerHeight, r.width / innerWidth, r.height / innerHeight], bubbles: panel.children.length };
+                    }
                     out.pieces = phone && phone.pieces ? phone.pieces.filter((p) => !p.title && !p.pending && p.ar && p.ar.trim()).length : 0;
                     done(out);
                   })));
@@ -102,6 +108,16 @@ def main():
             page.close()
             checks = []
             if phone and phone.get("pieces"):
+                # the steady panel: there, and beside the phone's screen, not over it
+                if res["pieces"]:
+                    pn = res.get("panel")
+                    if not pn:
+                        checks.append("no steady panel beside the phone")
+                    elif phone.get("screen"):
+                        sx, sy, sw, sh = phone["screen"]
+                        px, py, pw, phh = pn["rect"]
+                        if px < sx + sw - 0.005 and px + pw > sx + 0.005 and py < sy + sh and py + phh > sy:
+                            checks.append(f"the panel covers the phone's screen: {pn['rect']} over {phone['screen']}")
                 if res["drawn"] != res["pieces"]:
                     checks.append(f"drawn {res['drawn']} of {res['pieces']} translated pieces")
                 if res["overflow"]:
