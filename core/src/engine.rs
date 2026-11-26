@@ -245,6 +245,50 @@ struct AreaState {
     last_drop: Option<(&'static str, Instant)>,
     /// Where the game's help box was really seen (crop pixels: left, top), at which picture size
     learned_anchor: Option<(u32, u32, (u32, u32))>,
+    /// The area's picture at its last OCR read (a small luma grid), when, and what was read then
+    last_read: Option<(Vec<u8>, Instant, Vec<ocr::Word>, bool)>,
+}
+
+/// An area's picture read again only when it changed, or this long after it was last read.
+const SAME_READ_FOR: Duration = Duration::from_millis(1000);
+
+/// A small picture of a crop: its luma on a 48×12 grid (each cell its block's average).
+pub fn crop_sig(c: &Crop) -> Vec<u8> {
+    const GW: u32 = 48;
+    const GH: u32 = 12;
+    let mut out = Vec::with_capacity((GW * GH) as usize);
+    for gy in 0..GH {
+        for gx in 0..GW {
+            let (x0, x1) = (gx * c.w / GW, ((gx + 1) * c.w / GW).max(gx * c.w / GW + 1).min(c.w));
+            let (y0, y1) = (gy * c.h / GH, ((gy + 1) * c.h / GH).max(gy * c.h / GH + 1).min(c.h));
+            let (mut sum, mut n) = (0u64, 0u64);
+            for y in (y0..y1).step_by(2) {
+                for x in (x0..x1).step_by(2) {
+                    let (r, g, b) = c.px(x, y);
+                    sum += ((r * 54 + g * 183 + b * 19) / 256).clamp(0, 255) as u64;
+                    n += 1;
+                }
+            }
+            out.push((sum / n.max(1)) as u8);
+        }
+    }
+    out
+}
+
+/// The same picture: no cell more than 2 levels off, and on average under half a level (text fading in or
+/// out, or a word changing, moves its cells far more).
+pub fn same_picture(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && !a.is_empty() && {
+        let mut sum = 0u32;
+        for (x, y) in a.iter().zip(b) {
+            let d = x.abs_diff(*y) as u32;
+            if d > 2 {
+                return false;
+            }
+            sum += d;
+        }
+        (sum as f64 / a.len() as f64) < 0.5
+    }
 }
 
 /// Text read in an area left out, and why (only when there was text to leave out): for the check mode.
@@ -1885,9 +1929,23 @@ impl Reader {
                     (Some(frame), Some(ocr)) if stacks => read_stacked(ocr, &frame.rgba, fw, fh, area_cfg, area),
                     (Some(frame), Some(ocr)) => {
                         let crop = Crop::from_frame(&frame.rgba, fw, fh, area.x, area.y, area.w, area.h);
-                        let (words, sure) = match &crop {
-                            Some(cr) => ocr.recognize_checked(cr).unwrap_or((Vec::new(), true)),
-                            None => (Vec::new(), true),
+                        // (the area's picture just as it was at the last read, less than a second ago: its words
+                        // again, not read again — most frames an instruction stays put)
+                        let sig = crop.as_ref().map(crop_sig);
+                        let same = match (&sig, &st.last_read) {
+                            (Some(a), Some((b, at, _, _))) => now.saturating_duration_since(*at) < SAME_READ_FOR && same_picture(a, b),
+                            _ => false,
+                        };
+                        let (words, sure) = match (&crop, same) {
+                            (Some(_), true) => st.last_read.as_ref().map(|(_, _, w, s)| (w.clone(), *s)).unwrap_or((Vec::new(), true)),
+                            (Some(cr), false) => {
+                                let got = ocr.recognize_checked(cr).unwrap_or((Vec::new(), true));
+                                if let Some(sig) = sig {
+                                    st.last_read = Some((sig, now, got.0.clone(), got.1));
+                                }
+                                got
+                            }
+                            (None, _) => (Vec::new(), true),
                         };
                         (crop, words, sure)
                     }
@@ -3091,6 +3149,27 @@ mod phone_hold_tests {
 #[cfg(test)]
 mod learn_tests {
     use super::*;
+
+    #[test]
+    fn an_unchanged_area_is_the_same_picture_and_a_new_word_isnt() {
+        let (w, h) = (480u32, 60u32);
+        let mut rgba = vec![30u8; (w * h * 4) as usize];
+        let crop = |rgba: &Vec<u8>| Crop { w, h, rgba: rgba.clone() };
+        let a = crop_sig(&crop(&rgba));
+        // a word's worth of bright letters drawn in
+        for y in 20..40 {
+            for x in 200..260 {
+                let i = ((y * w + x) * 4) as usize;
+                rgba[i..i + 3].copy_from_slice(&[240, 240, 240]);
+            }
+        }
+        let b = crop_sig(&crop(&rgba));
+        assert!(same_picture(&a, &a));
+        assert!(!same_picture(&a, &b));
+        // video noise of a level or so everywhere: still the same
+        let noisy: Vec<u8> = b.iter().enumerate().map(|(i, v)| v.saturating_add((i % 3 == 0) as u8)).collect();
+        assert!(same_picture(&b, &noisy));
+    }
 
     #[test]
     fn a_new_mission_line_is_taken_once_it_holds_and_reads_as_english() {

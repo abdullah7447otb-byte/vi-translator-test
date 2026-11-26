@@ -30,6 +30,37 @@ fn words() -> &'static HashSet<String> {
     })
 }
 
+/// The game's names as written (people, places, brands: the glossary's and the speakers'), for the OCR's
+/// own list of words (Apple's Vision `customWords`): read as names, not "corrected" into English words.
+pub fn game_names() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+    for src in [include_str!("glossary_ar.tsv"), include_str!("speaker_names_ar.tsv")] {
+        for l in src.lines().filter(|l| !l.starts_with('#')) {
+            let en = l.split('\t').next().unwrap_or("");
+            for w in en.split(|c: char| !(c.is_alphabetic() || c == '\'')) {
+                // (names: capitalised, three letters or more, not a plain English word)
+                if w.chars().count() >= 3 && w.chars().next().is_some_and(|c| c.is_uppercase()) && !words_only().contains(&w.to_lowercase()) && seen.insert(w.to_string()) {
+                    out.push(w.to_string());
+                }
+            }
+        }
+    }
+    out.truncate(400);
+    out
+}
+
+/// The word list alone (without the game's names).
+fn words_only() -> &'static HashSet<String> {
+    static ONLY: OnceLock<HashSet<String>> = OnceLock::new();
+    ONLY.get_or_init(|| {
+        use std::io::Read;
+        let mut text = String::new();
+        let _ = flate2::read::GzDecoder::new(PACKED).read_to_string(&mut text);
+        text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()
+    })
+}
+
 /// A word of English or a name the game uses ("RydeMe", "Leonida"). Endings "'s", "'ll", "n't" and the like
 /// are taken off first.
 pub fn is_word(w: &str) -> bool {
@@ -77,5 +108,7 @@ mod tests {
             assert!(word_share(l) < 0.9, "{l}: {}", word_share(l));
         }
         assert_eq!(word_share(""), 0.0);
+        let names = game_names();
+        assert!(!names.is_empty() && names.len() <= 400 && names.iter().all(|n| n.chars().next().is_some_and(|c| c.is_uppercase())), "{names:?}");
     }
 }

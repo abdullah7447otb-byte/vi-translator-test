@@ -201,17 +201,85 @@ impl Ocr {
 
     pub fn recognize_with(&self, crop: &Crop, mode: Prep) -> Result<Vec<Word>> {
         let (bgra, w, h, back) = Self::preprocess(crop, mode, self.engine.max_dim());
-        Ok(self
-            .engine
-            .read(&bgra, w, h)?
-            .into_iter()
-            .map(|r| Word {
-                line: r.line,
-                text: r.text,
-                rect: ((r.x * back) as u32, (r.y * back) as u32, (r.w * back).ceil() as u32 + 1, (r.h * back).ceil() as u32 + 1),
-            })
-            .collect())
+        Ok(without_repeated_lines(
+            self.engine
+                .read(&bgra, w, h)?
+                .into_iter()
+                .map(|r| Word {
+                    line: r.line,
+                    text: r.text,
+                    rect: ((r.x * back) as u32, (r.y * back) as u32, (r.w * back).ceil() as u32 + 1, (r.h * back).ceil() as u32 + 1),
+                })
+                .collect(),
+        ))
     }
+}
+
+/// A line the OCR gave twice (Apple's Vision in its 2026 models returns some lines twice: once on their
+/// own, once joined with the line next to them; and the same line twice at the same place): each line once.
+/// A line whose box mostly overlaps another's and whose text is that line's, or that line's and its
+/// neighbour's joined, is left out.
+pub fn without_repeated_lines(words: Vec<Word>) -> Vec<Word> {
+    let mut lines: std::collections::BTreeMap<u32, Vec<usize>> = std::collections::BTreeMap::new();
+    for (i, w) in words.iter().enumerate() {
+        lines.entry(w.line).or_default().push(i);
+    }
+    if lines.len() < 2 {
+        return words;
+    }
+    let info: Vec<(u32, String, (u32, u32, u32, u32))> = lines
+        .iter()
+        .map(|(l, idx)| {
+            let text = idx.iter().map(|&i| words[i].text.as_str()).collect::<Vec<_>>().join(" ");
+            let x0 = idx.iter().map(|&i| words[i].rect.0).min().unwrap_or(0);
+            let y0 = idx.iter().map(|&i| words[i].rect.1).min().unwrap_or(0);
+            let x1 = idx.iter().map(|&i| words[i].rect.0 + words[i].rect.2).max().unwrap_or(0);
+            let y1 = idx.iter().map(|&i| words[i].rect.1 + words[i].rect.3).max().unwrap_or(0);
+            (*l, text, (x0, y0, x1, y1))
+        })
+        .collect();
+    let norm = |t: &str| t.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+    let overlap = |a: (u32, u32, u32, u32), b: (u32, u32, u32, u32)| {
+        let w = a.2.min(b.2) as i64 - a.0.max(b.0) as i64;
+        let h = a.3.min(b.3) as i64 - a.1.max(b.1) as i64;
+        if w <= 0 || h <= 0 {
+            return 0.0;
+        }
+        let area = |r: (u32, u32, u32, u32)| ((r.2 - r.0) as f64 * (r.3 - r.1) as f64).max(1.0);
+        (w * h) as f64 / area(a).min(area(b))
+    };
+    let mut drop: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for (i, a) in info.iter().enumerate() {
+        if drop.contains(&a.0) {
+            continue;
+        }
+        let na = norm(&a.1);
+        if na.is_empty() {
+            continue;
+        }
+        // the same line again, at the same place
+        for b in &info[i + 1..] {
+            if !drop.contains(&b.0) && norm(&b.1) == na && overlap(a.2, b.2) > 0.6 {
+                drop.insert(b.0);
+            }
+        }
+        // a line that is two others joined, over both of them
+        for (j, b) in info.iter().enumerate() {
+            for c in &info[j + 1..] {
+                if b.0 == a.0 || c.0 == a.0 || drop.contains(&b.0) || drop.contains(&c.0) {
+                    continue;
+                }
+                let joined = |x: &str, y: &str| format!("{}{}", norm(x), norm(y));
+                if (na == joined(&b.1, &c.1) || na == joined(&c.1, &b.1)) && overlap(a.2, b.2) > 0.6 && overlap(a.2, c.2) > 0.6 {
+                    drop.insert(a.0);
+                }
+            }
+        }
+    }
+    if drop.is_empty() {
+        return words;
+    }
+    words.into_iter().filter(|w| !drop.contains(&w.line)).collect()
 }
 
 /// Two words OCR glued with a dot it saw in the gap: "my.leg" -> "my leg" (both sides at least two
@@ -2101,6 +2169,29 @@ mod centered_tests {
     fn text_only_at_the_side_is_not_a_subtitle() {
         let ws = vec![w("Browse", 1400, 10, 90)];
         assert!(centered_words(&ws, 192.0, 1920.0).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod repeated_line_tests {
+    use super::*;
+
+    fn w(t: &str, x: u32, y: u32, line: u32) -> Word {
+        Word { text: t.into(), rect: (x, y, 10 * t.len() as u32, 24), line }
+    }
+
+    #[test]
+    fn a_line_given_twice_is_kept_once() {
+        // two lines, then the same two joined as a third "line" over both
+        let words = vec![w("Get", 10, 10, 0), w("in", 50, 10, 0), w("the", 10, 44, 1), w("car.", 50, 44, 1), w("Get", 10, 10, 2), w("in", 50, 10, 2), w("the", 80, 44, 2), w("car.", 120, 44, 2)];
+        let kept = without_repeated_lines(words);
+        assert_eq!(kept.iter().map(|w| w.line).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>(), vec![0, 1]);
+        // the same line twice at the same place
+        let words = vec![w("Lose", 10, 10, 0), w("the", 60, 10, 0), w("cops.", 100, 10, 0), w("Lose", 11, 10, 1), w("the", 61, 10, 1), w("cops.", 101, 10, 1)];
+        assert_eq!(without_repeated_lines(words).len(), 3);
+        // two different lines stay
+        let words = vec![w("Go", 10, 10, 0), w("Go", 10, 44, 1)];
+        assert_eq!(without_repeated_lines(words).len(), 2);
     }
 }
 

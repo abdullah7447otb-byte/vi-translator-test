@@ -1,9 +1,9 @@
 //! OCR engine on macOS: Apple Vision (VNRecognizeTextRequest, English, accurate).
 //!
 //! Vision reports lines; each word's box is Vision's own for its characters (boundingBoxForRange),
-//! else the line's box shared out between its words by character position.
-//!
-//! Not tested on a Mac yet: built only by the release workflow on macOS runners.
+//! else the line's box shared out between its words by character position. The game's names go in as
+//! Vision's own words (`customWords`, used with language correction), so "Lucia" or "Leonida" aren't
+//! "corrected" into English words. Lines Vision gives twice are merged in the core (ocr::without_repeated_lines).
 
 use anyhow::{Result, anyhow};
 use objc2::AllocAnyThread;
@@ -18,11 +18,14 @@ use objc2_vision::{
 
 use vi_translator_core::ocr::RawWord;
 
-pub struct Engine;
+pub struct Engine {
+    /// the game's names, for Vision's customWords
+    names: Vec<String>,
+}
 
 impl Engine {
     pub fn new() -> Result<Self> {
-        Ok(Self)
+        Ok(Self { names: vi_translator_core::english::game_names() })
     }
 
     pub fn init_thread() {}
@@ -36,7 +39,7 @@ impl Engine {
     pub fn read(&self, bgra: &[u8], w: u32, h: u32) -> Result<Vec<RawWord>> {
         // the prepared image is grey: one channel is enough
         let grey: Vec<u8> = bgra.chunks_exact(4).map(|p| p[0]).collect();
-        autoreleasepool(|_| unsafe { recognize(&grey, w, h) })
+        autoreleasepool(|_| unsafe { recognize(&grey, w, h, &self.names) })
     }
 }
 
@@ -62,12 +65,18 @@ unsafe fn grey_image(grey: &[u8], w: u32, h: u32) -> Result<objc2_core_foundatio
     .ok_or_else(|| anyhow!("OCR: could not make an image"))
 }
 
-unsafe fn recognize(grey: &[u8], w: u32, h: u32) -> Result<Vec<RawWord>> {
+unsafe fn recognize(grey: &[u8], w: u32, h: u32, names: &[String]) -> Result<Vec<RawWord>> {
     let image = unsafe { grey_image(grey, w, h)? };
     let request = VNRecognizeTextRequest::new();
     request.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
     request.setRecognitionLanguages(&NSArray::from_retained_slice(&[NSString::from_str("en-US")]));
     request.setUsesLanguageCorrection(true);
+    if !names.is_empty() {
+        let list: Vec<Retained<NSString>> = names.iter().map(|n| NSString::from_str(n)).collect();
+        request.setCustomWords(&NSArray::from_retained_slice(&list));
+    }
+    // (text as small as a 720p stream's subtitles in a tall crop: below Vision's default of 1/32 of the height)
+    request.setMinimumTextHeight(0.02);
     let options: Retained<NSDictionary<VNImageOption, AnyObject>> = NSDictionary::new();
     let handler = unsafe { VNImageRequestHandler::initWithCGImage_options(VNImageRequestHandler::alloc(), &image, &options) };
     let as_request: &VNRequest = request.as_ref();
