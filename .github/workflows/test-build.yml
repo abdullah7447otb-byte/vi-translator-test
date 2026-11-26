@@ -133,6 +133,8 @@ jobs:
           "$APP" --probe-phone phone-renders/probe.json "$F/gta6-telefon-sohbet-1.jpg" "$F/gta6-telefon-sohbet-2.jpg" "$F/gta6-telefon-ana-1.jpg" "$F/gta6-telefon-ana-2.jpg" "$F/gta6-n4-bildirim.jpg"
           python3 -m pip install --quiet --break-system-packages playwright==1.63.0 || python3 -m pip install --quiet playwright==1.63.0
           python3 tools/phone_render.py phone-renders/probe.json ui phone-renders --app "$APP"
+          # the display shader's night colours: no band of 2 levels or more on a dark ramp, no black clipped
+          python3 tools/night_bands.py ui
 
       # GTA VI's screen-fixed UI (mission menus, the map and its card, GPS and mission lines) through the app's
       # snapshot on CouchSubs' frames, drawn by ui/snapshot.js: before/after PNGs and which blocks were translated.

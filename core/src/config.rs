@@ -1655,3 +1655,37 @@ mod profile_tests {
         assert_eq!(c.profile, "gta6", "an unknown profile falls back to a built-in one");
     }
 }
+
+#[cfg(test)]
+mod v16_migration_tests {
+    use super::*;
+
+    #[test]
+    fn settings_from_1_5_get_the_new_areas_once_and_keep_the_rest() {
+        // a 1.5.0 settings file: GTA VI's built-in profile without the notifications and prompts areas
+        let mut c = Config::default();
+        c.defaults_version = 7;
+        c.profile = "gta6".into();
+        for p in c.builtins.iter_mut() {
+            p.areas.retain(|a| a.id != "notes" && a.id != "prompts");
+        }
+        c.areas.retain(|a| a.id != "notes" && a.id != "prompts");
+        c.glossary = "Wasted = خلصت عليك".into();
+        let json = serde_json::to_string(&c).expect("saved");
+        let mut back: Config = serde_json::from_str(&json).expect("read");
+        assert!(back.move_to_new_defaults());
+        assert!(back.areas.iter().any(|a| a.id == "notes") && back.areas.iter().any(|a| a.id == "prompts"));
+        assert!(back.builtins.iter().find(|p| p.id == "gta6").is_some_and(|p| p.areas.iter().any(|a| a.id == "prompts")));
+        assert_eq!(back.glossary, "Wasted = خلصت عليك");
+        assert_eq!((back.character.as_str(), back.phone_display.as_str(), back.shared_memory), ("jason", "panel", false));
+        // once: a player who turns the prompts area off keeps it off
+        for a in back.areas.iter_mut().filter(|a| a.id == "prompts") {
+            a.enabled = false;
+        }
+        assert!(!back.move_to_new_defaults() || back.areas.iter().any(|a| a.id == "prompts" && !a.enabled));
+        assert_eq!(back.areas.iter().filter(|a| a.id == "prompts").count(), 1);
+        // a settings file without the 1.6 fields reads with their defaults
+        let old: Config = serde_json::from_str(r#"{"engine":"apple"}"#).expect("read");
+        assert_eq!((old.character.as_str(), old.phone_display.as_str()), ("jason", "panel"));
+    }
+}
