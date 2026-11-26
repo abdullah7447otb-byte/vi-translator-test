@@ -21,3 +21,9 @@ Each choice that was open, what was chosen, and why.
    gameplay descriptions, not frames: the check mode shows what they read and drop, so they can be tuned.
 6. **Shared memory (two Mac users) is off by default.** It lives in /Users/Shared and takes effect after a
    restart. The memory files are append-only lines, so two players writing at once don't corrupt them.
+7. **The bigger offline model (opus-mt-tc-big-en-ar) is not in 1.6.0.** It has no ONNX build anywhere we
+   could check: Hugging Face is blocked here, and no ONNX copy shows in search. Making one needs an
+   export pipeline, a place to host about 250 MB, and quality and speed checks, and none of these can be
+   checked here. The offline translator gets a warm start instead, so the first line isn't slow, plus the
+   name glossary and the instant memory path it already had. Apple's translation is the stronger one on
+   macOS 26 and it heals itself now.

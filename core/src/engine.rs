@@ -2417,6 +2417,11 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
     crate::perf::translating(false);
     crate::perf::lower_this_thread();
     let mut tr = Translator::new(paths.model_dir());
+    // (the offline model loaded before the first line: it takes a second or two)
+    {
+        let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        tr.warm_up(&c);
+    }
     // Subtitle lines (and a page's reason) first; a page's menu text only when nothing else waits,
     // newest first (the tab on screen now before an old backlog): a menu full of text never holds a
     // subtitle up for more than the one menu line being translated.

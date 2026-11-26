@@ -645,6 +645,21 @@ impl Translator {
         }
     }
 
+    /// The offline model loaded now when it's the engine, so the first line read isn't kept waiting for it
+    /// (not for Apple's: its stand-in would start a download the player didn't ask for). Errors are only
+    /// logged: the first line tries again.
+    pub fn warm_up(&mut self, cfg: &Config) {
+        if cfg.engine == "local" && cfg.target_lang == "ar" {
+            let mut local = cfg.clone();
+            local.engine = "local".into();
+            let t0 = Instant::now();
+            match self.mt_batch(&local, &["Go.".to_string()], &|_| {}) {
+                Ok(_) => crate::vlog!("[local] offline translator ready in {} ms", t0.elapsed().as_millis()),
+                Err(e) => crate::vlog!("[local] warm-up: {e:#}"),
+            }
+        }
+    }
+
     fn mt_batch(&mut self, cfg: &Config, texts: &[String], status: &dyn Fn(String)) -> Result<Vec<String>> {
         match cfg.engine.as_str() {
             // Apple's on-device translation (macOS 26): on any failure the offline translator takes the line,
