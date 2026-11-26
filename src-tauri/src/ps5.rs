@@ -336,8 +336,6 @@ pub fn set_resolution(r: u32, high_bitrate: bool) {
     g().restart.store(true, Ordering::Relaxed);
 }
 
-/// The picture decoded by the computer's own decoder (Automatic) or on the CPU (Software); the
-/// stream starts again.
 /// HEVC on or off (the Mac); the stream starts again.
 pub fn set_hevc(on: bool) {
     let mut s = saved();
@@ -351,6 +349,8 @@ pub fn set_hevc(on: bool) {
 /// again or HEVC is chosen again.
 static HEVC_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The picture decoded by the computer's own decoder (Automatic) or on the CPU (Software); the
+/// stream starts again.
 pub fn set_decode(software: bool) {
     let mut s = saved();
     s.software_decode = software;
@@ -710,19 +710,13 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
         let player = match ps::play::Player::start(&host, &rk, &rp, video, decode, g().sound.clone(), screen.clone()) {
             Ok(p) => p,
             Err(e) => {
-                // (HEVC not taken: H.264 next time, at once)
-                if video.h265 {
-                    HEVC_OFF.store(true, Ordering::Relaxed);
-                    vi_translator_core::vlog!("[ps5] HEVC stream failed to start ({e}): H.264 from now on");
-                    return;
-                }
                 set(format!("PS5: {e}"));
                 std::thread::sleep(Duration::from_secs(3));
                 return;
             }
         };
         // (HEVC asked: a picture within 8 s, or H.264)
-        let started = Instant::now();
+        let mut started = Instant::now();
         let mut last_status = Instant::now() - Duration::from_secs(5);
         // the last ten seconds, a second at a time: (pictures, lost on the network, too late to decode)
         let mut window = std::collections::VecDeque::<(u64, u64, u64)>::new();
@@ -739,7 +733,12 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
                 std::thread::sleep(Duration::from_secs(3));
                 break;
             }
-            if video.h265 && (player.stats.hevc_failed.load(Ordering::Relaxed) || (started.elapsed() > Duration::from_secs(8) && player.stats.frames.load(Ordering::Relaxed) == 0)) {
+            // (not while the PS5 waits for the login passcode: no picture then is no fault of HEVC's)
+            let pin_up = g().pin_wanted.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some();
+            if pin_up {
+                started = Instant::now();
+            }
+            if video.h265 && (player.stats.hevc_failed.load(Ordering::Relaxed) || (!pin_up && started.elapsed() > Duration::from_secs(8) && player.stats.frames.load(Ordering::Relaxed) == 0)) {
                 HEVC_OFF.store(true, Ordering::Relaxed);
                 vi_translator_core::vlog!("[ps5] HEVC didn't decode here: the stream starts again in H.264");
                 break;

@@ -48,8 +48,8 @@ struct Helper {
     next_id: u64,
     /// answered at least once (its model is loaded)
     warm: bool,
-    /// requests that timed out, by id: their texts (a late answer fills the cache)
-    pending: HashMap<u64, Vec<String>>,
+    /// requests that timed out, by id: their language and texts (a late answer fills the cache)
+    pending: HashMap<u64, (String, Vec<String>)>,
 }
 
 #[derive(Default)]
@@ -176,8 +176,8 @@ fn ask(mut request: Value, lang: &str, texts: &[String], limit: Option<Duration>
                 let got = v["id"].as_u64();
                 if got != Some(id) {
                     // (an answer to an earlier request that timed out: its lines are kept)
-                    if let Some(old) = got.and_then(|g| h.pending.remove(&g)) {
-                        keep_late(lang, &old, &v);
+                    if let Some((old_lang, old)) = got.and_then(|g| h.pending.remove(&g)) {
+                        keep_late(&old_lang, &old, &v);
                     }
                     continue;
                 }
@@ -203,7 +203,7 @@ fn ask(mut request: Value, lang: &str, texts: &[String], limit: Option<Duration>
                 return Ok(v);
             }
             Err(RecvTimeoutError::Timeout) => {
-                h.pending.insert(id, texts.to_vec());
+                h.pending.insert(id, (lang.to_string(), texts.to_vec()));
                 if h.pending.len() > 16 {
                     let oldest = h.pending.keys().min().copied();
                     if let Some(o) = oldest {

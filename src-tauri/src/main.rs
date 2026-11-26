@@ -596,6 +596,8 @@ fn save_config(app: AppHandle, webview: tauri::Webview, state: tauri::State<AppS
     }
     // (a settings file that's there but couldn't be read stays as it is: see Config::load)
     config.unreadable = now.unreadable;
+    // (the check mode isn't the window's to save: it stays as set_check_mode left it)
+    config.check_mode = now.check_mode;
     config.normalize();
     // (Apple's translation chosen now, or another language for it: its helper warmed up meanwhile)
     if config.engine == "apple" && (now.engine != "apple" || now.target_lang != config.target_lang) {

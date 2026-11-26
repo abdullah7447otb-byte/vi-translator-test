@@ -245,6 +245,8 @@ struct AreaState {
     last_drop: Option<(&'static str, Instant)>,
     /// Where the game's help box was really seen (crop pixels: left, top), at which picture size
     learned_anchor: Option<(u32, u32, (u32, u32))>,
+    /// The area's place and size the anchor was learned in
+    learned_area: Option<[f64; 4]>,
     /// The area's picture at its last OCR read (a small luma grid), when, and what was read then
     last_read: Option<(Vec<u8>, Instant, Vec<ocr::Word>, bool)>,
 }
@@ -316,7 +318,21 @@ fn learned(line: &str) -> bool {
 
 /// Whether a new line not in the reviewed list may be taken now (see LEARN_READS).
 pub fn learn_ok(line: &str, reads: u32, held: Duration) -> bool {
-    reads >= LEARN_READS && held >= LEARN_HOLD && !ocr::mostly_capitals(line) && ocr::looks_like_words(line) && crate::english::word_share(&strip_icon_tokens(line)) >= LEARN_WORDS && line.split_whitespace().count() >= 2
+    let plain = strip_icon_tokens(line);
+    let words: Vec<&str> = plain.split_whitespace().collect();
+    // (a line cut short — the end of "Drive to the prison." lost in glare — ends on a little word, or has no
+    // full stop and few words: never taken)
+    let last = words.last().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()).unwrap_or_default();
+    const CUT: [&str; 16] = ["the", "to", "a", "an", "of", "at", "in", "on", "with", "and", "your", "for", "from", "into", "or", "by"];
+    let ends = plain.trim_end().ends_with(['.', '!', '?', '…']);
+    reads >= LEARN_READS
+        && held >= LEARN_HOLD
+        && words.len() >= 2
+        && !CUT.contains(&last.as_str())
+        && (ends || words.len() >= 4)
+        && !ocr::mostly_capitals(line)
+        && ocr::looks_like_words(line)
+        && crate::english::word_share(&plain) >= LEARN_WORDS
 }
 
 /// Stacked lines in parts to translate (ocr::speaker_lines), one speaker's lines together: with the
@@ -928,6 +944,7 @@ pub fn start(ctx: Context) -> Reader {
         let (c, l, p) = (ctx.clone(), latest.clone(), ptx.clone());
         crate::log::spawn_supervised("translate", move || translate_loop(c.clone(), l.clone(), &rx, p.clone()));
         crate::watchdog::start();
+        crate::log::spawn_supervised("words", crate::english::warm);
     }
     Reader { state: Some(ReadState::new(&ctx.paths)), ctx, latest, jobs: tx, present: ptx }
 }
@@ -1925,6 +1942,9 @@ impl Reader {
                 let st = states.entry(area.id.clone()).or_default();
                 let now = Instant::now();
                 // (the host read the area itself, or its OCR reads it here)
+                // (whether the OCR really ran on this frame: a read reused for an unchanged picture is no new
+                // evidence that a line holds — see learn_ok)
+                let mut fresh = true;
                 let (crop, words, sure) = match (frame, ocr_now) {
                     (Some(frame), Some(ocr)) if stacks => read_stacked(ocr, &frame.rgba, fw, fh, area_cfg, area),
                     (Some(frame), Some(ocr)) => {
@@ -1936,6 +1956,7 @@ impl Reader {
                             (Some(a), Some((b, at, _, _))) => now.saturating_duration_since(*at) < SAME_READ_FOR && same_picture(a, b),
                             _ => false,
                         };
+                        fresh = !same;
                         let (words, sure) = match (&crop, same) {
                             (Some(_), true) => st.last_read.as_ref().map(|(_, _, w, s)| (w.clone(), *s)).unwrap_or((Vec::new(), true)),
                             (Some(cr), false) => {
@@ -1991,6 +2012,11 @@ impl Reader {
                 });
                 // (where the box's edges were really seen, at this picture size: the game's Safe Zone and text
                 // size settings move it from where it is by default)
+                // (learned for this area as it is now: moved or resized, it's learned again)
+                if st.learned_area != Some([area.x, area.y, area.w, area.h]) {
+                    st.learned_anchor = None;
+                    st.learned_area = Some([area.x, area.y, area.w, area.h]);
+                }
                 let anchor = anchor.map(|a| match st.learned_anchor.filter(|l| l.2 == (fw, fh)) {
                     Some((x, y, _)) => (x, y, a.2),
                     None => a,
@@ -2153,7 +2179,7 @@ impl Reader {
                         st.candidate_since = Some(now);
                         st.candidate_reads = 1;
                         is_new = true;
-                    } else {
+                    } else if fresh {
                         st.candidate_reads = st.candidate_reads.saturating_add(1);
                     }
                     // A line the translation memory already knows needn't wait to settle: show it on
@@ -2684,6 +2710,9 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
             *shared.screen_reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = serde_json::to_value(&ev.segments).unwrap_or_default();
             crate::live::push(&shared, SCREEN_REASON, &ev.en, &ev.en_segments, &ev.segments, ev.at);
         }
+        if ev.error.is_some() {
+            crate::watchdog::dropped(&ev.area, seq);
+        }
         if ev.area == SCREEN_REASON || ev.error.is_some() {
             sink.emit("translation", serde_json::to_value(&ev).unwrap_or_default()); // errors go straight to the log
         } else {
@@ -3193,5 +3222,10 @@ mod learn_tests {
         assert!(!learn_ok("Getin a vehigle", 5, held));
         assert!(!learn_ok("BOAT STORAGE CALL TODAY", 5, held));
         assert!(!learn_ok("Aim", 5, held));
+        // a line cut short by glare: never taken
+        assert!(!learn_ok("Drive to the", 5, held));
+        assert!(!learn_ok("Follow the truck to", 5, held));
+        assert!(!learn_ok("Go home", 5, held));
+        assert!(learn_ok("Go home.", 5, held));
     }
 }

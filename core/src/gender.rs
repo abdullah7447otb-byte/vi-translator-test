@@ -33,7 +33,11 @@ fn feminine_word(w: &str) -> Option<String> {
     if let Some((_, f)) = VERBS.iter().find(|(m, _)| *m == w) {
         return Some((*f).to_string());
     }
-    // (with "and" or "then" in front: «واضغط», «فاضغط»)
+    // (with "and" or "then" in front: «واضغط», «فاضغط»; not the two-letter verbs, whose «و…»/«ف…» are other
+    // words: «وضع» mode, «فقد» lost, «وعد» promise)
+    if w.chars().count() <= 3 {
+        return None;
+    }
     for p in ["و", "ف"] {
         if let Some(rest) = w.strip_prefix(p)
             && let Some((_, f)) = VERBS.iter().find(|(m, _)| *m == rest)
@@ -46,7 +50,8 @@ fn feminine_word(w: &str) -> Option<String> {
 
 /// «قد» is "drive!" only before where to: «قد إلى…», «قد السيارة»; else it is the particle («قد يكون»).
 fn drive_follows(next: Option<&str>) -> bool {
-    next.is_some_and(|n| ["إلى", "الى", "ال", "نحو", "ب", "عائد"].iter().any(|p| n.starts_with(p)))
+    const VEHICLES: [&str; 8] = ["السيارة", "المركبة", "القارب", "الدراجة", "الشاحنة", "الطائرة", "سيارتك", "مركبتك"];
+    next.is_some_and(|n| ["إلى", "الى", "نحو"].contains(&n) || VEHICLES.iter().any(|v| n.ends_with(v)))
 }
 
 /// The text with its listed masculine imperatives made feminine (whole words only; punctuation, icon
@@ -91,6 +96,13 @@ mod tests {
         // «قد» the particle stays
         assert_eq!(feminine("قد يكون هذا فخًا."), "قد يكون هذا فخًا.");
         assert_eq!(feminine("ثم قد السيارة"), "ثم قودي السيارة");
+        // words that only look like a verb with «و»/«ف», and «قد» before anything but where to drive
+        assert_eq!(feminine("بدّل إلى وضع التصوير"), "بدّل إلى وضع التصوير");
+        assert_eq!(feminine("اضغط ⟦1⟧ لتغيير وضع الكاميرا"), "اضغطي ⟦1⟧ لتغيير وضع الكاميرا");
+        assert_eq!(feminine("فقد الاتصال بالهدف"), "فقد الاتصال بالهدف");
+        assert_eq!(feminine("وعد جيسون"), "وعد جيسون");
+        assert_eq!(feminine("قد بدأت المهمة"), "قد بدأت المهمة");
+        assert_eq!(feminine("قد الاتصال"), "قد الاتصال");
         assert!(speaks_to_player("instructions") && !speaks_to_player("subtitles"));
     }
 }

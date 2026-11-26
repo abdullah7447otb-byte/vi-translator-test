@@ -6,16 +6,13 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-static WORDS: OnceLock<HashSet<String>> = OnceLock::new();
+static NAMES: OnceLock<HashSet<String>> = OnceLock::new();
 const PACKED: &[u8] = include_bytes!("words_en.txt.gz");
 
-fn words() -> &'static HashSet<String> {
-    WORDS.get_or_init(|| {
-        use std::io::Read;
-        let mut text = String::new();
-        let _ = flate2::read::GzDecoder::new(PACKED).read_to_string(&mut text);
-        let mut set: HashSet<String> = text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
-        // (the game's names: the glossary's English and the speakers')
+/// The game's names in lower case (the glossary's English and the speakers'): words too.
+fn names() -> &'static HashSet<String> {
+    NAMES.get_or_init(|| {
+        let mut set = HashSet::new();
         for src in [include_str!("glossary_ar.tsv"), include_str!("glossary_ar_lines.tsv"), include_str!("speaker_names_ar.tsv")] {
             for l in src.lines().filter(|l| !l.starts_with('#')) {
                 let en = l.split('\t').next().unwrap_or("");
@@ -28,6 +25,12 @@ fn words() -> &'static HashSet<String> {
         }
         set
     })
+}
+
+/// Load the word list now (it takes a few hundred ms): the app calls this on a thread of its own at start,
+/// so the reading never waits for it.
+pub fn warm() {
+    let _ = words_only().len() + names().len();
 }
 
 /// The game's names as written (people, places, brands: the glossary's and the speakers'), for the OCR's
@@ -77,7 +80,7 @@ pub fn is_word(w: &str) -> bool {
     if !base.chars().all(|c| c.is_alphabetic()) {
         return false;
     }
-    words().contains(base)
+    words_only().contains(base) || names().contains(base)
 }
 
 /// The share (0..1) of a line's words that are words: 1 for a line read right. Button-icon placeholders

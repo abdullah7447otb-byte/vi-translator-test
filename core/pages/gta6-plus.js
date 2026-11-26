@@ -10,7 +10,7 @@
   const base = objectiveCard;
   const COLORS = [
     [90, 170, 255], [120, 200, 255], [255, 210, 80], [250, 170, 60], [120, 220, 120], [80, 220, 200],
-    [190, 140, 255], [240, 240, 240], [255, 90, 90],
+    [190, 140, 255], [255, 90, 90],
   ];
   function objectiveCardIn(f, color) {
     const zone = pxRect(f, { x: 0.05, y: 0.06, w: 0.36, h: 0.1 });
@@ -59,9 +59,14 @@
   globalThis.objectiveCard = function (f) {
     const pink = base(f);
     if (pink) return pink;
-    for (const c of COLORS) {
-      const card = objectiveCardIn(f, c);
-      if (card) return card;
+    // (a downloaded base script that renamed a helper: the base's card only, the map page unharmed)
+    try {
+      for (const c of COLORS) {
+        const card = objectiveCardIn(f, c);
+        if (card) return card;
+      }
+    } catch (e) {
+      return null;
     }
     return null;
   };

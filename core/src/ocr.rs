@@ -571,12 +571,28 @@ pub fn in_anchored_box(words: &[Word], anchor: (u32, u32, u32)) -> Option<((u32,
     // the lines that follow a first line: each a line pitch under the one before, from the same left edge
     let chain = |first: usize| -> Vec<(u32, Vec<usize>)> {
         let mut kept: Vec<(u32, Vec<usize>)> = vec![lines[first].clone()];
+        // (the box's lines are evenly spaced: a shop's name over the box, at its left edge, is further from
+        // the box's first line than the box's lines are from each other)
+        let mut step: Option<u32> = None;
         for l in &lines[first + 1..] {
             let (x0, x1, _, _) = span(&l.1);
             let pitch = l.0 - kept.last().expect("one").0;
             if !(lh..=2 * lh).contains(&pitch) || !starts_left(x0) || !within(x1) {
                 break;
             }
+            if let Some(st) = step
+                && pitch.abs_diff(st) * 4 > st
+            {
+                // (the first gap wasn't the box's: drop the line above it)
+                if kept.len() == 2 {
+                    kept.remove(0);
+                    kept.push(l.clone());
+                    step = Some(pitch);
+                    continue;
+                }
+                break;
+            }
+            step.get_or_insert(pitch);
             kept.push(l.clone());
         }
         kept
@@ -1517,8 +1533,10 @@ pub fn text_with_icons(c: &Crop, words: &[Word]) -> (String, Vec<String>, Option
                 let verb = words[pair[0]].text.trim_matches(|c: char| !c.is_alphabetic()).to_lowercase();
                 let t = words[pair[1]].text.trim();
                 let letters = t.chars().filter(|c| c.is_alphabetic()).count();
-                let short = t.chars().count() <= 2 && !matches!(t, "A" | "B" | "a" | "an" | "to" | "it" | "up" | "on" | "in" | "or" | "me" | "us");
-                if matches!(verb.as_str(), "press" | "hold" | "tap" | "use" | "push" | "mash" | "release" | "pull") && (short || letters == 0) {
+                // (one mark, not a word or a number: "C4", "OK", "2" stay words)
+                let short = t.chars().count() == 1 && !t.chars().all(|c| c.is_ascii_digit()) && !matches!(t, "A" | "B" | "a" | "I");
+                let no_letters = letters == 0 && !t.chars().any(|c| c.is_ascii_digit());
+                if matches!(verb.as_str(), "press" | "hold" | "tap" | "use" | "push" | "mash" | "release" | "pull") && (short || no_letters) {
                     set.insert(pair[1]);
                 }
             }
@@ -2062,6 +2080,10 @@ mod centered_tests {
             assert_eq!(texts(&kept), texts(&help), "moved {dx},{dy}");
             assert!((b.1 as i32 - (94 + dy)).abs() <= 6, "moved {dx},{dy}: box top {}", b.1);
         }
+        // a shop's name a line and a half above the box, at its left edge: not the box's first line
+        let mut shop = help.clone();
+        shop.push(w("Supermarket", 29, 60, 140));
+        assert_eq!(texts(&in_anchored_box(&shop, anchor).unwrap().1), texts(&help));
         // a line too wide for the box (a billboard right where the box is): not the box
         let wide = vec![w("BOAT", 29, 108, 300), w("STORAGE", 340, 108, 300)];
         assert!(in_anchored_box(&wide, anchor).is_none());
@@ -2219,5 +2241,7 @@ mod verb_icon_tests {
         // "Press A" in a menu, and an ordinary short word after a verb, stay words
         let words = vec![wd("Use", 10, 40), wd("it", 60, 14), wd("now.", 80, 40)];
         assert_eq!(text_with_icons(&crop, &words).0, "Use it now.");
+        let words = vec![wd("Use", 10, 40), wd("C4", 300, 24), wd("here.", 340, 50)];
+        assert_eq!(text_with_icons(&crop, &words).0, "Use C4 here.");
     }
 }

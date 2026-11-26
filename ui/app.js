@@ -2350,7 +2350,7 @@ function pictureLevels(Y, w, h) {
     // (studio range once over: blacks reach below 20; twice over they never go under ~28)
     if (LEVELS.lows.length > 30) {
       if (LEVELS.double && darkest <= 19) LEVELS.double = false;
-      else if (!LEVELS.double && darkest >= 26) LEVELS.double = true;
+      else if (!LEVELS.double && darkest >= 26 && LEVELS.mean < 0.2) LEVELS.double = true;
     }
     // auto night: eased in over about a second when the picture stays dark, out when it's bright again
     const dt = LEVELS.at ? Math.min(0.2, (now - LEVELS.at) / 1000) : 0;
@@ -2564,6 +2564,8 @@ function yuvInit() {
 /** Draw one YUY2 frame (`data`: w × h × 2 bytes). */
 function yuvDraw(data, w, h, bt709, fullRange) {
   if (!YUV.gl && !yuvInit()) return false;
+  // (a capture card's picture: the PS5's night and motion measures don't hold here)
+  Object.assign(LEVELS, { night: 0, motion: 0, prev: null });
   const gl = YUV.gl;
   const canvas = $("frame-gl");
   // (the I420 drawer may have been the last to use the context: this one's program and texture again)
@@ -2674,6 +2676,8 @@ function i420Draw(data, w, h, bt709, fullRange, stretch) {
   // (the PS5's picture, "stretch": its levels as measured — studio range once or twice over, see
   // pictureLevels; else as the frame says)
   const lv = stretch ? pictureLevels(planes[0][0], w, h) : null;
+  // (not the PS5's picture: its night and motion measures don't hold here)
+  if (!stretch) Object.assign(LEVELS, { night: 0, motion: 0, prev: null });
   const [black, white, cMul] = lv ? [lv.black, lv.white, lv.cMul] : fullRange ? [0, 255, 1] : [16, 235, 255 / 224];
   gl.uniform1f(u.yOff, black);
   gl.uniform1f(u.yScale, 255 / (white - black));

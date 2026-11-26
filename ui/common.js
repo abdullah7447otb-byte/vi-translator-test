@@ -459,7 +459,9 @@ window.AS = (() => {
     // (the Arabic inside the game's phone: see renderPhoneInPlace. The second phone beside it, below, only
     // with the hidden legacy switch)
     if (!(typeof window !== "undefined" && window.VIT_SIDE_PHONE)) {
-      const mode = (P && P.display) || "panel";
+      // (the panel is for a chat: the chat list, the home screen and the like stay drawn on the phone)
+      const chat = P && P.pieces && !P.list && P.pieces.some((p) => !p.title && p.ar && ["incoming", "outgoing", "message", "note"].includes(p.role));
+      const mode = chat || !P || !P.pieces || !P.pieces.length ? (P && P.display) || "panel" : "inplace";
       if (P && P.chat) renderChatInPlace(root, P.chat);
       if (mode !== "panel" && P && P.pieces && P.pieces.length) renderPhoneInPlace(root, P);
       if (mode !== "inplace") renderPhonePanel(root, P);
@@ -2078,7 +2080,7 @@ window.AS = (() => {
       const en = title.en && title.en !== title.ar ? `<div style="font-size:.7em;opacity:.65;direction:ltr;text-align:start">${esc(title.en)}</div>` : "";
       d.insertAdjacentHTML("beforeend", `<div style="display:flex;align-items:center;gap:${(0.6 * fs).toFixed(1)}px;padding-bottom:${(0.4 * fs).toFixed(1)}px;border-bottom:1px solid rgba(255,255,255,.12)">${pic}<div><div style="font-weight:700;unicode-bidi:plaintext">${esc(title.ar || title.en || "")}</div>${en}</div></div>`);
     }
-    const msgs = Q.pieces.filter((p) => !p.title && p.ar).sort((a, b) => (a.rect ? a.rect[1] : 0) - (b.rect ? b.rect[1] : 0));
+    const msgs = Q.pieces.filter((p) => !p.title && p.ar && (!p.role || ["incoming", "outgoing", "message", "note", "heading"].includes(p.role))).sort((a, b) => (a.rect ? a.rect[1] : 0) - (b.rect ? b.rect[1] : 0));
     for (const m of msgs) {
       const mine = m.role === "outgoing";
       const note = m.role === "note" || m.role === "heading";
