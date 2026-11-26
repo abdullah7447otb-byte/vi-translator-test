@@ -83,6 +83,10 @@ pub struct Saved {
     /// page (an iPad beside the screen)
     #[serde(default)]
     pub read_only: bool,
+    /// HEVC asked of the PS5 instead of H.264 (the Mac only: VideoToolbox decodes it): a cleaner
+    /// picture for the same bitrate. Falls back to H.264 by itself when it doesn't work.
+    #[serde(default)]
+    pub hevc: bool,
 }
 
 struct Global {
@@ -166,6 +170,8 @@ pub fn status() -> serde_json::Value {
         "volume": s.volume.unwrap_or(100),
         "software_decode": s.software_decode,
         "read_only": s.read_only,
+        "hevc": s.hevc && cfg!(target_os = "macos"),
+        "hevc_off_now": HEVC_OFF.load(Ordering::Relaxed),
         "decoder": DECODER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
         "console": s.console.as_ref().map(|c| serde_json::json!({ "name": c.nickname, "host": c.host })),
         "pin_wanted": *g.pin_wanted.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -332,6 +338,19 @@ pub fn set_resolution(r: u32, high_bitrate: bool) {
 
 /// The picture decoded by the computer's own decoder (Automatic) or on the CPU (Software); the
 /// stream starts again.
+/// HEVC on or off (the Mac); the stream starts again.
+pub fn set_hevc(on: bool) {
+    let mut s = saved();
+    s.hevc = on;
+    save(&s);
+    HEVC_OFF.store(false, Ordering::Relaxed);
+    g().restart.store(true, Ordering::Relaxed);
+}
+
+/// HEVC didn't work in this run (the stream or the decoder failed in it): H.264 until the app starts
+/// again or HEVC is chosen again.
+static HEVC_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn set_decode(software: bool) {
     let mut s = saved();
     s.software_decode = software;
@@ -681,20 +700,29 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
             state: Mutex::new(None),
         });
         let s = saved();
-        let video = match (s.resolution, s.high_bitrate) {
+        let mut video = match (s.resolution, s.high_bitrate) {
             (720, _) => ps::Video::p720(60),
             (_, true) => ps::Video::p1080_high(60),
             _ => ps::Video::p1080(60),
         };
+        video.h265 = cfg!(target_os = "macos") && s.hevc && !HEVC_OFF.load(Ordering::Relaxed);
         let decode = if s.software_decode { ps::hwdec::Decode::Software } else { ps::hwdec::Decode::Auto };
         let player = match ps::play::Player::start(&host, &rk, &rp, video, decode, g().sound.clone(), screen.clone()) {
             Ok(p) => p,
             Err(e) => {
+                // (HEVC not taken: H.264 next time, at once)
+                if video.h265 {
+                    HEVC_OFF.store(true, Ordering::Relaxed);
+                    vi_translator_core::vlog!("[ps5] HEVC stream failed to start ({e}): H.264 from now on");
+                    return;
+                }
                 set(format!("PS5: {e}"));
                 std::thread::sleep(Duration::from_secs(3));
                 return;
             }
         };
+        // (HEVC asked: a picture within 8 s, or H.264)
+        let started = Instant::now();
         let mut last_status = Instant::now() - Duration::from_secs(5);
         // the last ten seconds, a second at a time: (pictures, lost on the network, too late to decode)
         let mut window = std::collections::VecDeque::<(u64, u64, u64)>::new();
@@ -709,6 +737,11 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
                 set(if error { format!("PS5: the stream ended ({why})") } else { format!("PS5: {why}") });
                 *g().pin_wanted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 std::thread::sleep(Duration::from_secs(3));
+                break;
+            }
+            if video.h265 && (player.stats.hevc_failed.load(Ordering::Relaxed) || (started.elapsed() > Duration::from_secs(8) && player.stats.frames.load(Ordering::Relaxed) == 0)) {
+                HEVC_OFF.store(true, Ordering::Relaxed);
+                vi_translator_core::vlog!("[ps5] HEVC didn't decode here: the stream starts again in H.264");
                 break;
             }
             if last_status.elapsed() > Duration::from_secs(1) {

@@ -1,7 +1,8 @@
-// The PS5's H.264 decoded by the Mac's own video decoder (VideoToolbox): on Apple silicon the
-// media engine does the work, so the CPU is left for reading text and translating.
+// The PS5's H.264 or H.265 (HEVC) decoded by the Mac's own video decoder (VideoToolbox): on Apple
+// silicon the media engine does the work, so the CPU is left for reading text and translating.
 // Frames come in Annex B (start codes) as chiaki gives them; VideoToolbox wants each NAL unit
-// with its length before it, and the sequence and picture parameters on their own.
+// with its length before it, and the parameter sets on their own (H.264: SPS 7 and PPS 8; HEVC:
+// VPS 32, SPS 33, PPS 34).
 
 #ifdef __APPLE__
 
@@ -16,8 +17,10 @@
 typedef struct VitVt {
 	CMVideoFormatDescriptionRef fmt;
 	VTDecompressionSessionRef session;
-	uint8_t *sps, *pps;
-	size_t sps_len, pps_len;
+	// 1: HEVC, 0: H.264
+	int hevc;
+	uint8_t *vps, *sps, *pps;
+	size_t vps_len, sps_len, pps_len;
 	// the picture of the last decode (retained by the output callback)
 	CVPixelBufferRef out;
 	OSStatus out_status;
@@ -55,9 +58,15 @@ static void drop_session(VitVt *vt) {
 
 static int make_session(VitVt *vt) {
 	drop_session(vt);
-	const uint8_t *sets[2] = { vt->sps, vt->pps };
-	const size_t sizes[2] = { vt->sps_len, vt->pps_len };
-	if (CMVideoFormatDescriptionCreateFromH264ParameterSets(NULL, 2, sets, sizes, 4, &vt->fmt) != noErr) return -2;
+	if (vt->hevc) {
+		const uint8_t *sets[3] = { vt->vps, vt->sps, vt->pps };
+		const size_t sizes[3] = { vt->vps_len, vt->sps_len, vt->pps_len };
+		if (CMVideoFormatDescriptionCreateFromHEVCParameterSets(NULL, 3, sets, sizes, 4, NULL, &vt->fmt) != noErr) return -2;
+	} else {
+		const uint8_t *sets[2] = { vt->sps, vt->pps };
+		const size_t sizes[2] = { vt->sps_len, vt->pps_len };
+		if (CMVideoFormatDescriptionCreateFromH264ParameterSets(NULL, 2, sets, sizes, 4, &vt->fmt) != noErr) return -2;
+	}
 
 	CFMutableDictionaryRef dest = CFDictionaryCreateMutable(NULL, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 	int32_t pixel = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
@@ -99,8 +108,10 @@ static int grow(uint8_t **p, size_t *cap, size_t want) {
 	return 0;
 }
 
-VitVt *vit_vt_new(void) {
-	return calloc(1, sizeof(VitVt));
+VitVt *vit_vt_new(int hevc) {
+	VitVt *vt = calloc(1, sizeof(VitVt));
+	if (vt) vt->hevc = hevc ? 1 : 0;
+	return vt;
 }
 
 // Whether the session decodes in hardware (the media engine): 1 yes, 0 no (software, as in a
@@ -118,7 +129,7 @@ void vit_vt_free(VitVt *vt) {
 	if (!vt) return;
 	drop_session(vt);
 	if (vt->out) CVPixelBufferRelease(vt->out);
-	free(vt->sps); free(vt->pps); free(vt->y); free(vt->uv); free(vt->buf);
+	free(vt->vps); free(vt->sps); free(vt->pps); free(vt->y); free(vt->uv); free(vt->buf);
 	free(vt);
 }
 
@@ -140,16 +151,26 @@ int vit_vt_decode(VitVt *vt, const uint8_t *data, size_t len, const uint8_t **y,
 		size_t n = end - start;
 		while (n > 0 && data[start + n - 1] == 0) n--;
 		if (n > 0) {
-			int type = data[start] & 0x1f;
-			if (type == 7) {
+			// (the unit's type, and which parameter set it is: H.264 7 SPS, 8 PPS, 9 delimiter;
+			// HEVC 32 VPS, 33 SPS, 34 PPS, 35 delimiter)
+			int type = vt->hevc ? (data[start] >> 1) & 0x3f : data[start] & 0x1f;
+			int is_vps = vt->hevc && type == 32;
+			int is_sps = vt->hevc ? type == 33 : type == 7;
+			int is_pps = vt->hevc ? type == 34 : type == 8;
+			int is_aud = vt->hevc ? type == 35 : type == 9;
+			if (is_vps) {
+				int r = keep(&vt->vps, &vt->vps_len, data + start, n);
+				if (r < 0) return -1;
+				params_changed |= r;
+			} else if (is_sps) {
 				int r = keep(&vt->sps, &vt->sps_len, data + start, n);
 				if (r < 0) return -1;
 				params_changed |= r;
-			} else if (type == 8) {
+			} else if (is_pps) {
 				int r = keep(&vt->pps, &vt->pps_len, data + start, n);
 				if (r < 0) return -1;
 				params_changed |= r;
-			} else if (type != 9) {
+			} else if (!is_aud) {
 				if (grow(&vt->buf, &vt->buf_cap, out + n + 4) < 0) return -1;
 				vt->buf[out] = (uint8_t)(n >> 24); vt->buf[out + 1] = (uint8_t)(n >> 16);
 				vt->buf[out + 2] = (uint8_t)(n >> 8); vt->buf[out + 3] = (uint8_t)n;
@@ -159,7 +180,7 @@ int vit_vt_decode(VitVt *vt, const uint8_t *data, size_t len, const uint8_t **y,
 		}
 		i = end;
 	}
-	if (!vt->sps || !vt->pps) return 0;
+	if (!vt->sps || !vt->pps || (vt->hevc && !vt->vps)) return 0;
 	if (params_changed || !vt->session) {
 		int r = make_session(vt);
 		if (r < 0) return r;

@@ -29,7 +29,7 @@ mod ffi {
     use std::ffi::c_void;
     unsafe extern "C" {
         #[cfg(target_os = "macos")]
-        pub fn vit_vt_new() -> *mut c_void;
+        pub fn vit_vt_new(hevc: i32) -> *mut c_void;
         #[cfg(target_os = "macos")]
         pub fn vit_vt_free(p: *mut c_void);
         #[cfg(target_os = "macos")]
@@ -86,44 +86,69 @@ pub struct VideoDecoder {
     failures: u32,
     #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
     key_failures: u32,
+    /// the stream is HEVC (only the Mac's VideoToolbox decodes it: no fall-back to OpenH264)
+    hevc: bool,
 }
 
 impl VideoDecoder {
     pub fn new(kind: Decode) -> Result<Self, String> {
+        Self::new_for(kind, false)
+    }
+
+    /// For an HEVC stream (`hevc`) or H.264. HEVC is decoded by VideoToolbox only (the Mac), whatever
+    /// `kind` says: OpenH264 has no HEVC.
+    pub fn new_for(kind: Decode, hevc: bool) -> Result<Self, String> {
         #[cfg(any(target_os = "macos", windows))]
-        if kind == Decode::Auto {
-            if let Some(n) = Self::native(false) {
-                return Ok(VideoDecoder { inner: Inner::Hard(n), failures: 0, key_failures: 0, keep_software: false, hardware: None });
+        if kind == Decode::Auto || hevc {
+            if let Some(n) = Self::native(false, hevc) {
+                return Ok(VideoDecoder { inner: Inner::Hard(n), failures: 0, key_failures: 0, keep_software: false, hardware: None, hevc });
             }
         }
         let _ = kind;
+        if hevc {
+            return Err("HEVC: this computer has no decoder for it".into());
+        }
         Self::software()
     }
 
     pub fn software() -> Result<Self, String> {
         let d = openh264::decoder::Decoder::new().map_err(|e| format!("video decoder: {e}"))?;
-        Ok(VideoDecoder { inner: Inner::Soft(d), failures: 0, key_failures: 0, keep_software: false, hardware: Some(false) })
+        Ok(VideoDecoder { inner: Inner::Soft(d), failures: 0, key_failures: 0, keep_software: false, hardware: Some(false), hevc: false })
     }
 
-    /// The system's decoder; `cpu`: also Windows decoding on the CPU (for the tests).
+    /// The system's decoder; `cpu`: also Windows decoding on the CPU (for the tests); `hevc`: for an
+    /// HEVC stream (the Mac's only).
     #[cfg(any(target_os = "macos", windows))]
-    fn native(cpu: bool) -> Option<Native> {
-        let _ = cpu;
+    fn native(cpu: bool, hevc: bool) -> Option<Native> {
+        let _ = (cpu, hevc);
         #[cfg(target_os = "macos")]
-        let p = unsafe { ffi::vit_vt_new() };
+        let p = unsafe { ffi::vit_vt_new(hevc as i32) };
         #[cfg(windows)]
-        let p = unsafe { ffi::vit_mf_new(cpu as i32) };
+        let p = if hevc { std::ptr::null_mut() } else { unsafe { ffi::vit_mf_new(cpu as i32) } };
         (!p.is_null()).then_some(Native(p))
     }
 
     /// The system's decoder even where it would decode on the CPU: for tests and the benchmark.
     pub fn system_for_test() -> Option<Self> {
+        Self::system_for_test_of(false)
+    }
+
+    /// The same for an HEVC stream (`hevc`).
+    pub fn system_for_test_of(hevc: bool) -> Option<Self> {
         #[cfg(any(target_os = "macos", windows))]
         {
-            Self::native(true).map(|n| VideoDecoder { inner: Inner::Hard(n), failures: 0, key_failures: 0, keep_software: true, hardware: None })
+            Self::native(true, hevc).map(|n| VideoDecoder { inner: Inner::Hard(n), failures: 0, key_failures: 0, keep_software: true, hardware: None, hevc })
         }
         #[cfg(not(any(target_os = "macos", windows)))]
-        None
+        {
+            let _ = hevc;
+            None
+        }
+    }
+
+    /// Decodes HEVC (else H.264).
+    pub fn is_hevc(&self) -> bool {
+        self.hevc
     }
 
     /// What decodes, for the log and the stream's status.
@@ -131,9 +156,12 @@ impl VideoDecoder {
         match &self.inner {
             Inner::Soft(_) => "OpenH264 (CPU)",
             #[cfg(target_os = "macos")]
-            Inner::Hard(_) => {
-                if self.hardware == Some(false) { "VideoToolbox (CPU)" } else { "VideoToolbox" }
-            }
+            Inner::Hard(_) => match (self.hevc, self.hardware == Some(false)) {
+                (true, true) => "VideoToolbox HEVC (CPU)",
+                (true, false) => "VideoToolbox HEVC",
+                (false, true) => "VideoToolbox (CPU)",
+                (false, false) => "VideoToolbox",
+            },
             #[cfg(windows)]
             Inner::Hard(n) => {
                 if unsafe { ffi::vit_mf_hardware(n.0) } != 0 { "Media Foundation (graphics card)" } else { "Media Foundation (CPU)" }
@@ -157,8 +185,12 @@ impl VideoDecoder {
         }
     }
 
-    /// OpenH264 from now on (the caller asks the PS5 for a key frame).
+    /// OpenH264 from now on (the caller asks the PS5 for a key frame). Not for HEVC (an error: the
+    /// stream is started again in H.264 instead).
     pub fn fall_back(&mut self) -> Result<(), String> {
+        if self.hevc {
+            return Err("HEVC: no decoder to fall back to: H.264 from now on".into());
+        }
         *self = Self::software()?;
         Ok(())
     }

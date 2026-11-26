@@ -644,6 +644,23 @@ function ps5DecodeRow(s) {
     s.decoder ? el("p", { class: "muted small" }, t("Decoding now: {name}", { name: s.decoder })) : null);
 }
 
+// HEVC asked of the PS5 instead of H.264 (the Mac's VideoToolbox decodes it): a cleaner picture for the same
+// bitrate, at night above all; the app goes back to H.264 by itself if it doesn't work
+function ps5CodecRow(s) {
+  if (!/Mac/.test(navigator.platform)) return null;
+  const sel = el("select", { id: "ps5-codec" },
+    el("option", { value: "h264" }, t("H.264 (most compatible)")),
+    el("option", { value: "hevc" }, t("HEVC (cleaner picture, Mac)")));
+  sel.value = s.hevc ? "hevc" : "h264";
+  sel.addEventListener("change", () => {
+    ps5 = { ...ps5, hevc: sel.value === "hevc" };
+    invoke("ps5_set_hevc", { on: sel.value === "hevc" });
+  });
+  return el("div", { class: "field" }, el("label", { for: "ps5-codec" }, t("Video format")), sel,
+    el("p", { class: "muted small" }, t("HEVC gives more detail for the same network speed, mostly in dark scenes. If it doesn't work on this Mac or PS5, the app goes back to H.264 by itself.")),
+    s.hevc && s.hevc_off_now ? el("p", { class: "muted small" }, t("HEVC didn't work this time: playing in H.264.")) : null);
+}
+
 // read only: the PS5 plays on its own screen with its own controller; the app reads its stream and the
 // translations go to the home-network page (an iPad beside the screen)
 function ps5ReadOnlyRow(s) {
@@ -709,6 +726,7 @@ function ps5Linked(s) {
         el("p", { class: "muted small" }, t("1080p reads small text best; 720p for a slower home network."))),
       ps5SmoothRow(s),
       ps5DecodeRow(s),
+      ps5CodecRow(s),
       ps5ReadOnlyRow(s)),
     el("p", { class: "muted small ps5-foot" }, t("Controllers connected to this PC play on the PS5. Use Play to play full screen.")),
   );

@@ -99,6 +99,8 @@ pub struct Stats {
     pub idr_requests: AtomicU64,
     /// what decodes the picture (VideoToolbox, Media Foundation or OpenH264)
     pub decoder: Mutex<String>,
+    /// HEVC didn't work on this computer or stream: the stream is to be started again in H.264
+    pub hevc_failed: AtomicBool,
 }
 
 /// A stream from the PS5 with its sound and controllers, while it lives.
@@ -213,7 +215,7 @@ impl Player {
             let (session, stop, screen, stats) = (session.clone(), stop.clone(), screen.clone(), stats.clone());
             std::thread::Builder::new()
                 .name("ps5-video".into())
-                .spawn(move || decode_thread(from_net, decode, resync, session, stop, screen, stats))
+                .spawn(move || decode_thread(from_net, decode, video.h265, resync, session, stop, screen, stats))
                 .ok()
         };
         let sdl = {
@@ -253,19 +255,27 @@ impl Drop for Player {
 const RETRY_HARDWARE: Duration = Duration::from_secs(60);
 
 /// The picture decoded on its own thread, frame by frame in the order they came.
+#[allow(clippy::too_many_arguments)]
 fn decode_thread(
     rx: Receiver<(Vec<u8>, i32)>,
     decode: crate::hwdec::Decode,
+    hevc: bool,
     resync: Arc<AtomicBool>,
     session: Arc<Mutex<Option<Session>>>,
     stop: Arc<AtomicBool>,
     screen: Arc<dyn Screen>,
     stats: Arc<Stats>,
 ) {
-    let mut dec = match crate::hwdec::VideoDecoder::new(decode) {
+    let mut dec = match crate::hwdec::VideoDecoder::new_for(decode, hevc) {
         Ok(d) => d,
-        Err(e) => return screen.log(1, &e),
+        Err(e) => {
+            if hevc {
+                stats.hevc_failed.store(true, Ordering::Relaxed);
+            }
+            return screen.log(1, &e);
+        }
     };
+    let is_key_frame = |f: &[u8]| if hevc { is_key_frame_hevc(f) } else { is_key_frame(f) };
     screen.log(3, &format!("[video] decoder: {}", dec.name()));
     let named = |d: &crate::hwdec::VideoDecoder| *stats.decoder.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = d.name().to_string();
     named(&dec);
@@ -351,7 +361,7 @@ fn decode_thread(
         }
         let key = is_key_frame(&frame);
         // (fallen back to OpenH264 a while ago: the hardware tried again on a key frame, kept if it decodes)
-        if decode == crate::hwdec::Decode::Auto && key && !dec.is_hardware() && fell_back_at.is_some_and(|t| now.saturating_duration_since(t) >= RETRY_HARDWARE) {
+        if decode == crate::hwdec::Decode::Auto && !hevc && key && !dec.is_hardware() && fell_back_at.is_some_and(|t| now.saturating_duration_since(t) >= RETRY_HARDWARE) {
             fell_back_at = None;
             if let Ok(mut hw) = crate::hwdec::VideoDecoder::new(crate::hwdec::Decode::Auto) {
                 if hw.is_hardware() {
@@ -378,6 +388,12 @@ fn decode_thread(
             }
             // (no picture yet: the decoder waits for more)
             Ok(None) => {}
+            Err(e) if dec.is_hardware() && e.ends_with("fall back") && dec.is_hevc() => {
+                stats.bad_frames.fetch_add(1, Ordering::Relaxed);
+                screen.log(2, &format!("[video] {}: {e}: the stream starts again in H.264", dec.name()));
+                stats.hevc_failed.store(true, Ordering::Relaxed);
+                return;
+            }
             Err(e) if dec.is_hardware() && e.ends_with("fall back") => {
                 stats.bad_frames.fetch_add(1, Ordering::Relaxed);
                 screen.log(2, &format!("[video] {}: {e}: OpenH264 from now on", dec.name()));
@@ -424,6 +440,23 @@ fn dequeued(stats: &Stats) {
 
 /// Whether an H.264 frame (Annex B) starts a new picture on its own: an IDR slice, or the
 /// sequence parameters the PS5 sends just before one.
+/// An HEVC key frame: a random-access picture (NAL types 16–21) or the parameter sets before one (32–34).
+pub(crate) fn is_key_frame_hevc(frame: &[u8]) -> bool {
+    let mut i = 0;
+    while i + 3 < frame.len() {
+        if frame[i] == 0 && frame[i + 1] == 0 && frame[i + 2] == 1 {
+            let t = (frame[i + 3] >> 1) & 0x3f;
+            if (16..=21).contains(&t) || (32..=34).contains(&t) {
+                return true;
+            }
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
 pub(crate) fn is_key_frame(frame: &[u8]) -> bool {
     let mut i = 0;
     while i + 3 < frame.len() {
@@ -507,6 +540,11 @@ mod backlog_tests {
         assert!(is_key_frame(&[0, 0, 1, 0x65, 9]));
         assert!(!is_key_frame(&[0, 0, 0, 1, 0x41, 1, 2, 3]));
         assert!(!is_key_frame(&[]));
+        // HEVC: VPS (32 → 0x40), IDR_W_RADL (19 → 0x26) are key; TRAIL_R (1 → 0x02) isn't
+        assert!(is_key_frame_hevc(&[0, 0, 0, 1, 0x40, 1, 0, 0, 1, 0x26, 1]));
+        assert!(is_key_frame_hevc(&[0, 0, 1, 0x2a, 1])); // CRA (21)
+        assert!(!is_key_frame_hevc(&[0, 0, 0, 1, 0x02, 1, 2]));
+        assert!(!is_key_frame_hevc(&[]));
     }
 
     #[test]
