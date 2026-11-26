@@ -1434,8 +1434,35 @@ pub fn text_with_icons(c: &Crop, words: &[Word]) -> (String, Vec<String>, Option
         let (w, h) = (tx1 - tx0 + 1, ty1 - ty0 + 1);
         square(w, h) && h as f64 >= 0.6 * mh && n as f64 / (w * h) as f64 >= 0.6
     };
+    // A word right after a button verb ("Press", "Hold", "Tap" …) on its line that is one or two marks, or
+    // no letters at all — "Press t to open the phone", "Hold ^ to …": the D-pad's arrows and other buttons
+    // the OCR took for a letter or a sign. (Not "Press A" in a menu: a capital A or B alone stays a word.)
+    let after_verb: std::collections::HashSet<usize> = {
+        let mut set = std::collections::HashSet::new();
+        let mut by_line: std::collections::BTreeMap<u32, Vec<usize>> = std::collections::BTreeMap::new();
+        for (i, w) in words.iter().enumerate() {
+            by_line.entry(w.line).or_default().push(i);
+        }
+        for mut idx in by_line.into_values() {
+            idx.sort_by_key(|&i| words[i].rect.0);
+            for pair in idx.windows(2) {
+                let verb = words[pair[0]].text.trim_matches(|c: char| !c.is_alphabetic()).to_lowercase();
+                let t = words[pair[1]].text.trim();
+                let letters = t.chars().filter(|c| c.is_alphabetic()).count();
+                let short = t.chars().count() <= 2 && !matches!(t, "A" | "B" | "a" | "an" | "to" | "it" | "up" | "on" | "in" | "or" | "me" | "us");
+                if matches!(verb.as_str(), "press" | "hold" | "tap" | "use" | "push" | "mash" | "release" | "pull") && (short || letters == 0) {
+                    set.insert(pair[1]);
+                }
+            }
+        }
+        set
+    };
+    let index_of = |w: &Word| words.iter().position(|x| std::ptr::eq(x, w));
     // OCR "words" that are really icons
     let misread = |w: &Word| {
+        if index_of(w).is_some_and(|i| after_verb.contains(&i)) {
+            return true;
+        }
         let t = w.text.trim();
         // shoulder/stick buttons OCR reads as text: "L1", "R2", "R3", "LB", "RT" ...
         let label = t.len() == 2
@@ -1694,7 +1721,8 @@ pub fn text_with_icons(c: &Crop, words: &[Word]) -> (String, Vec<String>, Option
                     grow(*r);
                     // one of the game's own icons, recognised: the clean one the app carries; else cut from the line
                     let known = crate::game_icons::identify(&c.into(), *r).and_then(crate::game_icons::data_url).map(String::from);
-                    let png = known.or_else(|| if plain_icons.contains(r) { icon_png_plain(c, *r) } else { icon_png(c, *r, thr_used) });
+                    // (a mark that isn't a clean bright shape — a D-pad arrow read as a letter: cut as it is)
+                    let png = known.or_else(|| if plain_icons.contains(r) { icon_png_plain(c, *r) } else { icon_png(c, *r, thr_used).or_else(|| icon_png_plain(c, *r)) });
                     if let Some(png) = png {
                         // "<height relative to the text>|<png>": the Arabic draws it at the same proportion
                         // (GTA's L2/R2 are smaller than the text, ✕/△ discs a bit larger)
@@ -2073,5 +2101,32 @@ mod centered_tests {
     fn text_only_at_the_side_is_not_a_subtitle() {
         let ws = vec![w("Browse", 1400, 10, 90)];
         assert!(centered_words(&ws, 192.0, 1920.0).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod verb_icon_tests {
+    use super::*;
+
+    #[test]
+    fn a_mark_after_press_is_a_button() {
+        // a grey picture with a lighter mark where the D-pad arrow is
+        let (w, h) = (600u32, 40u32);
+        let mut rgba = vec![40u8; (w * h * 4) as usize];
+        for y in 10..32 {
+            for x in 80..100 {
+                let i = ((y * w + x) * 4) as usize;
+                rgba[i..i + 3].copy_from_slice(&[200, 200, 200]);
+            }
+        }
+        let crop = Crop { rgba, w, h };
+        let wd = |t: &str, x: u32, ww: u32| Word { text: t.into(), rect: (x, 10, ww, 22), line: 0 };
+        let words = vec![wd("Press", 10, 60), wd("t", 82, 14), wd("to", 110, 20), wd("open", 140, 50), wd("the", 200, 35), wd("phone.", 245, 70)];
+        let (text, icons, _) = text_with_icons(&crop, &words);
+        assert_eq!(icons.len(), 1, "{text}");
+        assert!(text.starts_with("Press ⟦1⟧ to open"), "{text}");
+        // "Press A" in a menu, and an ordinary short word after a verb, stay words
+        let words = vec![wd("Use", 10, 40), wd("it", 60, 14), wd("now.", 80, 40)];
+        assert_eq!(text_with_icons(&crop, &words).0, "Use it now.");
     }
 }
