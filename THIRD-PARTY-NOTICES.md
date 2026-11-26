@@ -30,3 +30,9 @@ Parts of it come from, or are ported from, the projects below. Their notices are
 - Source: map.gtadb.org, as listed on gta6map.city.
 - License: Creative Commons Attribution 4.0 (CC BY 4.0).
 - Place names only, in `core/src/glossary_ar.tsv` and `core/src/glossary_ar_lines.tsv`. The Arabic for each name is ours.
+
+## English word list (dwyl/english-words)
+
+- Source: https://github.com/dwyl/english-words, `words_alpha.txt`.
+- License: The Unlicense (public domain).
+- Words of up to 14 letters, compressed, in `core/src/words_en.txt.gz`. Used to tell a real new game instruction from an OCR misreading.

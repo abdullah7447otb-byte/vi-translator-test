@@ -106,6 +106,10 @@ pub struct Area {
     /// the "help" area (see `box_anchor`), else found by its edges alone.
     #[serde(default)]
     pub box_anchor: Option<[f64; 3]>,
+    /// Only read text with a controller button icon in it (GTA VI's context prompts on the right:
+    /// "Press ✕ to Enter"): words without one — a shop sign, a car's plate — are not this area's.
+    #[serde(default)]
+    pub needs_icon: bool,
     /// This area's own text style (colours, box, outline, size …). None: the profile's style, which
     /// is what an area starts from (settings and layouts from before areas had their own).
     pub style: Option<Style>,
@@ -157,6 +161,7 @@ impl Default for Area {
             centered_only: false,
             needs_box: false,
             box_anchor: None,
+            needs_icon: false,
             font_family: String::new(),
             text_pos: String::new(),
             background: String::new(),
@@ -449,11 +454,15 @@ pub struct AreaFx {
     /// translations cover whole (GTA VI's bottom instructions). None: the area's default
     /// (`reviewed_only_default`).
     pub reviewed_only: Option<bool>,
+    /// With reviewed translations only: a new line not in the list is still taken once it holds steady
+    /// and reads as English (engine::learn_ok). None: on.
+    #[serde(default)]
+    pub learn_new: Option<bool>,
 }
 
 impl Default for AreaFx {
     fn default() -> Self {
-        Self { cover_min: true, cover_early: true, fade_ms: None, stack_up: None, ride: None, accent: None, reviewed_only: None }
+        Self { cover_min: true, cover_early: true, fade_ms: None, stack_up: None, ride: None, accent: None, reviewed_only: None, learn_new: None }
     }
 }
 
@@ -489,9 +498,15 @@ pub fn ride_default(area: &str) -> bool {
 }
 
 impl AreaFx {
-    /// GTA VI's bottom instructions: all of them are in the reviewed translations.
+    /// GTA VI's bottom instructions: all of them are in the reviewed translations. The notifications and
+    /// prompts: lines are read over every kind of ground, so only a reviewed line, or a new one that holds
+    /// steady and reads as English (see `learns`).
     pub fn reviewed_only(&self, area: &str) -> bool {
-        self.reviewed_only.unwrap_or(area == "instructions")
+        self.reviewed_only.unwrap_or(matches!(area, "instructions" | "notes" | "prompts"))
+    }
+    /// A new line taken in an area of reviewed lines only (see `learn_new`).
+    pub fn learns(&self, _area: &str) -> bool {
+        self.learn_new.unwrap_or(true)
     }
     pub fn stacks(&self, area: &str) -> bool {
         self.stack_up.unwrap_or_else(|| stack_default(area))
@@ -704,6 +719,44 @@ pub fn builtin_profile(id: &str) -> Option<Profile> {
                 font_scale: 0.92,
                 ..Area::default()
             },
+            Area {
+                id: "notes".into(),
+                name: "Notifications (bottom left)".into(),
+                // GTA VI's notifications beside the minimap (progress, a place found, a task added): a dark
+                // box with sentences in it, above the minimap and up the left side
+                x: 0.01,
+                y: 0.52,
+                w: 0.30,
+                h: 0.28,
+                placement: "under_text".into(),
+                text_pos: "top-left".into(),
+                font_family: "Tajawal".into(),
+                style: Some(gta6_text()),
+                background: "game".into(),
+                font_scale: 1.16,
+                // (only text in the game's own box: the scene's signs and the minimap's names aren't)
+                needs_box: true,
+                ..Area::default()
+            },
+            Area {
+                id: "prompts".into(),
+                name: "Prompts (right side)".into(),
+                // GTA VI's context prompts on the right of the picture ("Press ✕ to Enter", "Hold □ to
+                // Search"): a button icon and a few words
+                x: 0.60,
+                y: 0.30,
+                w: 0.38,
+                h: 0.45,
+                placement: "under_text".into(),
+                text_pos: "top-right".into(),
+                font_family: "Tajawal".into(),
+                style: Some(gta6_text()),
+                background: "game".into(),
+                font_scale: 1.10,
+                // (only a line with a button in it: a sign, a plate, a shop's name have none)
+                needs_icon: true,
+                ..Area::default()
+            },
         ]
     };
     match id {
@@ -856,7 +909,7 @@ impl Default for Config {
 /// a four-line box's last line was cut off, so the translation stopped short and covered it;
 /// 4 = the live preview at 60 frames a second (was 30: a capture card sends 60, and the preview looked
 /// choppy next to the card's own app).
-pub const DEFAULTS_VERSION: u32 = 7;
+pub const DEFAULTS_VERSION: u32 = 8;
 
 /// The app's timing (Source → Timing): frames captured and shown per second, how often the areas are
 /// read, the wait for text to settle, and when the English counts as gone (ms). Fast enough for GTA
@@ -962,6 +1015,28 @@ impl Config {
                 if f.fade_ms == Some(150) {
                     f.fade_ms = None;
                     moved = true;
+                }
+            }
+        }
+        if self.defaults_version < 8 {
+            // v1.6.0, once: GTA VI's notifications (bottom left) and prompts (right) read too; in the built-in
+            // profile, and in use while it's the one in use (a player's own copy is theirs)
+            let gta6 = self.profile == "gta6";
+            let new_areas: Vec<Area> = builtin_profile("gta6").map(|p| p.areas.into_iter().filter(|a| a.id == "notes" || a.id == "prompts").collect()).unwrap_or_default();
+            for p in self.builtins.iter_mut().filter(|p| p.id == "gta6") {
+                for a in &new_areas {
+                    if !p.areas.iter().any(|x| x.id == a.id) {
+                        p.areas.push(a.clone());
+                        moved = true;
+                    }
+                }
+            }
+            if gta6 {
+                for a in &new_areas {
+                    if !self.areas.iter().any(|x| x.id == a.id) {
+                        self.areas.push(a.clone());
+                        moved = true;
+                    }
                 }
             }
         }

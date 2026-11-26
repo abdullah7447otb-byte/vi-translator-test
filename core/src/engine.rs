@@ -238,6 +238,41 @@ struct AreaState {
     /// The anchored box's text last read (its first line's left and top, crop pixels): the box's text
     /// stays still from one read to the next, a sign's moves with the camera.
     anchored_at: Option<(u32, u32)>,
+    /// Reads in a row that gave the candidate as it is (an area of reviewed lines only takes a new line
+    /// that holds steady: see `learn_ok`)
+    candidate_reads: u32,
+    /// Why this area's text was last dropped (the check mode shows it; see `drop_why`)
+    last_drop: Option<(&'static str, Instant)>,
+    /// Where the game's help box was really seen (crop pixels: left, top), at which picture size
+    learned_anchor: Option<(u32, u32, (u32, u32))>,
+}
+
+/// Text read in an area left out, and why (only when there was text to leave out): for the check mode.
+fn drop_why(last: &mut Option<(&'static str, Instant)>, text: &mut String, why: &'static str, now: Instant) {
+    if !text.is_empty() {
+        *last = Some((why, now));
+        text.clear();
+    }
+}
+
+/// A new line in an area of reviewed lines only (GTA VI's bottom instructions: the story's missions aren't
+/// all in the reviewed list) is taken when it holds: read the same this many times, over this long, and
+/// nearly all its words real English words or the game's names. A misreading over bright ground changes
+/// from one read to the next, and has words that aren't words.
+pub const LEARN_READS: u32 = 3;
+pub const LEARN_HOLD: Duration = Duration::from_millis(400);
+pub const LEARN_WORDS: f64 = 0.9;
+
+/// New lines taken that way this session (their memory keys): shown at once when read again.
+static LEARNED: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+fn learned(line: &str) -> bool {
+    LEARNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|s| s.contains(&memory::key_of(line)))
+}
+
+/// Whether a new line not in the reviewed list may be taken now (see LEARN_READS).
+pub fn learn_ok(line: &str, reads: u32, held: Duration) -> bool {
+    reads >= LEARN_READS && held >= LEARN_HOLD && !ocr::mostly_capitals(line) && ocr::looks_like_words(line) && crate::english::word_share(&strip_icon_tokens(line)) >= LEARN_WORDS && line.split_whitespace().count() >= 2
 }
 
 /// Stacked lines in parts to translate (ocr::speaker_lines), one speaker's lines together: with the
@@ -1896,6 +1931,15 @@ impl Reader {
                     let (cx0, cy0) = ((area.x.clamp(0.0, 1.0) * fw as f64) as u32, (area.y.clamp(0.0, 1.0) * fh as f64) as u32);
                     (((ax * fw as f64).round() as u32).saturating_sub(cx0), ((ay * fh as f64).round() as u32).saturating_sub(cy0), (aw * fw as f64) as u32)
                 });
+                // (where the box's edges were really seen, at this picture size: the game's Safe Zone and text
+                // size settings move it from where it is by default)
+                let anchor = anchor.map(|a| match st.learned_anchor.filter(|l| l.2 == (fw, fh)) {
+                    Some((x, y, _)) => (x, y, a.2),
+                    None => a,
+                });
+                // the box's edges seen this time (its text then needn't be a sentence: a short instruction
+                // in the game's own box is one)
+                let mut box_seen = false;
                 if let (true, Some(anchor)) = (area.needs_box && !text.is_empty(), anchor) {
                     // where the box always is: its text by its place and its lines, still from one read
                     // to the next (or with the box's edges seen around it)
@@ -1914,21 +1958,26 @@ impl Reader {
                                 if let Some(e) = edges {
                                     st.game_box = Some((e, now));
                                     st.game_box_text = text.clone();
+                                    st.learned_anchor = Some((e.0, e.1, (fw, fh)));
+                                    box_seen = true;
                                 }
                                 let same = st.game_box.filter(|_| ocr::similar(&text, &st.game_box_text)).map(|(e, _)| e);
                                 help_box = Some(edges.or(same).unwrap_or(b));
                             } else {
-                                text.clear();
+                                drop_why(&mut st.last_drop, &mut text, "unstable", now);
                             }
                         }
                         None => {
                             st.anchored_at = None;
-                            text.clear();
+                            drop_why(&mut st.last_drop, &mut text, "not_in_anchor", now);
                         }
                     }
-                    // (a sign in capitals, or a shop menu's item where the box would be: not sentences)
-                    if ocr::mostly_capitals(&text) || !ocr::reads_as_sentences(&text) {
-                        text.clear();
+                    // (a sign in capitals, or a shop menu's item where the box would be: not sentences; a short
+                    // instruction with the game's box seen around it is one, when its words are real words)
+                    if ocr::mostly_capitals(&text) {
+                        drop_why(&mut st.last_drop, &mut text, "capitals", now);
+                    } else if !ocr::reads_as_sentences(&text) && !(box_seen && crate::english::word_share(&text) >= LEARN_WORDS && text.split_whitespace().count() >= 2) {
+                        drop_why(&mut st.last_drop, &mut text, "not_sentence", now);
                     }
                 } else if area.needs_box && !text.is_empty() {
                     let known = st.game_box.filter(|(_, at)| at.elapsed() < GAME_BOX_KEEP).map(|(b, _)| b);
@@ -1952,16 +2001,25 @@ impl Reader {
                                 text = ocr::clean(&words);
                             }
                         }
-                        None => text.clear(),
+                        None => drop_why(&mut st.last_drop, &mut text, "no_box", now),
                     }
                     // (a sign or billboard with a frame around it: in capitals, not the game's sentences)
                     if ocr::mostly_capitals(&text) {
-                        text.clear();
+                        drop_why(&mut st.last_drop, &mut text, "capitals", now);
+                    }
+                }
+                // An area of the game's prompts: only a line with a button icon in it (a sign has none). Not
+                // while the phone is up (its screen sits on the right too).
+                if area.needs_icon && !text.is_empty() {
+                    let phone_up = ctx.live.phone_active.load(std::sync::atomic::Ordering::Relaxed);
+                    let has_icon = crop.as_ref().is_some_and(|cr| !ocr::text_with_icons(cr, &words).1.is_empty());
+                    if phone_up || !has_icon {
+                        drop_why(&mut st.last_drop, &mut text, if phone_up { "phone_up" } else { "no_icon" }, now);
                     }
                 }
                 // Not English at all (another script, icons, a map read as letters): no text here.
                 if !ocr::looks_like_words(&text) {
-                    text.clear();
+                    drop_why(&mut st.last_drop, &mut text, "not_words", now);
                 }
                 if !text.is_empty() {
                     st.last_seen = Some(now);
@@ -2026,7 +2084,10 @@ impl Reader {
                         st.candidate = text;
                         st.candidate_lines = lines_now.clone();
                         st.candidate_since = Some(now);
+                        st.candidate_reads = 1;
                         is_new = true;
+                    } else {
+                        st.candidate_reads = st.candidate_reads.saturating_add(1);
                     }
                     // A line the translation memory already knows needn't wait to settle: show it on
                     // first sight. Other lines wait `stable_ms` so a half-faded frame isn't translated.
@@ -2099,7 +2160,20 @@ impl Reader {
                         let iconed = crop.as_ref().map(|cr| ocr::text_with_icons(cr, &words).0).unwrap_or_default();
                         let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         let reviewed = |l: &str| m.get(l, &[], &[]).is_some_and(|(_, src)| crate::memory::trusted(&src));
-                        reviewed(&st.candidate) || (!iconed.is_empty() && reviewed(&iconed)) || speaker::without_name(&st.candidate).is_some_and(|r| reviewed(r))
+                        let ok = reviewed(&st.candidate) || (!iconed.is_empty() && reviewed(&iconed)) || speaker::without_name(&st.candidate).is_some_and(|r| reviewed(r));
+                        drop(m);
+                        // (a new mission line, not in the reviewed list: taken once it holds and reads as English)
+                        let held = st.candidate_since.map_or(Duration::ZERO, |t| now.saturating_duration_since(t));
+                        let learn = c.fx(&area.id).learns(&area.id);
+                        let new_ok = learn && (learned(&st.candidate) || learn_ok(&st.candidate, st.candidate_reads, held));
+                        if !ok && new_ok && !learned(&st.candidate) {
+                            LEARNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(Default::default).insert(memory::key_of(&st.candidate));
+                            crate::vlog!("[read] {}: a new line taken (not in the reviewed list): {:?}", area.id, st.candidate);
+                        }
+                        if !ok && !new_ok {
+                            st.last_drop = Some(("not_reviewed", now));
+                        }
+                        ok || new_ok
                     };
                     // (a line not let through with its black box up — it went up for a reading that was: no empty box stays)
                     if !allowed && is_new && c.cover_look() {
@@ -3001,5 +3075,25 @@ mod phone_hold_tests {
         let b = phone_png("av|Cal|x".into(), || Some(vec![1, 2, 4]));
         assert_eq!(a, b);
         assert_eq!(r3(0.123456), 0.123);
+    }
+}
+
+#[cfg(test)]
+mod learn_tests {
+    use super::*;
+
+    #[test]
+    fn a_new_mission_line_is_taken_once_it_holds_and_reads_as_english() {
+        let held = Duration::from_millis(450);
+        assert!(learn_ok("Follow the truck to the docks.", 3, held));
+        assert!(learn_ok("Press ⟦1⟧ to sprint.", 4, held));
+        // not yet: too few reads, or not long enough
+        assert!(!learn_ok("Follow the truck to the docks.", 2, held));
+        assert!(!learn_ok("Follow the truck to the docks.", 5, Duration::from_millis(200)));
+        // misreadings over bright ground, signs in capitals, a lone word
+        assert!(!learn_ok("Drive tofthe pr.iSoi7", 5, held));
+        assert!(!learn_ok("Getin a vehigle", 5, held));
+        assert!(!learn_ok("BOAT STORAGE CALL TODAY", 5, held));
+        assert!(!learn_ok("Aim", 5, held));
     }
 }

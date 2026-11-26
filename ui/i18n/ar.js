@@ -336,6 +336,8 @@ I18N.add("ar", {
   "Overlays on the game": "الترجمة على اللعبة",
   "Could not change it: {e}": "تعذّر التغيير: {e}",
   "Instructions (bottom)": "التعليمات (أسفل)",
+  "Notifications (bottom left)": "الإشعارات (أسفل اليسار)",
+  "Prompts (right side)": "الأوامر (الجهة اليمنى)",
   "Translate into": "الترجمة إلى",
   "Last minute: reading {read} per pass · translating {tr} · translation ready {ready} after the English (slowest {max})": "آخر دقيقة: القراءة {read} لكل مرور · الترجمة {tr} · جاهزية الترجمة {ready} بعد ظهور النص الإنجليزي (الأبطأ {max})",
   "Running for {m} min": "قيد التشغيل منذ {m} دقيقة",

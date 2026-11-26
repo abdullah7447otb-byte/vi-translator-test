@@ -496,21 +496,35 @@ pub fn in_anchored_box(words: &[Word], anchor: (u32, u32, u32)) -> Option<((u32,
         (x0, x1, y0, y1)
     };
     // (a line starts at the box's left, a margin in: up to an icon's width further at the most)
-    let starts_left = |x0: u32| x0 >= left && x0 <= left + 3 * lh;
-    let within = |x1: u32| x1 <= left + widest + lh;
-    let first = lines.iter().position(|(_, idx)| {
-        let (x0, x1, y0, _) = span(idx);
-        y0 >= top && y0 <= top + 2 * lh && starts_left(x0) && within(x1)
-    })?;
-    let mut kept: Vec<(u32, Vec<usize>)> = vec![lines[first].clone()];
-    for l in &lines[first + 1..] {
-        let (x0, x1, _, _) = span(&l.1);
-        let pitch = l.0 - kept.last().expect("one").0;
-        if !(lh..=2 * lh).contains(&pitch) || !starts_left(x0) || !within(x1) {
-            break;
+    // (the game's Safe Zone and text size move the box a little: up to about three line heights, ±60 px at
+    // 1080p, either way; and a line starts at the box's left, a margin in, up to an icon's width further)
+    let starts_left = |x0: u32| x0 + 2 * lh >= left && x0 <= left + 3 * lh;
+    let within = |x1: u32| x1 <= left + widest + 2 * lh;
+    // the lines that follow a first line: each a line pitch under the one before, from the same left edge
+    let chain = |first: usize| -> Vec<(u32, Vec<usize>)> {
+        let mut kept: Vec<(u32, Vec<usize>)> = vec![lines[first].clone()];
+        for l in &lines[first + 1..] {
+            let (x0, x1, _, _) = span(&l.1);
+            let pitch = l.0 - kept.last().expect("one").0;
+            if !(lh..=2 * lh).contains(&pitch) || !starts_left(x0) || !within(x1) {
+                break;
+            }
+            kept.push(l.clone());
         }
-        kept.push(l.clone());
-    }
+        kept
+    };
+    // (the box's first line: of the lines that could start it, the one with the most lines under it, then
+    // the nearest to where the box starts — a shop's name above the box is a line on its own)
+    let expected = top + lh / 2;
+    let kept = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, idx))| {
+            let (x0, x1, y0, _) = span(idx);
+            y0 + 3 * lh >= top && y0 <= top + 3 * lh && starts_left(x0) && within(x1)
+        })
+        .map(|(i, _)| chain(i))
+        .max_by_key(|k| (k.len(), std::cmp::Reverse(span(&k[0].1).2.abs_diff(expected))))?;
     let mut out = Vec::new();
     let (mut right, mut bottom) = (0, 0);
     for (n, (_, idx)) in kept.iter().enumerate() {
@@ -523,7 +537,12 @@ pub fn in_anchored_box(words: &[Word], anchor: (u32, u32, u32)) -> Option<((u32,
     }
     // (the box's right edge a line height past the text's, its bottom about half a line under it:
     // measured where its edges show)
-    Some(((left, top, (right + lh).saturating_sub(left).min(widest), (bottom + lh * 9 / 20).saturating_sub(top)), out))
+    // (the box where it is: at the anchor when the text starts there, else moved with the text — its text
+    // starts a little more than half a line in)
+    let (fx, fy) = (kept.iter().map(|(_, idx)| span(idx).0).min().unwrap_or(left), span(&kept[0].1).2);
+    let moved = fy < top || fy > top + lh || fx < left;
+    let (bl, bt) = if moved { (fx.saturating_sub(lh * 3 / 5), fy.saturating_sub(lh * 3 / 5)) } else { (left, top) };
+    Some(((bl, bt, (right + lh).saturating_sub(bl).min(widest), (bottom + lh * 9 / 20).saturating_sub(bt)), out))
 }
 
 /// The words inside the game's own box (GTA VI's help box), when there is one: (the box, its words,
@@ -1940,6 +1959,13 @@ mod centered_tests {
         // a sign's words elsewhere in the area: none of it
         let sign = vec![w("Visitor", 200, 30, 80), w("Center", 290, 30, 80)];
         assert!(in_anchored_box(&sign, anchor).is_none());
+        // the box moved by the game's Safe Zone, 50 px down and 20 px right, or 40 px up: still the box
+        for (dx, dy) in [(20i32, 50i32), (0, -40), (-10, 30)] {
+            let moved: Vec<Word> = help.iter().map(|x| Word { rect: ((x.rect.0 as i32 + dx) as u32, (x.rect.1 as i32 + dy) as u32, x.rect.2, x.rect.3), ..x.clone() }).collect();
+            let (b, kept) = in_anchored_box(&moved, anchor).unwrap_or_else(|| panic!("moved {dx},{dy}"));
+            assert_eq!(texts(&kept), texts(&help), "moved {dx},{dy}");
+            assert!((b.1 as i32 - (94 + dy)).abs() <= 6, "moved {dx},{dy}: box top {}", b.1);
+        }
         // a line too wide for the box (a billboard right where the box is): not the box
         let wide = vec![w("BOAT", 29, 108, 300), w("STORAGE", 340, 108, 300)];
         assert!(in_anchored_box(&wide, anchor).is_none());
