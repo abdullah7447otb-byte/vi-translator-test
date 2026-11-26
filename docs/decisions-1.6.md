@@ -30,3 +30,10 @@ Each choice that was open, what was chosen, and why.
 8. **The phone's Arabic defaults to the steady panel.** Following the phone's sway is what made it hard
    to read. «On the phone» stays an option, and so does «Both». The in-place drawing is unchanged (no new
    dead-zone): changing its easing without real phone frames on a Mac could make it lag the phone.
+9. **No native video layer (AVSampleBufferDisplayLayer) in 1.6.0.** Putting a native layer under Tauri's
+   web view can only be checked on a real Mac with a display. The CI Mac has no GPU and no screen, so a
+   mistake there would leave the owner with a black picture. The current path already draws each frame
+   at the screen's refresh (requestAnimationFrame, a queue of one or two frames). The gains in 1.6.0 come
+   from HEVC, the float colour path and the decoder not dropping to the CPU.
+10. **No FSR upscaling in 1.6.0.** The owner's OBS setup used a 1920×1080 canvas, so his monitor is most
+    likely 1080p: the stream already fills it pixel for pixel, and an upscaler would add nothing.
