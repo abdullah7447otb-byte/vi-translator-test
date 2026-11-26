@@ -2079,6 +2079,15 @@ impl Reader {
                 if !ocr::looks_like_words(&text) {
                     drop_why(&mut st.last_drop, &mut text, "not_words", now);
                 }
+                // (the check mode: what this area read, what it kept, and why the rest was left out)
+                if c.check_mode {
+                    let read = ocr::clean(&words);
+                    let drop = st.last_drop.filter(|(_, at)| now.saturating_duration_since(*at) < Duration::from_millis(1500)).map(|(w, _)| w);
+                    ctx.live.area_debug.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
+                        area.id.clone(),
+                        serde_json::json!({ "x": area_cfg.x, "y": area_cfg.y, "w": area_cfg.w, "h": area_cfg.h, "read": read, "kept": text, "drop": drop, "current": st.current }),
+                    );
+                }
                 if !text.is_empty() {
                     st.last_seen = Some(now);
                     // The line on screen read again; or other text read in its place for as long as it takes

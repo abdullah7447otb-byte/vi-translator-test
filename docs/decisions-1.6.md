@@ -37,3 +37,12 @@ Each choice that was open, what was chosen, and why.
    from HEVC, the float colour path and the decoder not dropping to the CPU.
 10. **No FSR upscaling in 1.6.0.** The owner's OBS setup used a 1920×1080 canvas, so his monitor is most
     likely 1080p: the stream already fills it pixel for pixel, and an upscaler would add nothing.
+11. **Keyboard shortcuts instead of controller combos.** The controller's buttons go to the game. Taking
+    combos out of them without a real PS5 to test on could swallow a move in the middle of a fight. In
+    the app window the shortcuts are: Ctrl/⌘+Shift+E to correct a line, Ctrl/⌘+Shift+D for the check
+    mode, Ctrl/⌘+Shift+L to switch Jason/Lucia.
+12. **The check mode is off at every start and not saved.** The owner streams the Barqawi window through
+    OBS. A check mode left on would show in the stream, so it never comes back on by itself.
+13. **Left out of 1.6.0: profanity softening, a separate mission-log page.** The live list (the iPad page)
+    and the SRT export already keep every line, missions included. A softening list for Arabic insults
+    needs care to avoid changing meaning, and is better done with the owner's choices.

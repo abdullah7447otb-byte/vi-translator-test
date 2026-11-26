@@ -89,6 +89,8 @@ pub struct Live {
     pub phone_anchor: Mutex<Option<serde_json::Value>>,
     /// The phone's translations are up (its overlay window shows).
     pub phone_active: AtomicBool,
+    /// The check mode: what each area read last and why its text was left out, if it was (engine.rs)
+    pub area_debug: Mutex<std::collections::HashMap<String, serde_json::Value>>,
     /// GTA VI's message bubble at the bottom right as last read (see chat.rs): the picture of its box
     /// then (read again only when it changes), the box, and what was read.
     pub chat_read: Mutex<Option<(Vec<u8>, (u32, u32, u32, u32), Option<crate::chat::Bubble>)>>,
@@ -141,6 +143,30 @@ pub fn push(live: &Live, area: &str, en: &str, en_segments: &[(String, Option<St
     while log.len() > KEEP {
         log.pop_front();
     }
+}
+
+/// The session's lines as subtitles (SRT), in the order they came: each from when its English appeared to
+/// when the next line of its area did (at most 6 s, at least 1 s). Times from the first line. With the
+/// English under the Arabic when `both`.
+pub fn srt(live: &Live, both: bool) -> String {
+    let log = live.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let lines: Vec<&serde_json::Value> = log.iter().filter(|l| l["at"].as_u64().unwrap_or(0) > 0).collect();
+    let Some(t0) = lines.iter().filter_map(|l| l["at"].as_u64()).min() else { return String::new() };
+    let fmt = |ms: u64| format!("{:02}:{:02}:{:02},{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000);
+    let mut out = String::new();
+    for (n, l) in lines.iter().enumerate() {
+        let at = l["at"].as_u64().unwrap_or(t0);
+        let next = lines[n + 1..].iter().find(|x| x["area"] == l["area"]).and_then(|x| x["at"].as_u64());
+        let end = next.unwrap_or(at + 4000).clamp(at + 1000, at + 6000);
+        let ar = l["text"].as_str().unwrap_or("").replace("🎮", "");
+        let en = l["en"].as_str().unwrap_or("");
+        out.push_str(&format!("{}\n{} --> {}\n{}\n", n + 1, fmt(at - t0), fmt(end - t0), ar.trim()));
+        if both && !en.trim().is_empty() {
+            out.push_str(&format!("{}\n", en.trim()));
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// What a page needs to draw the overlays over the whole game picture (the TV page, and the
@@ -224,5 +250,19 @@ mod tests {
             assert!(v.get(key).is_some(), "{key}");
         }
         assert!(v.get("status").is_none() && v.get("frame").is_none() && v.get("preview").is_none());
+    }
+}
+
+#[cfg(test)]
+mod srt_tests {
+    use super::*;
+
+    #[test]
+    fn the_session_comes_out_as_subtitles() {
+        let live = Live::default();
+        push(&live, "subtitles", "Where are you?", &[], &[("وينك؟".into(), None)], 10_000);
+        push(&live, "subtitles", "On my way.", &[], &[("جاي بالطريق.".into(), None)], 12_500);
+        let s = srt(&live, true);
+        assert!(s.starts_with("1\n00:00:00,000 --> 00:00:02,500\nوينك؟\nWhere are you?\n\n2\n00:00:02,500 --> 00:00:06,500\n"), "{s}");
     }
 }

@@ -1154,6 +1154,87 @@ fn perf_status() -> serde_json::Value {
     vi_translator_core::perf::perf_status()
 }
 
+/// The health panel: the video decoder and stream, the reading and translating times, Apple's translation
+/// helper, and the stalls the watchdog told (engine.rs, watchdog.rs).
+fn health_json(state: &AppState) -> serde_json::Value {
+    let c = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let ps = ps5::status();
+    serde_json::json!({
+        "engine": c.engine,
+        "decoder": ps["decoder"],
+        "hevc": ps["hevc"],
+        "hevc_off_now": ps["hevc_off_now"],
+        "stream": state.shared.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+        "perf": vi_translator_core::perf::perf_status(),
+        "apple": if c.engine == "apple" { vi_translator_core::apple_translate::health() } else { serde_json::Value::Null },
+        "watchdog": vi_translator_core::watchdog::health(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "os": std::env::consts::OS,
+    })
+}
+
+#[tauri::command]
+fn health_status(state: tauri::State<AppState>) -> serde_json::Value {
+    health_json(&state)
+}
+
+/// The session's translated lines as a subtitles file (SRT) on the Desktop, for a stream uploaded later.
+#[tauri::command]
+fn export_srt(webview: tauri::Webview, state: tauri::State<AppState>, both: bool) -> Result<String, String> {
+    main_only(&webview)?;
+    let text = vi_translator_core::live::srt(&state.shared.live, both);
+    if text.is_empty() {
+        return Err("no lines yet".into());
+    }
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let path = dirs::desktop_dir().or_else(dirs::home_dir).unwrap_or_else(data_dir).join(format!("Barqawi subtitles {stamp}.srt"));
+    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
+/// The check mode on or off (not saved: off when the app starts).
+#[tauri::command]
+fn set_check_mode(webview: tauri::Webview, state: tauri::State<AppState>, on: bool) -> Result<(), String> {
+    main_only(&webview)?;
+    state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).check_mode = on;
+    if !on {
+        state.shared.live.area_debug.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+    }
+    Ok(())
+}
+
+/// The check mode's areas: what each read and why text was left out.
+#[tauri::command]
+fn area_debug(state: tauri::State<AppState>) -> serde_json::Value {
+    serde_json::to_value(&*state.shared.live.area_debug.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).unwrap_or_default()
+}
+
+/// "Send a check report": a folder on the Desktop with the log (its newest files), the settings without
+/// keys, the health panel and the check mode's areas, to send when something is off. Its path.
+#[tauri::command]
+fn check_report(webview: tauri::Webview, state: tauri::State<AppState>) -> Result<String, String> {
+    main_only(&webview)?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let base = dirs::desktop_dir().or_else(dirs::home_dir).unwrap_or_else(data_dir);
+    let dir = base.join(format!("Barqawi check report {stamp}"));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).redacted();
+    let write = |name: &str, v: &serde_json::Value| std::fs::write(dir.join(name), serde_json::to_string_pretty(v).unwrap_or_default());
+    write("settings.json", &serde_json::to_value(&cfg).unwrap_or_default()).map_err(|e| e.to_string())?;
+    write("health.json", &health_json(&state)).map_err(|e| e.to_string())?;
+    write("areas.json", &serde_json::to_value(&*state.shared.live.area_debug.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).unwrap_or_default()).map_err(|e| e.to_string())?;
+    // (the log's files, newest first: the last few MB cover well over 15 minutes)
+    if let Some(logs) = vi_translator_core::log::folder() {
+        if let Ok(files) = std::fs::read_dir(&logs) {
+            for f in files.flatten().filter(|f| f.file_name().to_string_lossy().contains(".log")) {
+                let _ = std::fs::copy(f.path(), dir.join(f.file_name()));
+            }
+        }
+    }
+    vi_translator_core::vlog!("[check] report written to {}", dir.display());
+    Ok(dir.display().to_string())
+}
+
 // ------------------------------------------------------------------------------------- test mode
 
 /// `vi-translator --test-image shot.png [--area help]`: OCR + translate one screenshot and print the result.
@@ -2174,7 +2255,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(hotkey::plugin())
         .manage(AppState { cfg: cfg.clone(), shared: shared.clone(), saver: saver.clone(), memory: memory.clone(), update: update.clone() })
-        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, recent_lines, correct_line, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, test_llm_server, apple_status, open_translation_settings, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_decode, ps5_set_hevc, ps5_set_read_only, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin])
+        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, recent_lines, correct_line, health_status, set_check_mode, area_debug, check_report, export_srt, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, test_llm_server, apple_status, open_translation_settings, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_decode, ps5_set_hevc, ps5_set_read_only, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin])
         .setup(move |app| {
             if let Some(w) = app.get_webview_window("main") {
                 let test = if updater::TEST_BUILD { " (test build · updates off)" } else { "" };

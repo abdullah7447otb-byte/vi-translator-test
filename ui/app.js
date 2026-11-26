@@ -150,6 +150,7 @@ function drawLayer() {
     return;
   }
   const k = shown.h / 1080;
+  if (checkMode) checkOverlay(layer, shown.w, shown.h);
   if (overlays && phoneNow) {
     const ph = document.createElement("div");
     Object.assign(ph.style, { position: "absolute", left: "0", top: "0", width: `${shown.w}px`, height: `${shown.h}px`, pointerEvents: "none" });
@@ -1653,6 +1654,15 @@ function renderCharacter() {
 }
 $("phone-display")?.addEventListener("change", (e) => { cfg.phone_display = e.target.value; save(false); });
 $("character")?.addEventListener("change", (e) => { cfg.character = e.target.value; save(false); });
+// (the game switched character: Ctrl/⌘+Shift+L, Jason ↔ Lucia)
+addEventListener("keydown", (e) => {
+  if (!cfg || !((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === "KeyL")) return;
+  e.preventDefault();
+  cfg.character = cfg.character === "lucia" ? "jason" : "lucia";
+  renderCharacter();
+  save(false);
+  log({ info: t("Playing as {name}", { name: t(cfg.character === "lucia" ? "Lucia" : "Jason") }) });
+});
 
 function renderTiming() {
   const form = $("timing-form");
@@ -2010,6 +2020,13 @@ let saver = { on: false, count: 0, folder: null };
 function renderDebug() {
   const form = $("debug-form");
   form.innerHTML = `
+    <label class="check" style="color:var(--text);font-weight:600"><input type="checkbox" id="dbg-check" ${checkMode ? "checked" : ""}/> ${t("Check mode")}</label>
+    <div class="muted small" style="margin:-6px 0 0">${AS.esc(t("Draws each reading area on the picture with what it read, and why text was left out. Ctrl/⌘+Shift+D. Not shown on OBS or the TV."))}</div>
+    <div class="callout" id="health" style="margin:0"></div>
+    <button class="btn" id="dbg-report">${t("Send a check report")}</button>
+    <button class="btn" id="dbg-srt">${t("Save the session's subtitles (SRT)")}</button>
+    <div class="muted small" style="margin:-6px 0 0">${AS.esc(t("The last 200 lines translated, with their times and the English under each, as a subtitles file on the Desktop: for a stream uploaded later."))}</div>
+    <div class="muted small" style="margin:-6px 0 0">${AS.esc(t("Makes a folder on the Desktop with the log, the settings (no keys) and the health above: send it when something is off."))}</div>
     <label class="check" style="color:var(--text);font-weight:600"><input type="checkbox" id="dbg-save" ${cfg.debug_save_frames ? "checked" : ""}/> ${t("Save frames to disk")}</label>
     <div class="muted small" style="margin:-6px 0 0">${AS.esc(t("Saves full-size PNG files of the captured window into a new folder (in Pictures\\VI Translator\\debug-frames) each time you turn it on. Turning it off opens the folder. 4K frames are a few MB each."))}</div>
     <div class="field"><label>${t("Save a frame every")}</label><div class="inline">
@@ -2022,6 +2039,22 @@ function renderDebug() {
     <button class="link block-link" id="dbg-shot-open">${t("Open previews folder")}</button>
     <div class="muted small">Install id (to send a test version of a game page to this PC): <code>${AS.esc(cfg.install_id || "—")}</code></div>`;
   $("dbg-save").addEventListener("change", (e) => setSaveFrames(e.target.checked));
+  $("dbg-check").addEventListener("change", (e) => setCheckMode(e.target.checked));
+  $("dbg-report").addEventListener("click", async () => {
+    try {
+      log({ info: t("Check report: {dir}", { dir: await invoke("check_report") }) });
+    } catch (e) {
+      log({ error: String(e) });
+    }
+  });
+  $("dbg-srt").addEventListener("click", async () => {
+    try {
+      log({ info: t("Subtitles saved: {dir}", { dir: await invoke("export_srt", { both: true }) }) });
+    } catch (e) {
+      log({ error: String(e) });
+    }
+  });
+  updateHealth();
   $("dbg-int").addEventListener("input", (e) => {
     cfg.debug_frame_interval_ms = Number(e.target.value);
     $("dbg-int-v").textContent = t("{s} s", { s: (cfg.debug_frame_interval_ms / 1000).toFixed(1) });
@@ -2038,6 +2071,67 @@ function renderDebug() {
   });
   updateSaver();
 }
+
+// The check mode (not saved: off when the app starts) and the health panel.
+let checkMode = false;
+function setCheckMode(on) {
+  checkMode = on;
+  if ($("dbg-check")) $("dbg-check").checked = on;
+  invoke("set_check_mode", { on }).catch(() => {});
+  if (!on) checkAreas = {};
+  drawLayer();
+}
+let checkAreas = {};
+setInterval(async () => {
+  if (!checkMode) return;
+  checkAreas = await invoke("area_debug").catch(() => ({})) || {};
+  drawLayer();
+}, 300);
+addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === "KeyD") { e.preventDefault(); setCheckMode(!checkMode); }
+});
+const DROP_WHY = {
+  not_in_anchor: "Not where the game's box is",
+  not_sentence: "Not a sentence (and no box seen)",
+  capitals: "In capitals (a sign)",
+  no_box: "No game box around it",
+  not_words: "Not words",
+  not_reviewed: "New line, not steady yet",
+  no_icon: "No button in it",
+  phone_up: "The phone is up",
+  unstable: "Moving (not the game's box)",
+};
+function checkOverlay(layer, W, H) {
+  for (const [id, a] of Object.entries(checkAreas)) {
+    const d = document.createElement("div");
+    Object.assign(d.style, { position: "absolute", left: `${a.x * W}px`, top: `${a.y * H}px`, width: `${a.w * W}px`, height: `${a.h * H}px`,
+      border: `2px dashed ${a.drop ? "#ff5d73" : a.kept ? "#3ddc97" : "#ffd166"}`, boxSizing: "border-box", pointerEvents: "none" });
+    const tag = document.createElement("div");
+    Object.assign(tag.style, { position: "absolute", left: "0", top: "0", transform: "translateY(-100%)", maxWidth: `${Math.max(220, a.w * W)}px`,
+      background: "rgba(0,0,0,.78)", color: "#fff", font: "12px/1.35 system-ui, sans-serif", padding: "2px 6px", whiteSpace: "pre-wrap", direction: "ltr" });
+    const why = a.drop ? `✕ ${t(DROP_WHY[a.drop] || a.drop)}` : a.kept ? "✓" : "";
+    tag.textContent = `${id}: ${(a.read || "—").slice(0, 120)}${why ? "\n" + why : ""}`;
+    d.appendChild(tag);
+    layer.appendChild(d);
+  }
+}
+async function updateHealth() {
+  const el = $("health");
+  if (!el) return;
+  const h = await invoke("health_status").catch(() => null);
+  if (!h) return;
+  const ms = (x) => (x && x.avg != null ? `${x.avg} ms` : "—");
+  const stalls = h.watchdog && h.watchdog.stalls ? Object.values(h.watchdog.stalls).reduce((a, b) => a + b, 0) : 0;
+  const apple = h.apple ? (h.apple.busy ? t("busy") : h.apple.warm ? t("ready") : h.apple.running ? t("starting") : t("off")) + (h.apple.restarts ? ` · ${t("restarted {n}×", { n: h.apple.restarts })}` : "") : null;
+  el.innerHTML = [
+    `<b>${AS.esc(t("Health"))}</b>`,
+    `${AS.esc(t("Video decoding"))}: ${AS.esc(h.decoder || "—")}${h.hevc ? " · HEVC" : ""}`,
+    `${AS.esc(t("Reading"))}: ${ms(h.perf && h.perf.read)} · ${AS.esc(t("Translating"))}: ${ms(h.perf && h.perf.translate)} · ${AS.esc(t("Arabic ready after"))}: ${ms(h.perf && h.perf.ready)}`,
+    apple ? `${AS.esc(t("Apple translation"))}: ${AS.esc(apple)}` : "",
+    `${AS.esc(t("Translation stalls"))}: ${stalls}${h.watchdog && h.watchdog.last ? ` (${AS.esc(h.watchdog.last.cause)})` : ""}`,
+  ].filter(Boolean).join("<br>");
+}
+setInterval(() => { if (document.querySelector("#tab-translator:not(.hidden), #health")) updateHealth(); }, 2000);
 
 function setSaveFrames(on) {
   cfg.debug_save_frames = on;

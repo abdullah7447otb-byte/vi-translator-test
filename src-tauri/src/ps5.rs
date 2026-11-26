@@ -754,6 +754,12 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
                 *DECODER.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = st.decoder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
                 window.push_back((now.0 - before.0, now.1 - before.1, now.2 - before.2));
                 LATE_LAST_SECOND.fetch_add(now.2 - before.2, Ordering::Relaxed);
+                // (frames lost or late in the last second: told in the log with where they went, so a
+                // stutter's cause is in a check report — the network, or this computer decoding too slowly)
+                let (lost_now, late_now) = (now.1 - before.1, now.2 - before.2);
+                if lost_now + late_now >= 3 {
+                    vi_translator_core::vlog!("[jank] last second: {} pictures, lost on the network {lost_now}, too late to decode {late_now} ({})", now.0 - before.0, st.decoder.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+                }
                 before = now;
                 while window.len() > 10 {
                     window.pop_front();

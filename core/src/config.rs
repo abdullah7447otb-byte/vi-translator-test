@@ -357,6 +357,10 @@ pub struct Config {
     /// How the phone's Arabic is shown: "panel" (a steady panel beside the phone: the contact's picture and
     /// name, the messages as bubbles), "inplace" (on the game's phone, following it), or "both".
     pub phone_display: String,
+    /// The check mode: each reading area drawn on the preview with what it read and why text was left out.
+    /// Off by default and whenever the app starts (it is for looking into a problem).
+    #[serde(skip)]
+    pub check_mode: bool,
     /// macOS: the player was told once that the bare program can't reach the home network (main.rs)
     pub bare_mac_noticed: bool,
     /// Threads of the free offline translator (0: as many as suit this computer: 2 on 8 cores or
@@ -881,6 +885,7 @@ impl Default for Config {
             character: "jason".into(),
             shared_memory: false,
             phone_display: "panel".into(),
+            check_mode: false,
             picture: serde_json::Value::Null,
             snap_service: String::new(),
             snap_azure_endpoint: String::new(),
