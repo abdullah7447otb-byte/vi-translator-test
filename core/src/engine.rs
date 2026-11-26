@@ -540,7 +540,10 @@ fn present_loop(sink: Arc<dyn Sink>, rx: &mpsc::Receiver<PMsg>, live: Arc<Live>)
                         events.insert((ev.area.clone(), seq), ev);
                     }
                 }
-                PMsg::Ended { area, seq, at } => p.ended(&area, seq, at),
+                PMsg::Ended { area, seq, at } => {
+                    crate::watchdog::dropped(&area, seq);
+                    p.ended(&area, seq, at)
+                }
                 PMsg::ClearAll { upto } => {
                     events.clear();
                     let areas: Vec<String> = live.covers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).keys().cloned().collect();
@@ -555,6 +558,7 @@ fn present_loop(sink: Arc<dyn Sink>, rx: &mpsc::Receiver<PMsg>, live: Arc<Live>)
         for act in acts {
             match act {
                 Act::Show { area, seq } => {
+                    crate::watchdog::shown(&area);
                     if let Some(ev) = events.remove(&(area.clone(), seq)) {
                         // (the text seen there is this line, or one before it: its translation is up now)
                         let cover_seq = live.covers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&area).map(|c| c["seq"].as_u64().unwrap_or(0));
@@ -844,6 +848,7 @@ pub fn start(ctx: Context) -> Reader {
     {
         let (c, l, p) = (ctx.clone(), latest.clone(), ptx.clone());
         crate::log::spawn_supervised("translate", move || translate_loop(c.clone(), l.clone(), &rx, p.clone()));
+        crate::watchdog::start();
     }
     Reader { state: Some(ReadState::new(&ctx.paths)), ctx, latest, jobs: tx, present: ptx }
 }
@@ -2206,6 +2211,7 @@ impl Reader {
                             _ => (text_box, game_box),
                         };
                         st.line_boxes = Some((text_box, game_box));
+                        crate::watchdog::asked(&area.id, seq_counter);
                         let _ = jobs.send(Job { area: area.id.clone(), seq: seq_counter, en, phrases, icons, line_h, en_start, text_box, game_box, parts, context: None });
                     }
                 } else if !st.current.is_empty()
@@ -2378,6 +2384,7 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
         // Text that was already replaced on screen while we were busy: later. (Pause-menu lines
         // aren't an area: each is translated once and kept, so never skip those.)
         if !later && job.area != MENU_TEXT && latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&job.area).copied() != Some(job.seq) {
+            crate::watchdog::dropped(&job.area, job.seq);
             if job.area != SCREEN_REASON {
                 later_q.push_back(job);
                 if later_q.len() > LATER {
@@ -2531,6 +2538,7 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
         } else {
             // (stacked lines: the new block replaces the one up at once)
             let now = c.fx(&ev.area).stacks(&ev.area);
+            crate::watchdog::ready(&ev.area);
             let _ = present.send(PMsg::Ready { seq, en_start, ev, now });
         }
     }
