@@ -2165,21 +2165,43 @@ $("clear-log").addEventListener("click", () => ($("log").innerHTML = ""));
 // ---- Picture controls: what the app's picture looks like (never what is read: the frames the text is
 // read from don't pass through here). Per source; presets for dark scenes and a livelier picture.
 const PICTURE_PRESETS = {
-  default: { bright: 0, contrast: 1, gamma: 1, shadows: 0, sat: 1, sharp: 0 },
-  dark: { bright: 0.02, contrast: 1, gamma: 1.25, shadows: 0.6, sat: 1.05, sharp: 0.3 },
-  vivid: { bright: 0, contrast: 1.12, gamma: 1, shadows: 0.1, sat: 1.3, sharp: 0.35 },
+  default: { bright: 0, contrast: 1, gamma: 1, shadows: 0, sat: 1, sharp: 0, deband: 0.4, local: 0, auto_night: true },
+  dark: { bright: 0.02, contrast: 1, gamma: 1.25, shadows: 0.6, sat: 1.05, sharp: 0.3, deband: 0.7, local: 0.4, auto_night: false },
+  vivid: { bright: 0, contrast: 1.12, gamma: 1, shadows: 0.1, sat: 1.3, sharp: 0.35, deband: 0.4, local: 0, auto_night: true },
 };
-const PICTURE_UNIFORMS = ["pSize", "pBright", "pContrast", "pGamma", "pShadows", "pSat", "pSharp"];
+const PICTURE_UNIFORMS = ["pSize", "pBright", "pContrast", "pGamma", "pShadows", "pSat", "pSharp", "pDeband", "pLocal", "pFrame"];
 // (after a shader's own `vec3 rgbAt(ivec2 p)`: contrast-adaptive sharpening as AMD's FidelityFX CAS
 // does it, from the four neighbours, then brightness, contrast, shadow lift, gamma and saturation)
 const PICTURE_GLSL = `
     uniform ivec2 pSize;
-    uniform float pBright, pContrast, pGamma, pShadows, pSat, pSharp;
+    uniform float pBright, pContrast, pGamma, pShadows, pSat, pSharp, pDeband, pLocal, pFrame;
     out vec4 color;
     vec3 at(ivec2 p) { return rgbAt(clamp(p, ivec2(0), pSize - 1)); }
+    float hash(vec2 q) { return fract(sin(dot(q, vec2(12.9898, 78.233))) * 43758.5453); }
+    float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
     void main() {
       ivec2 p = ivec2(gl_FragCoord.xy);
       vec3 c = at(p);
+      // deband: four points around at a random distance; where they all differ from this one by less than a
+      // step or two of the video's levels (a band's edge in a smooth sky or shadow), it takes their average.
+      // A real edge differs more, and stays.
+      if (pDeband > 0.0) {
+        float a = hash(vec2(p) + pFrame) * 6.2832;
+        float r = 4.0 + 12.0 * hash(vec2(p.yx) + 17.0 + pFrame);
+        ivec2 o1 = ivec2(cos(a) * r, sin(a) * r), o2 = ivec2(-sin(a) * r, cos(a) * r);
+        vec3 s1 = at(p + o1), s2 = at(p - o1), s3 = at(p + o2), s4 = at(p - o2);
+        vec3 avg = (s1 + s2 + s3 + s4) * 0.25;
+        float thr = mix(1.5, 4.0, pDeband) / 255.0;
+        vec3 d = max(max(abs(s1 - c), abs(s2 - c)), max(abs(s3 - c), abs(s4 - c)));
+        if (max(d.r, max(d.g, d.b)) < thr) c = avg;
+      }
+      // local contrast in the dark: a pixel lifted from the area round it (faces, streets at night), the bright
+      // parts left alone
+      if (pLocal > 0.0) {
+        vec3 b = (at(p + ivec2(24, 0)) + at(p - ivec2(24, 0)) + at(p + ivec2(0, 24)) + at(p - ivec2(0, 24))) * 0.25;
+        float dark = 1.0 - smoothstep(0.15, 0.45, luma(b));
+        c = clamp(c + (c - b) * 0.6 * pLocal * dark, 0.0, 1.0);
+      }
       if (pSharp > 0.0) {
         vec3 a = at(p + ivec2(0, 1)), b = at(p + ivec2(-1, 0)), d = at(p + ivec2(1, 0)), e = at(p + ivec2(0, -1));
         vec3 mn = min(c, min(min(a, b), min(d, e))), mx = max(c, max(max(a, b), max(d, e)));
@@ -2195,8 +2217,56 @@ const PICTURE_GLSL = `
       c = pow(c, vec3(1.0 / pGamma));
       float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
       c = mix(vec3(l), c, pSat);
+      // dither: less than a level's step of noise before the screen's 8 bits, so lifted shadows show no new bands
+      c += (hash(vec2(p) * 0.37 + pFrame * 0.61) - 0.5) / 255.0;
       color = vec4(clamp(c, 0.0, 1.0), 1.0);
     }`;
+// The PS5's levels and what the picture is doing, measured on its luma (a sparse sample of each frame, so
+// it costs nothing): the black level (the stream's studio range once over: black at 16; or twice over:
+// black at ~30, white at ~218 — what the PS5's Remote Play sends; told by the darkest shades seen over
+// the last seconds, with a margin either way so it doesn't flip), the mean brightness (for auto night),
+// and the change from the frame before (motion, for the sharpening).
+const LEVELS = { double: true, lows: [], mean: 0.5, motion: 0, prev: null, night: 0, at: 0 };
+const DOUBLE = { black: 16 + (16 * 219) / 255, white: 16 + (235 * 219) / 255, cMul: (255 / 219) * (255 / 224) };
+const SINGLE = { black: 16, white: 235, cMul: 255 / 224 };
+function pictureLevels(Y, w, h) {
+  const step = 61, n = Math.floor((w * h) / step);
+  const now = performance.now();
+  if (n > 0) {
+    const sample = new Uint8Array(n);
+    for (let i = 0, j = 0; i < n; i++, j += step) sample[i] = Y[j];
+    let motion = 0;
+    if (LEVELS.prev && LEVELS.prev.length === n) {
+      for (let i = 0; i < n; i += 4) motion += Math.abs(sample[i] - LEVELS.prev[i]);
+      motion /= n / 4;
+    }
+    LEVELS.prev = sample;
+    LEVELS.motion = LEVELS.motion * 0.8 + motion * 0.2;
+    const sorted = sample.slice().sort();
+    const low = sorted[Math.floor(n * 0.002)];
+    let sum = 0;
+    for (let i = 0; i < n; i += 8) sum += sample[i];
+    const lv = LEVELS.double ? DOUBLE : SINGLE;
+    const mean = Math.min(1, Math.max(0, (sum / (n / 8) - lv.black) / (lv.white - lv.black)));
+    LEVELS.mean = LEVELS.mean * 0.95 + mean * 0.05;
+    // the darkest shade seen, over the last ten seconds
+    LEVELS.lows.push([now, low]);
+    while (LEVELS.lows.length && now - LEVELS.lows[0][0] > 10000) LEVELS.lows.shift();
+    const darkest = Math.min(...LEVELS.lows.map((l) => l[1]));
+    // (studio range once over: blacks reach below 20; twice over they never go under ~28)
+    if (LEVELS.lows.length > 30) {
+      if (LEVELS.double && darkest <= 19) LEVELS.double = false;
+      else if (!LEVELS.double && darkest >= 26) LEVELS.double = true;
+    }
+    // auto night: eased in over about a second when the picture stays dark, out when it's bright again
+    const dt = LEVELS.at ? Math.min(0.2, (now - LEVELS.at) / 1000) : 0;
+    const target = LEVELS.mean < 0.16 ? 1 : LEVELS.mean > 0.24 ? 0 : LEVELS.night;
+    LEVELS.night += Math.sign(target - LEVELS.night) * Math.min(Math.abs(target - LEVELS.night), dt);
+  }
+  LEVELS.at = now;
+  return LEVELS.double ? DOUBLE : SINGLE;
+}
+
 let pictureCompare = false; // "hold to compare": the picture as it comes, while held
 // the picture's delay: "smooth" (two frames may wait: network jitter doesn't show) or "low" (one)
 const pictureSmooth = () => { try { return localStorage.getItem("picture-delay") !== "low"; } catch { return true; } };
@@ -2207,15 +2277,24 @@ function pictureNow() {
 }
 function pictureUniforms(gl, u, w, h) {
   const p = pictureNow();
+  // auto night (on unless turned off; not while comparing): shadows lifted, a little more gamma, local
+  // contrast and debanding, eased in and out with the scene
+  const night = !pictureCompare && p.auto_night !== false ? LEVELS.night : 0;
+  // sharpening lighter while the picture moves fast (no shimmer), full on a still one
+  const motion = Math.min(1, LEVELS.motion / 14);
   gl.uniform2i(u.pSize, w, h);
   gl.uniform1f(u.pBright, p.bright);
   gl.uniform1f(u.pContrast, p.contrast);
-  gl.uniform1f(u.pGamma, Math.max(0.2, p.gamma));
-  gl.uniform1f(u.pShadows, Math.max(0, p.shadows));
+  gl.uniform1f(u.pGamma, Math.max(0.2, p.gamma * (1 + 0.18 * night)));
+  gl.uniform1f(u.pShadows, Math.max(0, p.shadows + 0.45 * night));
   gl.uniform1f(u.pSat, p.sat);
-  gl.uniform1f(u.pSharp, p.sharp);
+  gl.uniform1f(u.pSharp, p.sharp * (1 - 0.6 * motion));
+  gl.uniform1f(u.pDeband, pictureCompare ? 0 : Math.min(1, (p.deband ?? 0.4) + 0.4 * night));
+  gl.uniform1f(u.pLocal, pictureCompare ? 0 : Math.min(1, (p.local ?? 0) + 0.5 * night));
+  gl.uniform1f(u.pFrame, (PIC_FRAME = (PIC_FRAME + 1) % 64));
   pictureImg(p);
 }
+let PIC_FRAME = 0;
 // a window's JPEG picture: the closest CSS filters (no sharpening there)
 function pictureImg(p = pictureNow()) {
   const plain = p.bright === 0 && p.contrast === 1 && p.gamma === 1 && p.shadows === 0 && p.sat === 1;
@@ -2237,10 +2316,12 @@ function renderPicture() {
   };
   const presets = [["default", t("Default")], ["dark", t("Dark scenes")], ["vivid", t("Vivid")], ["custom", t("Custom")]];
   const sliders = [["bright", t("Brightness"), -0.3, 0.3, 0.01], ["contrast", t("Contrast"), 0.5, 1.5, 0.01], ["gamma", t("Gamma"), 0.6, 1.8, 0.01],
-    ["shadows", t("Shadow lift"), 0, 1.5, 0.05], ["sat", t("Saturation"), 0, 2, 0.01], ["sharp", t("Sharpness"), 0, 1, 0.05]];
+    ["shadows", t("Shadow lift"), 0, 1.5, 0.05], ["sat", t("Saturation"), 0, 2, 0.01], ["sharp", t("Sharpness"), 0, 1, 0.05],
+    ["deband", t("Smooth banding"), 0, 1, 0.05], ["local", t("Detail in the dark"), 0, 1, 0.05]];
   panel.innerHTML = `<div class="pic-head"><b>${AS.esc(t("Picture"))}</b>
       <select id="pic-preset">${presets.map(([v, l]) => `<option value="${v}" ${(saved.preset || "default") === v ? "selected" : ""}>${AS.esc(l)}</option>`).join("")}</select></div>
     ${sliders.map(([k, l, mn, mx, st]) => `<label class="pic-row"><span>${AS.esc(l)}</span><input type="range" data-k="${k}" min="${mn}" max="${mx}" step="${st}" value="${cur[k]}"/><span class="v">${(+cur[k]).toFixed(2)}</span></label>`).join("")}
+    <label class="check"><input type="checkbox" id="pic-night" ${cur.auto_night !== false ? "checked" : ""}/> ${AS.esc(t("Night by itself (lifts dark scenes as they come)"))}</label>
     <label class="pic-row"><span>${AS.esc(t("Delay"))}</span><select id="pic-delay" style="grid-column: span 2">
       <option value="smooth" ${pictureSmooth() ? "selected" : ""}>${AS.esc(t("Smooth (a frame later, no stutter)"))}</option>
       <option value="low" ${pictureSmooth() ? "" : "selected"}>${AS.esc(t("Lowest delay"))}</option></select></label>
@@ -2255,12 +2336,19 @@ function renderPicture() {
     r.addEventListener("input", () => {
       const v = { ...cur, preset: "custom" };
       for (const x of panel.querySelectorAll("input[type=range]")) v[x.dataset.k] = +x.value;
+      v.auto_night = panel.querySelector("#pic-night").checked;
       r.nextElementSibling.textContent = (+r.value).toFixed(2);
       panel.querySelector("#pic-preset").value = "custom";
       Object.assign(cur, v);
       keep(v);
     });
   }
+  panel.querySelector("#pic-night").addEventListener("change", (e) => {
+    const v = { ...cur, preset: "custom", auto_night: e.target.checked };
+    Object.assign(cur, v);
+    panel.querySelector("#pic-preset").value = "custom";
+    keep(v);
+  });
   panel.querySelector("#pic-delay").addEventListener("change", (e) => { try { localStorage.setItem("picture-delay", e.target.value); } catch {} });
   const cmp = panel.querySelector("#pic-compare");
   const hold = (on) => { pictureCompare = on; pictureImg(); };
@@ -2432,19 +2520,15 @@ function i420Init() {
   gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, `#version 300 es
     precision highp float;
     uniform highp sampler2D ty, tu, tv;
-    uniform int height, stretch;
+    uniform int height;
+    // the levels: black and white of the luma as sent, and the chroma's scale (all in float: no step in
+    // between rounds the levels, so dark gradients keep every shade they came with)
     uniform float yOff, yScale, cScale, kr, kgu, kgv, kb;
     vec3 rgbAt(ivec2 p) {
       int row = height - 1 - p.y;
       float Y = texelFetch(ty, ivec2(p.x, row), 0).r * 255.0;
       float U = texelFetch(tu, ivec2(p.x >> 1, row >> 1), 0).r * 255.0;
       float V = texelFetch(tv, ivec2(p.x >> 1, row >> 1), 0).r * 255.0;
-      Y = floor(Y + 0.5); U = floor(U + 0.5); V = floor(V + 0.5);
-      if (stretch == 1) {
-        Y = clamp(trunc(((Y - 16.0) * 255.0 + 109.0) / 219.0), 0.0, 255.0);
-        U = clamp(128.0 + trunc((U - 128.0) * 255.0 / 219.0), 0.0, 255.0);
-        V = clamp(128.0 + trunc((V - 128.0) * 255.0 / 219.0), 0.0, 255.0);
-      }
       float y = (Y - yOff) * yScale;
       float u = (U - 128.0) * cScale, v = (V - 128.0) * cScale;
       return clamp(vec3(y + kr * v, y - kgu * u - kgv * v, y + kb * u) / 255.0, 0.0, 1.0);
@@ -2452,7 +2536,7 @@ function i420Init() {
     ${PICTURE_GLSL}`));
   gl.linkProgram(prog);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-  for (const n of ["ty", "tu", "tv", "height", "stretch", "yOff", "yScale", "cScale", "kr", "kgu", "kgv", "kb", ...PICTURE_UNIFORMS]) I420.u[n] = gl.getUniformLocation(prog, n);
+  for (const n of ["ty", "tu", "tv", "height", "yOff", "yScale", "cScale", "kr", "kgu", "kgv", "kb", ...PICTURE_UNIFORMS]) I420.u[n] = gl.getUniformLocation(prog, n);
   I420.tex = [0, 1, 2].map(() => {
     const t = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, t);
@@ -2493,10 +2577,13 @@ function i420Draw(data, w, h, bt709, fullRange, stretch) {
   gl.uniform1i(u.tu, 1);
   gl.uniform1i(u.tv, 2);
   gl.uniform1i(u.height, h);
-  gl.uniform1i(u.stretch, stretch ? 1 : 0);
-  gl.uniform1f(u.yOff, fullRange ? 0 : 16);
-  gl.uniform1f(u.yScale, fullRange ? 1 : 255 / 219);
-  gl.uniform1f(u.cScale, fullRange ? 1 : 255 / 224);
+  // (the PS5's picture, "stretch": its levels as measured — studio range once or twice over, see
+  // pictureLevels; else as the frame says)
+  const lv = stretch ? pictureLevels(planes[0][0], w, h) : null;
+  const [black, white, cMul] = lv ? [lv.black, lv.white, lv.cMul] : fullRange ? [0, 255, 1] : [16, 235, 255 / 224];
+  gl.uniform1f(u.yOff, black);
+  gl.uniform1f(u.yScale, 255 / (white - black));
+  gl.uniform1f(u.cScale, cMul);
   for (const [n, v] of [["kr", kr], ["kgu", kgu], ["kgv", kgv], ["kb", kb]]) gl.uniform1f(u[n], v);
   pictureUniforms(gl, u, w, h);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
