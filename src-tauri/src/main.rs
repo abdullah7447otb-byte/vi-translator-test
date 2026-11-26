@@ -125,6 +125,15 @@ fn pictures_dir() -> Option<PathBuf> {
     return dirs::picture_dir();
 }
 
+/// The user's Desktop folder, or their home folder (for reports and subtitle files).
+fn desktop_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    return known_folder(&windows::Win32::UI::Shell::FOLDERID_Desktop)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from));
+    #[cfg(not(windows))]
+    return dirs::desktop_dir().or_else(dirs::home_dir);
+}
+
 /// The user's Documents folder.
 fn documents_dir() -> Option<PathBuf> {
     #[cfg(windows)]
@@ -1189,7 +1198,7 @@ fn export_srt(webview: tauri::Webview, state: tauri::State<AppState>, both: bool
         return Err("no lines yet".into());
     }
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let path = dirs::desktop_dir().or_else(dirs::home_dir).unwrap_or_else(data_dir).join(format!("Barqawi subtitles {stamp}.srt"));
+    let path = desktop_dir().unwrap_or_else(data_dir).join(format!("Barqawi subtitles {stamp}.srt"));
     std::fs::write(&path, text).map_err(|e| e.to_string())?;
     Ok(path.display().to_string())
 }
@@ -1217,7 +1226,7 @@ fn area_debug(state: tauri::State<AppState>) -> serde_json::Value {
 fn check_report(webview: tauri::Webview, state: tauri::State<AppState>) -> Result<String, String> {
     main_only(&webview)?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let base = dirs::desktop_dir().or_else(dirs::home_dir).unwrap_or_else(data_dir);
+    let base = desktop_dir().unwrap_or_else(data_dir);
     let dir = base.join(format!("Barqawi check report {stamp}"));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).redacted();
