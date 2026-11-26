@@ -93,6 +93,9 @@
           <!-- Play: how the picture looks (brightness, dark scenes, sharpness) -->
           <button id="pic-btn" class="fs-btn pic-btn" data-i18n-title title="Picture"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v16"/><path d="M12 4a8 8 0 0 1 0 16"/></svg></button>
           <div id="pic-panel" class="pic-panel" hidden></div>
+          <!-- Play: correct one of the last lines (into the memory as yours) -->
+          <button id="fix-btn" class="fs-btn fix-btn" data-i18n-title title="Correct a translation"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4Z"/><path d="M13.5 6.5l4 4"/></svg></button>
+          <div id="fix-panel" class="pic-panel fix-panel" hidden></div>
           <!-- Play: the preview full screen (and back) -->
           <button id="fullscreen" class="fs-btn" data-i18n-title title="Full screen">
             <svg class="fs-on" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
@@ -281,6 +284,10 @@
           <div id="engines" class="engines"></div>
           <div id="engine-fields"></div>
           <p class="muted small" data-i18n>Keys are saved only on this PC, in the app's settings file.</p>
+
+          <h3 data-i18n>The character you play</h3>
+          <p class="muted small" data-i18n>The game's instructions speak to you: Press becomes اضغطي when you play Lucia. Switch it here or with the shortcut when the game switches.</p>
+          <div class="field"><select id="character"><option value="jason" data-i18n>Jason</option><option value="lucia" data-i18n>Lucia</option></select></div>
 
           <h3 data-i18n>Glossary (offline translator, Arabic)</h3>
           <p class="muted small" data-i18n>Your own words for the free offline translator, one a line as English = Arabic (Wasted = خلصت عليك). They come before the built-in ones.</p>

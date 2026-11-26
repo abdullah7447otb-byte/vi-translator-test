@@ -136,10 +136,32 @@ fn documents_dir() -> Option<PathBuf> {
 /// Translation memory and lines log: Documents\VI Translator\translation-db (not AppData, which
 /// Windows may redirect into a private copy).
 fn db_dir() -> PathBuf {
+    // (the Mac, shared between the Mac's users — two players on one Mac learn the same lines and
+    // corrections: /Users/Shared, writable by everyone; set from the settings at start)
+    #[cfg(target_os = "macos")]
+    if SHARED_DB.load(std::sync::atomic::Ordering::Relaxed) {
+        let d = PathBuf::from("/Users/Shared/Barqawi/translation-db");
+        if std::fs::create_dir_all(&d).is_ok() {
+            use std::os::unix::fs::PermissionsExt;
+            for p in [d.parent().map(PathBuf::from), Some(d.clone())].into_iter().flatten() {
+                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o777));
+            }
+            // (its files writable by the other users too: theirs append to them)
+            if let Ok(files) = std::fs::read_dir(&d) {
+                for f in files.flatten() {
+                    let _ = std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o666));
+                }
+            }
+            return d;
+        }
+    }
     documents_dir()
         .map(|p| p.join(FOLDER).join("translation-db"))
         .unwrap_or_else(|| data_dir().join("translation-db"))
 }
+
+/// The translation memory in /Users/Shared (the setting, read at start: see `db_dir`).
+static SHARED_DB: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(windows)]
 fn known_folder(id: &windows::core::GUID) -> Option<PathBuf> {
@@ -208,6 +230,26 @@ fn memory_probe(state: tauri::State<AppState>, line: String) -> serde_json::Valu
 fn memory_line(state: tauri::State<AppState>, line: String) -> Option<String> {
     let m = state.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     m.get(&line, &[], &[]).map(|(segs, _)| segs.iter().map(|s| s.0.as_str()).collect::<String>().trim().to_string())
+}
+
+/// The last lines translated (newest last), for "Correct a line" on the Mac: id, area, English, Arabic.
+#[tauri::command]
+fn recent_lines(state: tauri::State<AppState>) -> Vec<serde_json::Value> {
+    let log = state.shared.live.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    log.iter().rev().take(5).rev().map(|l| serde_json::json!({ "id": l["id"], "area": l["area"], "en": l["en"], "ar": l["text"] })).collect()
+}
+
+/// A line corrected on the Mac: into the memory as the player's (trusted: reviewed-only areas take it), in the
+/// list, and on screen at once.
+#[tauri::command]
+fn correct_line(app: AppHandle, webview: tauri::Webview, state: tauri::State<AppState>, id: u64, ar: String) -> Result<bool, String> {
+    main_only(&webview)?;
+    let ar = ar.trim();
+    if ar.is_empty() || ar.chars().count() > 500 {
+        return Err("empty or too long".into());
+    }
+    let sink = TauriSink(app);
+    Ok(vi_translator_core::lan_page::correct_line(&state.cfg, &state.shared.live, &sink, Some(&state.memory), id, ar).is_some())
 }
 
 #[tauri::command]
@@ -2120,6 +2162,7 @@ fn main() {
     if loaded.engine == "apple" {
         apple_warm_up(loaded.target_lang.clone());
     }
+    SHARED_DB.store(loaded.shared_memory, std::sync::atomic::Ordering::Relaxed);
     let cfg = Arc::new(Mutex::new(loaded));
     let saver = Arc::new(debug_frames::SaverState::default());
     let memory = Arc::new(Mutex::new(memory::Memory::load(db_dir(), &cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).target_lang)));
@@ -2131,7 +2174,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(hotkey::plugin())
         .manage(AppState { cfg: cfg.clone(), shared: shared.clone(), saver: saver.clone(), memory: memory.clone(), update: update.clone() })
-        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, test_llm_server, apple_status, open_translation_settings, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_decode, ps5_set_hevc, ps5_set_read_only, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin])
+        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, recent_lines, correct_line, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, test_llm_server, apple_status, open_translation_settings, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_decode, ps5_set_hevc, ps5_set_read_only, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin])
         .setup(move |app| {
             if let Some(w) = app.get_webview_window("main") {
                 let test = if updater::TEST_BUILD { " (test build · updates off)" } else { "" };

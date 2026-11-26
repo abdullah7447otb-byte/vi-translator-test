@@ -348,6 +348,12 @@ pub struct Config {
     /// The player's own glossary for the free offline translator into Arabic: "English = Arabic"
     /// lines (core/src/glossary.rs), before the built-in ones.
     pub glossary: String,
+    /// The character played in GTA VI ("jason" or "lucia"): the instructions speak to Lucia in the feminine
+    /// (core/src/gender.rs).
+    pub character: String,
+    /// The Mac: the translation memory and corrections kept in /Users/Shared, the same for every user of
+    /// this Mac (takes effect when the app starts again).
+    pub shared_memory: bool,
     /// macOS: the player was told once that the bare program can't reach the home network (main.rs)
     pub bare_mac_noticed: bool,
     /// Threads of the free offline translator (0: as many as suit this computer: 2 on 8 cores or
@@ -869,6 +875,8 @@ impl Default for Config {
             ort_threads: 0,
             bare_mac_noticed: false,
             glossary: String::new(),
+            character: "jason".into(),
+            shared_memory: false,
             picture: serde_json::Value::Null,
             snap_service: String::new(),
             snap_azure_endpoint: String::new(),

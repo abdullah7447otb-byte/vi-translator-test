@@ -247,6 +247,12 @@ body.no-fps .fps-badge { display: none !important; }
 .fs-btn.snap-btn { right: 56px; }
 /* Play: the Picture button, left of the snapshot one, and its panel above them */
 .fs-btn.pic-btn { right: 102px; }
+.fs-btn.fix-btn { right: 148px; }
+.fix-panel { width: 360px; }
+.fix-line { display: grid; gap: 4px; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,.08); }
+.fix-line .en { font-size: 12px; opacity: .7; direction: ltr; text-align: left; }
+.fix-line textarea { width: 100%; box-sizing: border-box; min-height: 38px; resize: vertical; }
+.fix-line .row { display: flex; gap: 6px; justify-content: flex-end; }
 .pic-btn svg path:last-child { fill: currentColor; }
 .pic-panel { position: absolute; right: 10px; bottom: 56px; z-index: 7; width: 300px; box-sizing: border-box; overflow-x: hidden; padding: 12px; border-radius: 12px;
   background: rgba(20, 14, 32, .98); color: #f1ebf8; display: grid; gap: 8px; font-size: 13px; box-shadow: 0 8px 28px rgba(0, 0, 0, .45); }

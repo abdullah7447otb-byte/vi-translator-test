@@ -1644,6 +1644,12 @@ function renderGlossary() {
   if (document.activeElement !== g) g.value = cfg.glossary || "";
 }
 $("glossary").addEventListener("input", (e) => { cfg.glossary = e.target.value; save(false); });
+// The character played: the instructions' Arabic speaks to Lucia in the feminine (core/src/gender.rs).
+function renderCharacter() {
+  const c = $("character");
+  if (c && cfg) c.value = cfg.character === "lucia" ? "lucia" : "jason";
+}
+$("character")?.addEventListener("change", (e) => { cfg.character = e.target.value; save(false); });
 
 function renderTiming() {
   const form = $("timing-form");
@@ -1728,7 +1734,10 @@ function renderMemory() {
   $("memory-form").innerHTML = `
     <div class="callout" id="mem-stats" style="margin:0"></div>
     <div class="row"><button class="btn danger wide" id="mem-clear">${t("Clear memory")}</button></div>
+    ${/Mac/.test(navigator.platform) ? `<label class="check"><input type="checkbox" id="mem-shared" ${cfg.shared_memory ? "checked" : ""}/> ${AS.esc(t("Share the memory and corrections with this Mac's other users"))}</label>
+    <p class="muted small">${AS.esc(t("Kept in the Mac's shared folder, so two players on this Mac learn the same lines. Takes effect when the app starts again."))}</p>` : ""}
 `;
+  $("mem-shared")?.addEventListener("change", (e) => { cfg.shared_memory = e.target.checked; save(false); });
   $("mem-clear").addEventListener("click", async () => {
     if (!(await ask(t("Forget all remembered translations?"), t("Clear memory")))) return;
     await invoke("memory_clear");
@@ -2260,6 +2269,52 @@ $("pic-btn").addEventListener("click", () => {
   panel.hidden = !panel.hidden;
   if (!panel.hidden) { renderPicture(); placePicture(); }
 });
+// "Correct a translation" (Play): the last five lines, each one's Arabic to fix; saved as the player's own, it
+// is used from then on (and the instructions, which take reviewed lines only, take it too). Ctrl/⌘+Shift+E.
+async function renderFix() {
+  const panel = $("fix-panel");
+  const lines = await invoke("recent_lines").catch(() => []);
+  panel.innerHTML = `<div class="pic-head"><b>${AS.esc(t("Correct a translation"))}</b></div>`;
+  if (!lines.length) {
+    panel.insertAdjacentHTML("beforeend", `<p class="muted small">${AS.esc(t("No lines translated yet."))}</p>`);
+  }
+  for (const l of lines.slice().reverse()) {
+    const row = el("div", { class: "fix-line" },
+      el("div", { class: "en" }, String(l.en || "")));
+    const ta = el("textarea", { dir: "rtl" });
+    ta.value = String(l.ar || "");
+    const ok = el("button", { class: "btn", type: "button" }, t("Save"));
+    const note = el("span", { class: "muted small" });
+    ok.addEventListener("click", async () => {
+      const done = await invoke("correct_line", { id: l.id, ar: ta.value }).catch(() => false);
+      note.textContent = done ? t("Saved: used from now on") : t("This line is gone from the list");
+    });
+    row.append(ta, el("div", { class: "row" }, note, ok));
+    panel.append(row);
+  }
+  placeFix();
+}
+function placeFix() {
+  const panel = $("fix-panel");
+  if (panel.hidden) return;
+  const b = $("fix-btn").getBoundingClientRect();
+  Object.assign(panel.style, { position: "fixed", right: "auto", bottom: "auto", maxHeight: `${innerHeight - 16}px`, overflowY: "auto" });
+  const w = panel.offsetWidth, h = panel.offsetHeight;
+  let top = b.top - h - 8;
+  if (top < 8) top = Math.max(8, Math.min(b.bottom + 8, innerHeight - h - 8));
+  Object.assign(panel.style, { top: `${top}px`, left: `${Math.max(8, Math.min(b.right - w, innerWidth - w - 8))}px` });
+}
+function toggleFix() {
+  const panel = $("fix-panel");
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) renderFix();
+}
+$("fix-btn").addEventListener("click", toggleFix);
+addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === "KeyE") { e.preventDefault(); toggleFix(); }
+});
+addEventListener("resize", placeFix);
+
 // The panel is placed by the button on the screen itself, not inside the preview: in Play the preview
 // can be small, and its frame would cut the panel off.
 function placePicture() {
@@ -2999,6 +3054,7 @@ function lockControls() {
   renderAreas();
   renderTiming();
   renderGlossary();
+  renderCharacter();
   renderPreviewForm();
   renderMemory();
   renderDebug();

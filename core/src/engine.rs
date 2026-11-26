@@ -2571,6 +2571,11 @@ fn translate_loop(ctx: Context, latest: Arc<Mutex<HashMap<String, u64>>>, jobs: 
             continue;
         }
         let (seq, en_start) = (job.seq, job.en_start);
+        // (the instructions speak to the player: to Lucia in the feminine, when she's the one played)
+        let result = match result {
+            Ok(segs) if c.character == "lucia" && c.target_lang == "ar" && crate::gender::speaks_to_player(&job.area) => Ok(segs.into_iter().map(|(t, col)| (crate::gender::feminine(&t), col)).collect()),
+            r => r,
+        };
         let ev = match result {
             Ok(segments) => TranslationEvent {
                 area: job.area,

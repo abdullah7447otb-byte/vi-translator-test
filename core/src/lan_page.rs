@@ -57,47 +57,9 @@ pub fn info(c: &Config, live: &Live) -> LanInfo {
 }
 
 impl LivePage {
-    /// The line `id` of the list is `ar`: into the memory as the player's, in the list, and on screen
-    /// if it's still up there. The line as the list now has it (None: no such line any more).
+    /// The line `id` of the list is `ar` (see `correct_line`).
     fn correct(&self, id: u64, ar: &str) -> Option<serde_json::Value> {
-        let (area, en) = {
-            let log = self.live.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let l = log.iter().find(|l| l["id"].as_u64() == Some(id))?;
-            (l["area"].as_str()?.to_string(), l["en"].as_str()?.to_string())
-        };
-        let segs = corrected_segments(ar);
-        if let Some(m) = &self.memory {
-            let lang = self.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).target_lang.clone();
-            let mut m = m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if m.lang() == lang {
-                m.put(&en, &segs, "player");
-            }
-        }
-        crate::vlog!("[lan] corrected: {en:?} -> {ar:?}");
-        // the list: this line, and any other line of the same English
-        let mut out = None;
-        for l in self.live.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter_mut() {
-            if l["en"].as_str() == Some(en.as_str()) {
-                l["text"] = serde_json::json!(ar);
-                l["segs"] = serde_json::json!([[ar, null]]);
-                l["corrected"] = serde_json::json!(true);
-                if l["id"].as_u64() == Some(id) {
-                    out = Some(l.clone());
-                }
-            }
-        }
-        // on screen now: shown corrected at once (the overlays, the TV and OBS pages)
-        let shown = {
-            let mut shown = self.live.shown.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            shown.get_mut(&area).filter(|ev| ev["en"].as_str() == Some(en.as_str())).map(|ev| {
-                ev["segments"] = serde_json::json!([[ar, null]]);
-                ev.clone()
-            })
-        };
-        if let Some(ev) = shown {
-            self.sink.emit("translation", ev);
-        }
-        out
+        correct_line(&self.cfg, &self.live, &*self.sink, self.memory.as_ref(), id, ar)
     }
 
     /// The page's routes (after the host check, and the TV routes). `serve` answers with one of the
@@ -356,6 +318,50 @@ pub fn chat_view(phone: &serde_json::Value) -> serde_json::Value {
     }
     items.sort_by(|a, b| a.0.total_cmp(&b.0));
     serde_json::json!({ "title": title, "list": phone["list"].as_bool() == Some(true), "items": items.into_iter().map(|(_, v)| v).collect::<Vec<_>>() })
+}
+
+
+/// The line `id` of the live list is `ar`: into the memory as the player's, in the list, and on screen
+/// if it's still up there. The line as the list now has it (None: no such line any more).
+pub fn correct_line(cfg: &Mutex<Config>, live: &Live, sink: &dyn Sink, memory: Option<&Arc<Mutex<crate::memory::Memory>>>, id: u64, ar: &str) -> Option<serde_json::Value> {
+    let (area, en) = {
+        let log = live.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let l = log.iter().find(|l| l["id"].as_u64() == Some(id))?;
+        (l["area"].as_str()?.to_string(), l["en"].as_str()?.to_string())
+    };
+    let segs = corrected_segments(ar);
+    if let Some(m) = memory {
+        let lang = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).target_lang.clone();
+        let mut m = m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if m.lang() == lang {
+            m.put(&en, &segs, "player");
+        }
+    }
+    crate::vlog!("[lan] corrected: {en:?} -> {ar:?}");
+    // the list: this line, and any other line of the same English
+    let mut out = None;
+    for l in live.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter_mut() {
+        if l["en"].as_str() == Some(en.as_str()) {
+            l["text"] = serde_json::json!(ar);
+            l["segs"] = serde_json::json!([[ar, null]]);
+            l["corrected"] = serde_json::json!(true);
+            if l["id"].as_u64() == Some(id) {
+                out = Some(l.clone());
+            }
+        }
+    }
+    // on screen now: shown corrected at once (the overlays, the TV and OBS pages)
+    let shown = {
+        let mut shown = live.shown.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        shown.get_mut(&area).filter(|ev| ev["en"].as_str() == Some(en.as_str())).map(|ev| {
+            ev["segments"] = serde_json::json!([[ar, null]]);
+            ev.clone()
+        })
+    };
+    if let Some(ev) = shown {
+        sink.emit("translation", ev);
+    }
+    out
 }
 
 #[cfg(test)]
