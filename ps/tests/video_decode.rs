@@ -71,7 +71,7 @@ fn run(mut d: VideoDecoder, frames: &[Vec<u8>]) -> Run {
     let (cpu0, wall0) = (cpu_time::ProcessTime::now(), Instant::now());
     for f in frames {
         let t = Instant::now();
-        let p = d.decode(f).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let p = d.decode(f, false).unwrap_or_else(|e| panic!("{name}: {e}"));
         times.push(t.elapsed());
         if let Some(p) = p {
             pictures.push(p);

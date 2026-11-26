@@ -249,6 +249,9 @@ impl Drop for Player {
     }
 }
 
+/// After falling back to OpenH264, the hardware decoder is tried again this long after (on a key frame).
+const RETRY_HARDWARE: Duration = Duration::from_secs(60);
+
 /// The picture decoded on its own thread, frame by frame in the order they came.
 fn decode_thread(
     rx: Receiver<(Vec<u8>, i32)>,
@@ -279,6 +282,8 @@ fn decode_thread(
     };
     let mut backlog = Backlog::new(Instant::now());
     let mut waiting_key: Option<Instant> = None;
+    // (when the hardware decoder last gave way to OpenH264: tried again RETRY_HARDWARE later)
+    let mut fell_back_at: Option<Instant> = None;
     while !stop.load(Ordering::Relaxed) {
         let got = rx.recv_timeout(Duration::from_millis(100));
         let now = Instant::now();
@@ -344,7 +349,27 @@ fn decode_thread(
             }
             waiting_key = None;
         }
-        match dec.decode(&frame) {
+        let key = is_key_frame(&frame);
+        // (fallen back to OpenH264 a while ago: the hardware tried again on a key frame, kept if it decodes)
+        if decode == crate::hwdec::Decode::Auto && key && !dec.is_hardware() && fell_back_at.is_some_and(|t| now.saturating_duration_since(t) >= RETRY_HARDWARE) {
+            fell_back_at = None;
+            if let Ok(mut hw) = crate::hwdec::VideoDecoder::new(crate::hwdec::Decode::Auto) {
+                if hw.is_hardware() {
+                    if let Ok(Some(f)) = hw.decode(&frame, true) {
+                        screen.log(3, &format!("[video] {} works again: back from OpenH264", hw.name()));
+                        dec = hw;
+                        named(&dec);
+                        stats.frames.fetch_add(1, Ordering::Relaxed);
+                        if screen.wants_frame() {
+                            screen.frame(f);
+                        }
+                        continue;
+                    }
+                    fell_back_at = Some(now);
+                }
+            }
+        }
+        match dec.decode(&frame, key) {
             Ok(Some(f)) => {
                 stats.frames.fetch_add(1, Ordering::Relaxed);
                 if screen.wants_frame() {
@@ -359,8 +384,15 @@ fn decode_thread(
                 if let Err(e) = dec.fall_back() {
                     return screen.log(1, &e);
                 }
+                fell_back_at = Some(now);
                 named(&dec);
                 key_frame("the decoder changed");
+            }
+            // (the session lost to sleep: made again from the next key frame)
+            Err(e) if e.ends_with("made again") => {
+                screen.log(2, &format!("video: {e}"));
+                waiting_key = Some(now);
+                key_frame("the decoder's session was lost");
             }
             Err(e) => {
                 stats.bad_frames.fetch_add(1, Ordering::Relaxed);

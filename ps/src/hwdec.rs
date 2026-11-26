@@ -1,8 +1,18 @@
 //! The PS5's picture decoded: by the computer's own video decoder where it has one
 //! (VideoToolbox on a Mac, the graphics card through Media Foundation on Windows), else on the
-//! CPU by OpenH264. A hardware decoder that fails twice in a row falls back to OpenH264 for the rest of the stream.
+//! CPU by OpenH264. A hardware decoder falls back to OpenH264 only when it really fails: on key frames (three
+//! of them), or on every frame for a second and more. A frame broken on the network (its references lost) is
+//! not the decoder's failure, and the session lost to sleep is made again on the next frame, uncounted.
+//! The caller tries the hardware again a while after a fall-back (play.rs).
 
 use crate::play::I420;
+
+/// Key frames the hardware decoder failed on, in a row, before OpenH264 takes over.
+#[cfg_attr(not(any(target_os = "macos", windows, test)), allow(dead_code))]
+const KEY_FAILURES: u32 = 3;
+/// Frames in a row it failed on (about a second at 60 frames a second), the same.
+#[cfg_attr(not(any(target_os = "macos", windows, test)), allow(dead_code))]
+const FAILURES: u32 = 60;
 
 /// Which decoder the stream uses (the setting: Automatic or Software).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -71,9 +81,11 @@ pub struct VideoDecoder {
     /// whether the system's decoder is the hardware's (None: not known yet)
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     hardware: Option<bool>,
-    /// hardware failures in a row (two: OpenH264 from then on)
+    /// hardware failures in a row: on any frame (`failures`), and on key frames (`key_failures`)
     #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
     failures: u32,
+    #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+    key_failures: u32,
 }
 
 impl VideoDecoder {
@@ -81,7 +93,7 @@ impl VideoDecoder {
         #[cfg(any(target_os = "macos", windows))]
         if kind == Decode::Auto {
             if let Some(n) = Self::native(false) {
-                return Ok(VideoDecoder { inner: Inner::Hard(n), failures: 0, keep_software: false, hardware: None });
+                return Ok(VideoDecoder { inner: Inner::Hard(n), failures: 0, key_failures: 0, keep_software: false, hardware: None });
             }
         }
         let _ = kind;
@@ -90,7 +102,7 @@ impl VideoDecoder {
 
     pub fn software() -> Result<Self, String> {
         let d = openh264::decoder::Decoder::new().map_err(|e| format!("video decoder: {e}"))?;
-        Ok(VideoDecoder { inner: Inner::Soft(d), failures: 0, keep_software: false, hardware: Some(false) })
+        Ok(VideoDecoder { inner: Inner::Soft(d), failures: 0, key_failures: 0, keep_software: false, hardware: Some(false) })
     }
 
     /// The system's decoder; `cpu`: also Windows decoding on the CPU (for the tests).
@@ -108,7 +120,7 @@ impl VideoDecoder {
     pub fn system_for_test() -> Option<Self> {
         #[cfg(any(target_os = "macos", windows))]
         {
-            Self::native(true).map(|n| VideoDecoder { inner: Inner::Hard(n), failures: 0, keep_software: true, hardware: None })
+            Self::native(true).map(|n| VideoDecoder { inner: Inner::Hard(n), failures: 0, key_failures: 0, keep_software: true, hardware: None })
         }
         #[cfg(not(any(target_os = "macos", windows)))]
         None
@@ -151,9 +163,11 @@ impl VideoDecoder {
         Ok(())
     }
 
-    /// One frame in; a picture out once there is one. A hardware decoder's second failure in a
-    /// row is told as `Err` with "fall back" in it: the caller switches with [`Self::fall_back`].
-    pub fn decode(&mut self, frame: &[u8]) -> Result<Option<I420>, String> {
+    /// One frame in; a picture out once there is one. `key`: the frame is a key frame. A hardware
+    /// decoder that really fails (see the module) is told as `Err` with "fall back" in it: the caller
+    /// switches with [`Self::fall_back`].
+    pub fn decode(&mut self, frame: &[u8], key: bool) -> Result<Option<I420>, String> {
+        let _ = key;
         match &mut self.inner {
             Inner::Soft(d) => {
                 use openh264::formats::YUVSource;
@@ -184,17 +198,24 @@ impl VideoDecoder {
                 #[cfg(windows)]
                 let r = unsafe { ffi::vit_mf_decode(n.0, frame.as_ptr(), frame.len(), &mut y, &mut uv, &mut w, &mut h, &mut ys, &mut uvs) };
                 if r < 0 {
-                    self.failures += 1;
-                    return Err(if self.failures >= 2 { format!("hardware decoder failed ({r}): fall back") } else { format!("hardware decoder failed ({r})") });
+                    // (-6: VideoToolbox's session lost, after sleep: made again with the next frame, not a failure)
+                    if cfg!(target_os = "macos") && r == -6 {
+                        return Err(format!("hardware decoder session lost ({r}): made again"));
+                    }
+                    let give_up = failed(&mut self.failures, &mut self.key_failures, key);
+                    return Err(if give_up { format!("hardware decoder failed ({r}): fall back") } else { format!("hardware decoder failed ({r})") });
                 }
                 self.failures = 0;
+                if key {
+                    self.key_failures = 0;
+                }
                 #[cfg(target_os = "macos")]
                 if self.hardware.is_none() {
                     let hw = unsafe { ffi::vit_vt_hardware(n.0) };
                     if hw >= 0 {
                         self.hardware = Some(hw == 1);
                         if hw == 0 && !self.keep_software {
-                            self.failures = 2;
+                            self.failures = FAILURES;
                             return Err("VideoToolbox decodes on the CPU here: fall back".into());
                         }
                     }
@@ -209,6 +230,16 @@ impl VideoDecoder {
             }
         }
     }
+}
+
+/// A hardware decode failed (on a key frame or not): whether to give up on the hardware decoder now.
+#[cfg_attr(not(any(target_os = "macos", windows, test)), allow(dead_code))]
+fn failed(failures: &mut u32, key_failures: &mut u32, key: bool) -> bool {
+    *failures += 1;
+    if key {
+        *key_failures += 1;
+    }
+    *key_failures >= KEY_FAILURES || *failures >= FAILURES
 }
 
 /// NV12 (the system decoders' picture: U and V interleaved) as the app's I420.
@@ -231,6 +262,27 @@ pub fn nv12_to_i420(w: usize, h: usize, y: &[u8], ys: usize, uv: &[u8], uvs: usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn broken_frames_alone_dont_give_up_the_hardware() {
+        let (mut any, mut key) = (0, 0);
+        // a burst of frames broken on the network (their references lost), each followed by good ones
+        for _ in 0..10 {
+            for _ in 0..5 {
+                assert!(!failed(&mut any, &mut key, false));
+            }
+            any = 0; // (a good frame in between)
+        }
+        // three key frames in a row that fail: given up
+        assert!(!failed(&mut any, &mut key, true));
+        assert!(!failed(&mut any, &mut key, true));
+        assert!(failed(&mut any, &mut key, true));
+        // or a second and more of nothing but failures
+        let (mut any, mut key) = (0, 0);
+        for i in 1..=FAILURES {
+            assert_eq!(failed(&mut any, &mut key, false), i == FAILURES);
+        }
+    }
 
     #[test]
     fn nv12_is_split_into_u_and_v() {
