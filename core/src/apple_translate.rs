@@ -368,12 +368,16 @@ done
         p
     }
 
+    /// The tests that use the helper run one at a time (they share the one helper of the process).
+    static SERIAL: Mutex<()> = Mutex::new(());
+
     fn running_pid() -> Option<u32> {
         STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).helper.as_ref().map(|h| h.child.id())
     }
 
     #[test]
     fn the_helper_heals_after_timeouts_errors_and_crashes() {
+        let _one = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         unsafe { std::env::set_var("VIT_APPLE_TRANSLATE", fake()) };
         // time limits 8× faster: first batch 1.25 s, later ones 0.19–0.75 s
         SPEED.with(|s| s.set(8));
@@ -403,6 +407,57 @@ done
         assert_eq!(translate("ar", &["back".into()]).expect("back"), vec!["BACK".to_string()]);
         assert!(health()["restarts"].as_u64().unwrap_or(0) >= 2);
         SPEED.with(|s| s.set(1));
+    }
+
+    /// Zombie children of this process (Linux: /proc), to tell a helper wasn't waited for.
+    fn zombies() -> usize {
+        let me = std::process::id().to_string();
+        std::fs::read_dir("/proc")
+            .map(|d| {
+                d.flatten()
+                    .filter_map(|e| std::fs::read_to_string(e.path().join("stat")).ok())
+                    .filter(|st| {
+                        let after = st.rsplit(')').next().unwrap_or("");
+                        let f: Vec<&str> = after.split_whitespace().collect();
+                        f.first() == Some(&"Z") && f.get(1) == Some(&me.as_str())
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_long_session_with_faults_keeps_translating_and_leaves_no_zombies() {
+        let _one = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { std::env::set_var("VIT_APPLE_TRANSLATE", fake()) };
+        SPEED.with(|s| s.set(8));
+        let mut ok = 0;
+        let mut after_fault_ok = true;
+        for i in 0..120 {
+            let fault = match i % 20 {
+                5 => Some("bad"),
+                11 => Some("die"),
+                17 => Some("slow"),
+                _ => None,
+            };
+            let text = fault.unwrap_or("line");
+            let r = translate("ar", &[text.to_string()]);
+            if fault.is_none() && r.is_ok() {
+                ok += 1;
+            }
+            if fault.is_some() {
+                // the lines right after a fault: back within three tries
+                let back = (0..3).any(|_| translate("ar", &["again".to_string()]).is_ok());
+                after_fault_ok &= back;
+            }
+        }
+        SPEED.with(|s| s.set(1));
+        assert!(after_fault_ok, "a fault left the translation stopped");
+        assert!(ok >= 100, "{ok} of 102 plain lines translated");
+        if cfg!(target_os = "linux") {
+            std::thread::sleep(Duration::from_millis(1500));
+            assert_eq!(zombies(), 0, "a stopped helper wasn't waited for");
+        }
     }
 
     #[test]
