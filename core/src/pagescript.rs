@@ -91,6 +91,16 @@ fn built_in(game: &str) -> Option<&'static str> {
     }
 }
 
+/// The app's own additions to a game's pages script (`pages/<game>-plus.js`), run after it — the base
+/// script built in or a signed download — in the same engine: each replaces one of its functions by name
+/// and falls back to it. A failure in it leaves the base script as it was.
+fn extension(game: &str) -> Option<&'static str> {
+    match game {
+        "gta6" => Some(include_str!("../pages/gta6-plus.js")),
+        _ => None,
+    }
+}
+
 /// Bumped when a layout update saves a new script: the detection loop loads it again.
 pub static GENERATION: AtomicU64 = AtomicU64::new(0);
 
@@ -314,7 +324,7 @@ impl Pages {
             (None, Some(d)) => (d, "downloaded"),
             (None, None) => return None,
         };
-        match Pages::load(&script) {
+        match Pages::load_with(&script, extension(game)) {
             Ok(mut p) => {
                 p.version = version_of(&script);
                 p.origin = format!("{origin}, version {}", p.version);
@@ -330,6 +340,11 @@ impl Pages {
 
     /// Start the engine with a script.
     pub fn load(script: &str) -> Result<Pages> {
+        Self::load_with(script, None)
+    }
+
+    /// Start the engine with a script, and the app's additions to it (see `extension`) run after it.
+    pub fn load_with(script: &str, ext: Option<&str>) -> Result<Pages> {
         let rt = Runtime::new()?;
         rt.set_memory_limit(32 * 1024 * 1024);
         rt.set_max_stack_size(512 * 1024);
@@ -388,6 +403,12 @@ impl Pages {
             g.set("__fix_contractions", Function::new(ctx.clone(), |s: String| text_helper(&s, 4096, s.clone(), || ocr::fix_contractions(&s)))?)?;
             ctx.eval::<(), _>(PRELUDE).map_err(|e| js_error(&ctx, e))?;
             ctx.eval::<(), _>(script).map_err(|e| js_error(&ctx, e))?;
+            // (the additions: an error in them is logged, the base script's pages stay as they are)
+            if let Some(ext) = ext {
+                if let Err(e) = ctx.eval::<(), _>(ext) {
+                    crate::vlog!("[pages] the app's additions failed to load: {:#}", js_error(&ctx, e));
+                }
+            }
             let list: String = ctx.eval("__list()").map_err(|e| js_error(&ctx, e))?;
             let options: String = ctx.eval("__option_list()").map_err(|e| js_error(&ctx, e))?;
             Ok((list, options))
@@ -1336,6 +1357,16 @@ mod built_in_tests {
         assert!(p.options.iter().any(|o| o.id == "wasted" && o.on));
         assert!(p.list.iter().any(|i| i.id == "gta6_pause"));
         assert!(p.options.iter().any(|o| o.id == "pause_menu" && o.on));
+    }
+
+    #[test]
+    fn the_apps_additions_load_after_it_and_replace_the_map_card() {
+        let p = Pages::load_with(built_in("gta6").expect("carried"), extension("gta6")).expect("loads");
+        assert!(p.list.iter().any(|i| i.id == "gta6_pause"), "the base pages are all still there");
+        assert!(p.probe("typeof objectiveCard === 'function' && objectiveCard.toString().includes('COLORS')"), "the map card is the additions' one");
+        // additions that throw leave the base script as it was
+        let q = Pages::load_with(built_in("gta6").expect("carried"), Some("throw new Error('broken');")).expect("loads anyway");
+        assert!(q.probe("typeof objectiveCard === 'function' && !objectiveCard.toString().includes('COLORS')"));
     }
 }
 

@@ -46,3 +46,9 @@ Each choice that was open, what was chosen, and why.
 13. **Left out of 1.6.0: profanity softening, a separate mission-log page.** The live list (the iPad page)
     and the SRT export already keep every line, missions included. A softening list for Arabic insults
     needs care to avoid changing meaning, and is better done with the owner's choices.
+14. **Map: the objective card in any colour; the left details panel and menu "erase and redraw" left
+    out.** The card's shape is known (core/pages/gta6.js reads it in pink), so `gta6-plus.js` tries the
+    other colours with the same reading. The mission details panel on the left of the map, and erasing
+    the English in menus, need real frames of those screens to tune. A wrong guess there shows half-erased
+    or misplaced text, which the owner wants least of all. The check mode and check report will bring the
+    frames needed to do them next.
