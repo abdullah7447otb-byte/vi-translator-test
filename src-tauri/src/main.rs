@@ -547,6 +547,10 @@ fn save_config(app: AppHandle, webview: tauri::Webview, state: tauri::State<AppS
     // (a settings file that's there but couldn't be read stays as it is: see Config::load)
     config.unreadable = now.unreadable;
     config.normalize();
+    // (Apple's translation chosen now, or another language for it: its helper warmed up meanwhile)
+    if config.engine == "apple" && (now.engine != "apple" || now.target_lang != config.target_lang) {
+        apple_warm_up(config.target_lang.clone());
+    }
     *now = config.clone();
     // (the change is in use whether or not the file could be written: the overlays hear of it either way)
     let saved = config.save(&config_path()).map_err(|e| e.to_string());
@@ -724,6 +728,21 @@ async fn apple_status(state: tauri::State<'_, AppState>) -> Result<String, Strin
         return Ok("missing".into());
     }
     tauri::async_runtime::spawn_blocking(move || vi_translator_core::apple_translate::status(vi_translator_core::langs::get(&lang).code)).await.map_err(|e| e.to_string())
+}
+
+/// Apple's translation helper started and its model loaded, on a thread of its own (it can take seconds):
+/// the first line read isn't kept waiting for it.
+fn apple_warm_up(lang: String) {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let mut lang = Some(lang);
+    vi_translator_core::log::spawn_supervised("apple-warm-up", move || {
+        let Some(lang) = lang.take() else { return };
+        if let Err(e) = vi_translator_core::apple_translate::warm_up(vi_translator_core::langs::get(&lang).code) {
+            vi_translator_core::vlog!("[apple] warm-up: {e:#}");
+        }
+    });
 }
 
 /// System Settings at Language & Region, where Translation Languages are downloaded (macOS).
@@ -2089,6 +2108,9 @@ fn main() {
     }
     if save_now {
         let _ = loaded.save(&config_path());
+    }
+    if loaded.engine == "apple" {
+        apple_warm_up(loaded.target_lang.clone());
     }
     let cfg = Arc::new(Mutex::new(loaded));
     let saver = Arc::new(debug_frames::SaverState::default());

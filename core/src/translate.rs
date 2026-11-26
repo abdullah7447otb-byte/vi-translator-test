@@ -22,6 +22,9 @@ use tokenizers::Tokenizer;
 
 use crate::config::Config;
 
+/// Apple's translation failing again and again: the offline translator for a while (apple_translate::Breaker).
+static APPLE_BREAKER: std::sync::Mutex<crate::apple_translate::Breaker> = std::sync::Mutex::new(crate::apple_translate::Breaker::new());
+
 pub type Segments = Vec<(String, Option<String>)>;
 
 // ------------------------------------------------------------------------------------- local model
@@ -646,15 +649,26 @@ impl Translator {
         match cfg.engine.as_str() {
             // Apple's on-device translation (macOS 26): on any failure the offline translator takes the line,
             // and the reason is in the log
-            "apple" => match crate::apple_translate::translate(crate::langs::get(&cfg.target_lang).code, texts) {
-                Ok(out) => Ok(out),
-                Err(e) => {
-                    crate::vlog!("[apple] {e:#}: the offline translator takes this line");
-                    let mut local = cfg.clone();
-                    local.engine = "local".into();
-                    self.mt_batch(&local, texts, status)
+            "apple" => {
+                let now = Instant::now();
+                let tried = APPLE_BREAKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).allows(now);
+                let got = if tried { crate::apple_translate::translate(crate::langs::get(&cfg.target_lang).code, texts) } else { Err(anyhow!("paused after repeated failures")) };
+                match got {
+                    Ok(out) => {
+                        APPLE_BREAKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).succeeded();
+                        Ok(out)
+                    }
+                    Err(e) => {
+                        if tried {
+                            APPLE_BREAKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).failed(now);
+                        }
+                        crate::vlog!("[apple] {e:#}: the offline translator takes this line");
+                        let mut local = cfg.clone();
+                        local.engine = "local".into();
+                        self.mt_batch(&local, texts, status)
+                    }
                 }
-            },
+            }
             "local" => {
                 if self.local.is_none() {
                     // (a download that failed is tried again after a while, not on every line)
