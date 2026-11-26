@@ -109,7 +109,14 @@ def main():
             checks = []
             if phone and phone.get("pieces"):
                 # the steady panel: there, and beside the phone's screen, not over it
-                if res["pieces"]:
+                # (same rule as renderPhone: the panel is for a chat; the chat list and the home screen
+                # stay drawn on the phone, and then there must be no panel)
+                chat = not phone.get("list") and any(
+                    not p.get("title") and (p.get("ar") or "").strip() and p.get("role") in ("incoming", "outgoing", "message", "note")
+                    for p in phone["pieces"])
+                if res["pieces"] and not chat and res.get("panel"):
+                    checks.append("a panel for a screen that is not a chat")
+                if res["pieces"] and chat:
                     pn = res.get("panel")
                     if not pn:
                         checks.append("no steady panel beside the phone")
