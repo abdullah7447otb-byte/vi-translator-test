@@ -463,6 +463,7 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
         if let Some(p) = ps5.take() {
             p.stop();
             *shared.frame.lock().unwrap() = None;
+            crate::ps5::may_wake_again(); // the PS5 chosen again later wakes it as at the start
         }
         // A capture card / video device ("device:<name>") instead of a window
         if let Some(name) = want.strip_prefix(crate::device::PREFIX) {
