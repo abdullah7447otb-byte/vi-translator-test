@@ -259,6 +259,11 @@ pub struct Config {
     pub snap_hotkey: String,
     /// local | deepl | azure | google | libre | claude | openai
     pub engine: String,
+    /// VI Translator's ready translations first (the shared pack downloaded for the game: reviewed
+    /// lines, shown at once); a line it hasn't goes to `engine`. Off: the pack isn't used, and every
+    /// line the player's own memory doesn't know goes to the translator (much slower). On in a
+    /// settings file from before this setting.
+    pub shared_translations: bool,
     /// Language to translate into (see `langs::LANGS`): "ar", "hi", "tr" …
     pub target_lang: String,
     /// Look for a newer version of the app (on start and daily) and offer it.
@@ -498,6 +503,11 @@ impl Config {
         })
         .collect()
     }
+    /// Only reviewed translations in this area (`AreaFx::reviewed_only`), while they are used: with
+    /// the ready translations off there are none, and the area's lines go to the translator like any.
+    pub fn reviewed_only(&self, area: &str) -> bool {
+        self.shared_translations && self.fx(area).reviewed_only(area)
+    }
     /// The phone's text translated beside it: GTA VI's (its built-in profile, or a copy of it).
     pub fn phone_text(&self) -> bool {
         self.phone_text && self.game() == "gta6"
@@ -505,6 +515,37 @@ impl Config {
     /// The game profile's look puts each translation over the game's lines, on a black box.
     pub fn cover_look(&self) -> bool {
         self.profile_opts.more.get("translation_cover") == Some(&true)
+    }
+}
+
+/// What's translated, as the player chooses it (Game pages): a switch stands for the profile's read
+/// areas, the game's pages (its pages script's switches) and the phone text it covers, all on or off
+/// together. The dialogue (the subtitles) is always translated, so no switch covers it. The windows
+/// show a switch as on when any of what it covers is on, and set all of it (`Config::set_shown`,
+/// `phone_text`); nothing of its own is saved, so the defaults stay the areas' and pages' own.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct ContentSwitch {
+    pub id: &'static str,
+    pub areas: Vec<&'static str>,
+    pub pages: Vec<&'static str>,
+    pub phone: bool,
+}
+
+/// A game's What's-translated switches (none for a game without them).
+/// GTA VI's side conversations (people in the street talking) aren't told apart from the story's
+/// dialogue: they come in the same subtitles, so they have no switch of their own.
+pub fn content_switches(game: &str) -> Vec<ContentSwitch> {
+    let sw = |id, areas: &[&'static str], pages: &[&'static str], phone| ContentSwitch { id, areas: areas.to_vec(), pages: pages.to_vec(), phone };
+    match game {
+        "gta6" => vec![
+            // its WhatUp chats on a second phone beside it (`phone_text`)
+            sw("phone", &[], &[], true),
+            // the pause menu's pages: the map and its index, the lists, help pages, settings
+            sw("menus", &[], &["pause_menu"], false),
+            // the help box (top left), the instructions under the subtitles, the game's notices
+            sw("notices", &["help", "instructions"], &["game_notices"], false),
+        ],
+        _ => Vec::new(),
     }
 }
 
@@ -753,6 +794,7 @@ impl Default for Config {
             card_sound_volume: 100,
             snap_hotkey: String::new(),
             engine: "local".into(),
+            shared_translations: true,
             deepl_key: String::new(),
             azure_key: String::new(),
             azure_region: String::new(),
@@ -1180,6 +1222,22 @@ impl Config {
 #[cfg(test)]
 mod profile_tests {
     use super::*;
+
+    #[test]
+    fn ready_translations_are_on_unless_turned_off() {
+        // a settings file from before the switch: on, as the app worked
+        let old: Config = serde_json::from_str(r#"{"engine": "deepl"}"#).unwrap();
+        assert!(old.shared_translations && Config::default().shared_translations);
+        assert!(old.reviewed_only("instructions") && !old.reviewed_only("subtitles"));
+        // off: kept, and no area waits for reviewed lines that aren't used (the instructions go to the translator)
+        let mut c: Config = serde_json::from_str(r#"{"shared_translations": false}"#).unwrap();
+        assert!(!c.shared_translations);
+        assert!(!c.reviewed_only("instructions"));
+        let back: Config = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert!(!back.shared_translations);
+        c.shared_translations = true;
+        assert!(c.reviewed_only("instructions"));
+    }
 
     #[test]
     fn the_fade_in_is_off_unless_chosen_and_150_saved_before_v7_is_let_go() {

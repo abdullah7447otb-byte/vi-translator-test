@@ -1643,11 +1643,54 @@ pub fn options_for(game: &str, data_dir: &Path) -> Vec<OptionInfo> {
     list
 }
 
-/// The game pages a game's script has, and the switches it declares (for Game pages):
-/// {"pages": [{"id", "option"}], "options": [{"id", "name", "about", "on"}]}.
+/// The game pages a game's script has, the switches it declares, and the game's What's-translated
+/// switches (`config::content_switches`, with only the page switches this script declares) for Game pages:
+/// {"pages": [{"id", "option"}], "options": [{"id", "name", "about", "on"}], "groups": [{"id", "areas", "pages", "phone"}]}.
 pub fn page_options(game: &str, data_dir: &Path) -> serde_json::Value {
     match Pages::for_game(game, data_dir) {
-        Some(p) => serde_json::json!({ "pages": p.list.iter().map(|i| serde_json::json!({ "id": i.id, "option": i.option })).collect::<Vec<_>>(), "options": p.options }),
-        None => serde_json::json!({ "pages": [], "options": [] }),
+        Some(p) => {
+            let groups: Vec<crate::config::ContentSwitch> = crate::config::content_switches(game)
+                .into_iter()
+                .map(|mut g| {
+                    g.pages.retain(|id| p.options.iter().any(|o| o.id == *id));
+                    g
+                })
+                .filter(|g| g.phone || !g.areas.is_empty() || !g.pages.is_empty())
+                .collect();
+            serde_json::json!({ "pages": p.list.iter().map(|i| serde_json::json!({ "id": i.id, "option": i.option })).collect::<Vec<_>>(), "options": p.options, "groups": groups })
+        }
+        None => serde_json::json!({ "pages": [], "options": [], "groups": [] }),
+    }
+}
+
+#[cfg(test)]
+mod content_tests {
+    #[test]
+    fn gta6_whats_translated_switches_cover_what_the_game_has() {
+        let dir = std::env::temp_dir().join(format!("vit-content-{}", std::process::id()));
+        let v = super::page_options("gta6", &dir);
+        let groups = v["groups"].as_array().unwrap();
+        let ids: Vec<&str> = groups.iter().map(|g| g["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["phone", "menus", "notices"]);
+        // each page switch is one the built-in script declares, on by default (today's behaviour)
+        let options = v["options"].as_array().unwrap();
+        for g in groups {
+            for id in g["pages"].as_array().unwrap() {
+                let opt = options.iter().find(|o| o["id"] == *id).unwrap_or_else(|| panic!("{id} declared"));
+                assert_eq!(opt["on"], true, "{id}");
+            }
+        }
+        assert_eq!(groups[1]["pages"], serde_json::json!(["pause_menu"]));
+        assert_eq!(groups[2]["pages"], serde_json::json!(["game_notices"]));
+        // each area is one of GTA VI's built-in profile, shown by default; the subtitles are in none
+        let gta6 = crate::config::builtin_profile("gta6").unwrap();
+        for g in groups {
+            for id in g["areas"].as_array().unwrap() {
+                assert!(gta6.areas.iter().any(|a| a.id == *id && a.enabled), "{id}");
+                assert_ne!(id, "subtitles");
+            }
+        }
+        // another game has none
+        assert!(super::page_options("rdr2", &dir)["groups"].as_array().unwrap().is_empty());
     }
 }
