@@ -53,10 +53,13 @@ with sync_playwright() as p:
         b = p.chromium.launch(args=args)
     except Exception:
         b = p.chromium.launch(channel="chrome", args=args)
-    pg = b.new_page()
-    pg.goto("file:///tmp/night_bands.html")
     for deband, local, limit in [(0.4, 0, 2.0), (1, 0.5, 2.0)]:
+        # (a fresh page, so a fresh WebGL context, for each run: Chrome on the macOS runner loses a
+        # context used twice)
+        pg = b.new_page()
+        pg.goto("file:///tmp/night_bands.html")
         r = pg.evaluate(f"run({deband}, {local})")
+        pg.close()
         print(f"deband {deband}, detail in the dark {local}: largest step {r['maxJump']:.2f} levels, black clipped {r['clipped']} px")
         if r["maxJump"] >= limit or r["clipped"]:
             failed.append(f"deband {deband}: {r}")
