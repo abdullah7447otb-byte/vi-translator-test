@@ -390,6 +390,9 @@ pub struct Config {
     /// The settings file was there but couldn't be read (nor kept aside) at start: it isn't saved over.
     #[serde(skip)]
     pub unreadable: bool,
+    /// Running on a phone (set by the phone library, never saved): the phone's timing defaults.
+    #[serde(skip)]
+    pub phone: bool,
     /// Which changes of the app's defaults this settings file has had (see `DEFAULTS_VERSION`).
     /// A file from before it reads 0.
     #[serde(default)]
@@ -899,6 +902,7 @@ impl Default for Config {
             profile: "gta6".into(),
             profile_rev: 0,
             unreadable: false,
+            phone: false,
             defaults_version: DEFAULTS_VERSION,
             defaults_moved: false,
             profiles: Vec::new(),
@@ -936,6 +940,10 @@ pub struct DefaultTiming {
     pub clear_after_ms: u64,
 }
 pub const DEFAULT_TIMING: DefaultTiming = DefaultTiming { capture_fps: 60, preview_fps: 60, interval_ms: 16, stable_ms: 80, clear_after_ms: 300 };
+/// A phone's timing: reading every frame as the desktop does kept a phone's processor and text
+/// recognizer busy without a break and made it hot. A fifth of a second between readings is still
+/// quick for subtitles, which stay up for a second at least (a short dropout doesn't end a line).
+pub const PHONE_TIMING: DefaultTiming = DefaultTiming { capture_fps: 12, preview_fps: 30, interval_ms: 200, stable_ms: 80, clear_after_ms: 300 };
 
 /// The built-in GTA VI profile with its look "Over the game's text" (the black box over the English).
 fn cover_shown() -> std::collections::BTreeMap<String, Shown> {
@@ -1081,6 +1089,11 @@ impl Config {
 
     /// Reading timing in use (interval, settle, clear after; ms): the player's own where they moved
     /// the slider (Source → Timing), else the profile's game timing if it has one, else the app's.
+    /// The app's own timing for where it runs: a phone's, or the desktop's.
+    pub fn default_timing(&self) -> &'static DefaultTiming {
+        if self.phone { &PHONE_TIMING } else { &DEFAULT_TIMING }
+    }
+
     pub fn timing(&self) -> (u64, u64, u64) {
         let t = self.builtins.iter().chain(self.profiles.iter()).find(|p| p.id == self.profile).map(|p| p.timing.clone()).unwrap_or_default();
         // the player's own timing, or the game profile's (each value it has; 0 = it has none)
@@ -1088,11 +1101,11 @@ impl Config {
         let pick = |mine: u64, game: u64| if own || game == 0 { mine } else { game };
         // (not their own: the app's current defaults, not values saved by an older version — a
         // default that changes reaches every player who never chose their own)
-        let d = &DEFAULT_TIMING;
+        let d = self.default_timing();
         let (interval, stable, clear) = if own { (self.interval_ms, self.stable_ms, self.clear_after_ms) } else { (d.interval_ms, d.stable_ms, d.clear_after_ms) };
         // (within the Timing sliders' ranges, whatever a settings file or a layout says)
         (
-            pick(interval, t.interval_ms).clamp(16, 1000),
+            pick(interval, t.interval_ms).clamp(if self.phone { 100 } else { 16 }, 1000),
             pick(stable, t.stable_ms).min(1500),
             pick(clear, t.clear_after_ms).clamp(50, 3000),
         )
@@ -1118,9 +1131,14 @@ impl Config {
     ///    player's as they last saved it.
     pub fn normalize(&mut self) {
         // Timing the player never chose is the app's current default (shown so on the Timing page too)
+        let d = self.default_timing();
         if self.timing_custom != Some(true) {
-            let d = &DEFAULT_TIMING;
             (self.interval_ms, self.stable_ms, self.clear_after_ms) = (d.interval_ms, d.stable_ms, d.clear_after_ms);
+        }
+        // (a phone: frame rates within its own sliders' ranges, 1–30)
+        if self.phone {
+            if self.capture_fps > 30 { self.capture_fps = d.capture_fps; }
+            if self.preview_fps > 30 { self.preview_fps = d.preview_fps; }
         }
         self.source_crop = self.source_crop.and_then(clean_crop);
         self.overlay_crop = self.overlay_crop.and_then(clean_crop);
@@ -1584,6 +1602,25 @@ mod profile_tests {
         // back to the game's (their values are kept for later, but not used)
         c.timing_custom = Some(false);
         assert_eq!(c.timing(), (d.interval_ms, 120, 1500));
+    }
+
+    #[test]
+    fn a_phone_reads_at_its_own_pace() {
+        // a phone's settings saved with the desktop's pace (every 16 ms, 60 fps), not its own
+        let mut c: Config = serde_json::from_str(r#"{"defaults_version": 6, "interval_ms": 16, "capture_fps": 60, "preview_fps": 60, "timing_custom": false}"#).unwrap();
+        c.phone = true;
+        c.normalize();
+        assert_eq!(c.timing(), (PHONE_TIMING.interval_ms, PHONE_TIMING.stable_ms, PHONE_TIMING.clear_after_ms));
+        assert_eq!((c.capture_fps, c.preview_fps), (12, 30));
+        // a phone player's own timing stays theirs, within the phone's range
+        let mut c: Config = serde_json::from_str(r#"{"defaults_version": 6, "interval_ms": 16, "timing_custom": true}"#).unwrap();
+        c.phone = true;
+        c.normalize();
+        assert_eq!(c.timing().0, 100);
+        // the desktop keeps its own pace
+        let mut d = Config::default();
+        d.normalize();
+        assert_eq!(d.timing().0, DEFAULT_TIMING.interval_ms);
     }
 
     #[test]
