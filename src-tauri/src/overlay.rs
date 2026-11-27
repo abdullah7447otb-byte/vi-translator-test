@@ -270,13 +270,23 @@ mod win_ops {
 /// Linux and macOS: Tauri's own window calls (unfocusable, always on top, click-through once shown).
 #[cfg(not(windows))]
 mod win_ops {
-    use tauri::{PhysicalPosition, PhysicalSize};
-
     pub fn never_focus(win: &tauri::WebviewWindow) {
         let _ = win.set_focusable(false);
     }
 
+    /// `r` is in the units the source window's rect comes in: points on macOS (kCGWindowBounds),
+    /// so a Retina screen (2 pixels a point) doesn't halve the overlays' place and size; pixels on Linux.
+    #[cfg(target_os = "macos")]
     pub fn place(win: &tauri::WebviewWindow, r: (i32, i32, i32, i32)) {
+        use tauri::{LogicalPosition, LogicalSize};
+        let _ = win.set_position(LogicalPosition::new(r.0 as f64, r.1 as f64));
+        let _ = win.set_size(LogicalSize::new(r.2.max(1) as f64, r.3.max(1) as f64));
+        let _ = win.set_always_on_top(true);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn place(win: &tauri::WebviewWindow, r: (i32, i32, i32, i32)) {
+        use tauri::{PhysicalPosition, PhysicalSize};
         let _ = win.set_position(PhysicalPosition::new(r.0, r.1));
         let _ = win.set_size(PhysicalSize::new(r.2.max(1) as u32, r.3.max(1) as u32));
         let _ = win.set_always_on_top(true);
