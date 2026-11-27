@@ -27,6 +27,7 @@ function run(deband, local) {
   gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, `#version 300 es
   precision highp float; uniform highp sampler2D ty; uniform float yOff, yScale;
   vec3 rgbAt(ivec2 p) { float Y = texelFetch(ty, ivec2(p.x, 0), 0).r * 255.0; return clamp(vec3((Y - yOff) * yScale) / 255.0, 0.0, 1.0); }
+  float yAt(ivec2 p) { return (texelFetch(ty, ivec2(p.x, 0), 0).r * 255.0 - yOff) * yScale / 255.0; }
   ` + GL));
   gl.linkProgram(pr); if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw gl.getProgramInfoLog(pr); gl.useProgram(pr);
   const Y = new Uint8Array(1024); for (let x = 0; x < 1024; x++) Y[x] = Math.round(30 + 32 * x / 1023);

@@ -2264,7 +2264,7 @@ const PICTURE_PRESETS = {
   vivid: { bright: 0, contrast: 1.12, gamma: 1, shadows: 0.1, sat: 1.3, sharp: 0.35, deband: 0.4, local: 0, auto_night: true },
 };
 const PICTURE_UNIFORMS = ["pSize", "pBright", "pContrast", "pGamma", "pShadows", "pSat", "pSharp", "pDeband", "pLocal", "pFrame"];
-// (after a shader's own `vec3 rgbAt(ivec2 p)`: contrast-adaptive sharpening as AMD's FidelityFX CAS
+// (after a shader's own `vec3 rgbAt(ivec2 p)` and `float yAt(ivec2 p)` (the luma alone, levels stretched): contrast-adaptive sharpening as AMD's FidelityFX CAS
 // does it, from the four neighbours, then brightness, contrast, shadow lift, gamma and saturation)
 const PICTURE_GLSL = `
     uniform ivec2 pSize;
@@ -2280,14 +2280,21 @@ const PICTURE_GLSL = `
       // step or two of the video's levels (a band's edge in a smooth sky or shadow), it takes their average.
       // A real edge differs more, and stays.
       if (pDeband > 0.0) {
-        float a = hash(vec2(p) + pFrame) * 6.2832;
-        float r = 4.0 + 12.0 * hash(vec2(p.yx) + 17.0 + pFrame);
-        ivec2 o1 = ivec2(cos(a) * r, sin(a) * r), o2 = ivec2(-sin(a) * r, cos(a) * r);
-        vec3 s1 = at(p + o1), s2 = at(p - o1), s3 = at(p + o2), s4 = at(p - o2);
-        vec3 avg = (s1 + s2 + s3 + s4) * 0.25;
+        // (one hash gives the direction, one of eight, and the distance, 4 to 16 px: no sin or cos a pixel)
+        const vec2 DIRS[8] = vec2[8](vec2(1.0, 0.0), vec2(0.924, 0.383), vec2(0.707, 0.707), vec2(0.383, 0.924),
+                                     vec2(0.0, 1.0), vec2(-0.383, 0.924), vec2(-0.707, 0.707), vec2(-0.924, 0.383));
+        float h = hash(vec2(p) + pFrame);
+        vec2 dir = DIRS[int(h * 8.0) & 7] * (4.0 + 12.0 * fract(h * 37.0));
+        ivec2 o1 = ivec2(dir), o2 = ivec2(-dir.y, dir.x);
+        // (on the luma only: one read a point, no colour conversion. Bands at night are steps of brightness,
+        // and a change of luma moves R, G and B alike, so the colour keeps its hue)
+        ivec2 hi = pSize - 1;
+        float y0 = yAt(p);
+        float s1 = yAt(clamp(p + o1, ivec2(0), hi)), s2 = yAt(clamp(p - o1, ivec2(0), hi));
+        float s3 = yAt(clamp(p + o2, ivec2(0), hi)), s4 = yAt(clamp(p - o2, ivec2(0), hi));
         float thr = mix(1.5, 4.0, pDeband) / 255.0;
-        vec3 d = max(max(abs(s1 - c), abs(s2 - c)), max(abs(s3 - c), abs(s4 - c)));
-        if (max(d.r, max(d.g, d.b)) < thr) c = avg;
+        float d = max(max(abs(s1 - y0), abs(s2 - y0)), max(abs(s3 - y0), abs(s4 - y0)));
+        if (d < thr) c = clamp(c + ((s1 + s2 + s3 + s4) * 0.25 - y0), 0.0, 1.0);
       }
       // local contrast in the dark: a pixel lifted from the area round it (faces, streets at night), the bright
       // parts left alone
@@ -2324,31 +2331,40 @@ const LEVELS = { double: true, lows: [], mean: 0.5, motion: 0, prev: null, night
 const DOUBLE = { black: 16 + (16 * 219) / 255, white: 16 + (235 * 219) / 255, cMul: (255 / 219) * (255 / 224) };
 const SINGLE = { black: 16, white: 235, cMul: 255 / 224 };
 function pictureLevels(Y, w, h) {
-  const step = 61, n = Math.floor((w * h) / step);
+  // (every 4th frame is plenty for levels that change over seconds; a histogram, not a sort: the picture's
+  // frame time stays free for drawing)
+  if ((LEVELS.n = (LEVELS.n || 0) + 1) % 4 !== 1) return LEVELS.double ? DOUBLE : SINGLE;
+  const step = 127, n = Math.floor((w * h) / step);
   const now = performance.now();
   if (n > 0) {
     const sample = new Uint8Array(n);
-    for (let i = 0, j = 0; i < n; i++, j += step) sample[i] = Y[j];
+    const hist = new Uint32Array(256);
+    let sum = 0;
+    for (let i = 0, j = 0; i < n; i++, j += step) {
+      const v = Y[j];
+      sample[i] = v;
+      hist[v]++;
+      sum += v;
+    }
     let motion = 0;
     if (LEVELS.prev && LEVELS.prev.length === n) {
-      for (let i = 0; i < n; i += 4) motion += Math.abs(sample[i] - LEVELS.prev[i]);
-      motion /= n / 4;
+      for (let i = 0; i < n; i += 2) motion += Math.abs(sample[i] - LEVELS.prev[i]);
+      motion /= n / 2;
     }
     LEVELS.prev = sample;
-    LEVELS.motion = LEVELS.motion * 0.8 + motion * 0.2;
-    const sorted = sample.slice().sort();
-    const low = sorted[Math.floor(n * 0.002)];
-    let sum = 0;
-    for (let i = 0; i < n; i += 8) sum += sample[i];
+    LEVELS.motion = LEVELS.motion * 0.6 + motion * 0.4;
+    let low = 0;
+    for (let acc = 0, want = Math.floor(n * 0.002); low < 255; low++) if ((acc += hist[low]) > want) break;
     const lv = LEVELS.double ? DOUBLE : SINGLE;
-    const mean = Math.min(1, Math.max(0, (sum / (n / 8) - lv.black) / (lv.white - lv.black)));
-    LEVELS.mean = LEVELS.mean * 0.95 + mean * 0.05;
+    const mean = Math.min(1, Math.max(0, (sum / n - lv.black) / (lv.white - lv.black)));
+    LEVELS.mean = LEVELS.mean * 0.82 + mean * 0.18;
     // the darkest shade seen, over the last ten seconds
     LEVELS.lows.push([now, low]);
     while (LEVELS.lows.length && now - LEVELS.lows[0][0] > 10000) LEVELS.lows.shift();
-    const darkest = Math.min(...LEVELS.lows.map((l) => l[1]));
+    let darkest = 255;
+    for (const l of LEVELS.lows) darkest = Math.min(darkest, l[1]);
     // (studio range once over: blacks reach below 20; twice over they never go under ~28)
-    if (LEVELS.lows.length > 30) {
+    if (LEVELS.lows.length > 8) {
       if (LEVELS.double && darkest <= 19) LEVELS.double = false;
       else if (!LEVELS.double && darkest >= 26 && LEVELS.mean < 0.2) LEVELS.double = true;
     }
@@ -2549,6 +2565,10 @@ function yuvInit() {
       float u = (s.g - 128.0) * cScale, v = (s.a - 128.0) * cScale;
       return clamp(vec3(y + kr * v, y - kgu * u - kgv * v, y + kb * u) / 255.0, 0.0, 1.0);
     }
+    float yAt(ivec2 p) {
+      vec4 s = texelFetch(tex, ivec2(p.x >> 1, height - 1 - p.y), 0) * 255.0;
+      return ((p.x & 1) == 0 ? s.r - yOff : s.b - yOff) * yScale / 255.0;
+    }
     ${PICTURE_GLSL}`));
   gl.linkProgram(prog);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
@@ -2629,6 +2649,7 @@ function i420Init() {
       float u = (U - 128.0) * cScale, v = (V - 128.0) * cScale;
       return clamp(vec3(y + kr * v, y - kgu * u - kgv * v, y + kb * u) / 255.0, 0.0, 1.0);
     }
+    float yAt(ivec2 p) { return (texelFetch(ty, ivec2(p.x, height - 1 - p.y), 0).r * 255.0 - yOff) * yScale / 255.0; }
     ${PICTURE_GLSL}`));
   gl.linkProgram(prog);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));

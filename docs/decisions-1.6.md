@@ -52,3 +52,20 @@ Each choice that was open, what was chosen, and why.
     the English in menus, need real frames of those screens to tune. A wrong guess there shows half-erased
     or misplaced text, which the owner wants least of all. The check mode and check report will bring the
     frames needed to do them next.
+15. **The smoothness test is a report, not a gate, on the CI runners (the owner's choice, 2026-11-27).**
+    Neither runner has a GPU, so Chrome draws the picture in software. The Mac runner drew 3.5 % of the
+    frames for 1.5.0 already (failed), and Windows was a report already. The new debanding made software
+    drawing slower (0.8 % on the Mac runner), so it was made cheaper: luma only (one read a point and no
+    colour conversion), no sin or cos, and the levels check every 4th frame with a histogram (1.6 → 0.16 ms
+    a frame). Measured on the Linux dev shell (software drawing, 1920×1080, 10 s):
+
+    | Build | Frames drawn |
+    | --- | --- |
+    | 1.5.0 | 18–20 % |
+    | 1.6.0 before the change | 8.6 % |
+    | 1.6.0 with debanding off | 20 % |
+    | 1.6.0 final | 12–13 % |
+
+    What is left is the four reads that debanding needs, about 8 million a frame at 1080p. That is
+    nothing for the Mac mini's GPU, but it can't be measured on a runner without one.
+

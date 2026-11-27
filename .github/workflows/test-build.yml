@@ -163,8 +163,10 @@ jobs:
       # The PS5 picture drawn by the app's own page at a steady 60 frames a second (Smooth, Lowest delay; with
       # the in-place phone layer and the picture panel). The Mac runner has a GPU and gates on it; the Windows
       # runner has none (WARP), so there the numbers are reported, not gated.
+      # (a report on both runners: neither has a GPU, so Chrome draws in software, 3.5 % of the frames on the
+      # Mac for 1.5.0 too; the owner chose this on 2026-11-27, docs/decisions-1.6.md 15)
       - name: Smoothness
-        continue-on-error: ${{ matrix.os == 'windows' }}
+        continue-on-error: true
         run: |
           if [ "${{ matrix.os }}" = windows ]; then PY=python; else PY=python3; fi
           $PY -m pip install --quiet playwright==1.63.0 || true
