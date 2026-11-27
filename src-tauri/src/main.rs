@@ -16,6 +16,7 @@ mod hotkey;
 mod ocr_engine;
 mod overlay;
 mod picture_find;
+mod check_picture;
 mod preview_shot;
 mod probe;
 #[cfg(debug_assertions)]
@@ -1221,7 +1222,8 @@ fn area_debug(state: tauri::State<AppState>) -> serde_json::Value {
 }
 
 /// "Send a check report": a folder on the Desktop with the log (its newest files), the settings without
-/// keys, the health panel and the check mode's areas, to send when something is off. Its path.
+/// keys, the health panel, the check mode's areas, the last lines translated, and the game's picture now
+/// (frame.png) with the reading areas drawn on it (areas.png), to send when something is off. Its path.
 #[tauri::command]
 fn check_report(webview: tauri::Webview, state: tauri::State<AppState>) -> Result<String, String> {
     main_only(&webview)?;
@@ -1233,7 +1235,21 @@ fn check_report(webview: tauri::Webview, state: tauri::State<AppState>) -> Resul
     let write = |name: &str, v: &serde_json::Value| std::fs::write(dir.join(name), serde_json::to_string_pretty(v).unwrap_or_default());
     write("settings.json", &serde_json::to_value(&cfg).unwrap_or_default()).map_err(|e| e.to_string())?;
     write("health.json", &health_json(&state)).map_err(|e| e.to_string())?;
-    write("areas.json", &serde_json::to_value(&*state.shared.live.area_debug.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).unwrap_or_default()).map_err(|e| e.to_string())?;
+    let areas = state.shared.live.area_debug.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    write("areas.json", &serde_json::to_value(&areas).unwrap_or_default()).map_err(|e| e.to_string())?;
+    // (the last lines translated, English and Arabic, newest last)
+    let lines: Vec<serde_json::Value> = {
+        let log = state.shared.live.live_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        log.iter().rev().take(20).rev().map(|l| serde_json::json!({ "area": l["area"], "en": l["en"], "ar": l["text"] })).collect()
+    };
+    write("lines.json", &serde_json::Value::Array(lines)).map_err(|e| e.to_string())?;
+    // (the game's picture now, as the app reads it, and the same with each reading area drawn on it in the
+    // colour of what it did: check_picture.rs)
+    if let Some(f) = state.shared.latest() {
+        debug_frames::save_png_fast(&f, &dir.join("frame.png")).map_err(|e| format!("the frame: {e:#}"))?;
+        let drawn = check_picture::draw(&f.rgba, f.w, f.h, &areas);
+        image::save_buffer(dir.join("areas.png"), &drawn, f.w, f.h, image::ExtendedColorType::Rgba8).map_err(|e| format!("the areas' picture: {e}"))?;
+    }
     // (the log's files, newest first: the last few MB cover well over 15 minutes)
     if let Some(logs) = vi_translator_core::log::folder()
         && let Ok(files) = std::fs::read_dir(&logs)

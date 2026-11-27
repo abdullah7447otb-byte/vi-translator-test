@@ -248,6 +248,13 @@ body.no-fps .fps-badge { display: none !important; }
 /* Play: the Picture button, left of the snapshot one, and its panel above them */
 .fs-btn.pic-btn { right: 102px; }
 .fs-btn.fix-btn { right: 148px; }
+.fs-btn.report-btn { right: 194px; }
+.report-btn.busy { pointer-events: none; opacity: 1; background: var(--sunset); }
+.report-btn.busy svg { animation: snap-pulse 1s ease-in-out infinite; }
+/* the report's answer, above the buttons: where it went (or why not), for a few seconds */
+.report-note { position: absolute; right: 10px; bottom: 56px; z-index: 7; max-width: min(420px, 80%); padding: 8px 12px;
+  border-radius: 10px; background: rgba(0, 0, 0, .78); color: #fff; font-size: 13px; line-height: 1.45; pointer-events: none; }
+.report-note.bad { background: rgba(150, 20, 20, .88); }
 .fix-panel { width: 360px; }
 .fix-line { display: grid; gap: 4px; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,.08); }
 .fix-line .en { font-size: 12px; opacity: .7; direction: ltr; text-align: left; }

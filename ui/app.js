@@ -2040,13 +2040,7 @@ function renderDebug() {
     <div class="muted small">Install id (to send a test version of a game page to this PC): <code>${AS.esc(cfg.install_id || "—")}</code></div>`;
   $("dbg-save").addEventListener("change", (e) => setSaveFrames(e.target.checked));
   $("dbg-check").addEventListener("change", (e) => setCheckMode(e.target.checked));
-  $("dbg-report").addEventListener("click", async () => {
-    try {
-      log({ info: t("Check report: {dir}", { dir: await invoke("check_report") }) });
-    } catch (e) {
-      log({ error: String(e) });
-    }
-  });
+  $("dbg-report").addEventListener("click", sendCheckReport);
   $("dbg-srt").addEventListener("click", async () => {
     try {
       log({ info: t("Subtitles saved: {dir}", { dir: await invoke("export_srt", { both: true }) }) });
@@ -2082,6 +2076,49 @@ function setCheckMode(on) {
   drawLayer();
 }
 let checkAreas = {};
+
+// The check report in one press (the button at the bottom right of the picture): the check mode on for a
+// moment, so every reading area says what it reads now and why it drops anything, then the report on the
+// Desktop with the picture (the game's frame, and the same with the areas drawn on it), and the check mode
+// back as it was (off: it would show in a stream).
+let reportBusy = false;
+async function sendCheckReport() {
+  if (reportBusy) return;
+  reportBusy = true;
+  const btn = $("report-btn");
+  btn?.classList.add("busy");
+  const was = checkMode;
+  try {
+    if (!was) setCheckMode(true);
+    // (the areas are read several times a second: 1.6 s gives each a few reads, and the check mode's own
+    // refresh, every 0.3 s, has them all)
+    await new Promise((r) => setTimeout(r, 1600));
+    const dir = await invoke("check_report");
+    log({ info: t("Check report: {dir}", { dir }) });
+    reportNote(t("Check report saved on the Desktop: {name}. Send me the folder.", { name: "\u2068" + String(dir).split(/[\\/]/).pop() + "\u2069" }), false);
+  } catch (e) {
+    log({ error: String(e) });
+    reportNote(t("Could not save the check report: {e}", { e }), true);
+  } finally {
+    if (!was) setCheckMode(false);
+    btn?.classList.remove("busy");
+    reportBusy = false;
+  }
+}
+let reportNoteTimer = 0;
+function reportNote(text, bad) {
+  const n = $("report-note");
+  if (!n) return;
+  // (the page's direction, and the folder's English name kept whole inside the Arabic: isolated above)
+  n.dir = document.documentElement.dir || "auto";
+  n.textContent = text;
+  n.classList.toggle("bad", bad);
+  n.hidden = false;
+  clearTimeout(reportNoteTimer);
+  reportNoteTimer = setTimeout(() => { n.hidden = true; }, 6000);
+}
+$("report-btn")?.addEventListener("click", (e) => { e.stopPropagation(); sendCheckReport(); });
+$("report-btn")?.addEventListener("dblclick", (e) => e.stopPropagation());
 setInterval(async () => {
   if (!checkMode) return;
   checkAreas = await invoke("area_debug").catch(() => ({})) || {};
