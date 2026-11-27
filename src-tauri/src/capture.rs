@@ -488,6 +488,7 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
     let mut device: Option<(String, crate::device::DeviceCapture)> = None;
     let mut obs: Option<(String, crate::obs::ObsCapture)> = None;
     let mut ps5: Option<crate::ps5::Ps5Capture> = None;
+    let mut xbox: Option<crate::xbox_native::XboxCapture> = None;
     #[cfg(target_os = "macos")]
     let (mut awake, mut pictured) = (None, (0u64, None::<Instant>));
     loop {
@@ -508,7 +509,8 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
             keep_awake(pictured.1.is_some_and(|t| t.elapsed() < Duration::from_secs(60)), &mut awake);
         }
         let screen = want.strip_prefix(SCREEN_PREFIX).map(str::to_string);
-        let is_window = !want.starts_with(crate::obs::PREFIX) && !want.starts_with(crate::device::PREFIX) && !want.starts_with(crate::ps5::PREFIX);
+        let is_window = !want.starts_with(crate::obs::PREFIX) && !want.starts_with(crate::device::PREFIX) && !want.starts_with(crate::ps5::PREFIX)
+            && !want.starts_with(crate::xbox_native::PREFIX);
         shared.reading_screen.store(screen.is_some(), Ordering::Relaxed);
         // (a part of the picture only for a window or a screen: a card's or OBS's picture is the game already)
         *shared.source_crop.lock().unwrap() = if is_window { source_crop } else { None };
@@ -538,6 +540,9 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
             if let Some(p) = ps5.take() {
                 p.stop();
             }
+            if let Some(x) = xbox.take() {
+                x.stop();
+            }
             let key = format!("{name}|{obs_port}|{obs_password}");
             if obs.as_ref().is_none_or(|(k, o)| *k != key || o.is_finished()) {
                 if let Some((_, o)) = obs.take() {
@@ -553,6 +558,32 @@ pub fn run_manager(shared: Arc<Shared>, cfg: Arc<Mutex<Config>>) {
         }
         if let Some((_, o)) = obs.take() {
             o.stop();
+            *shared.frame.lock().unwrap() = None;
+        }
+        // The Xbox with the app's own player ("xbox:"): Remote Play's stream, decoded here
+        if want.starts_with(crate::xbox_native::PREFIX) {
+            if let Some((_, c)) = active.take() {
+                let _ = c.stop();
+            }
+            if let Some((_, d)) = device.take() {
+                d.stop();
+            }
+            if let Some(p) = ps5.take() {
+                p.stop();
+            }
+            if xbox.as_ref().is_none_or(|x| x.is_finished()) {
+                if let Some(x) = xbox.take() {
+                    x.stop();
+                }
+                shared.hwnd.store(0, Ordering::Relaxed); // no window: the Arabic goes to the preview / OBS / the TV
+                *shared.frame.lock().unwrap() = None;
+                xbox = Some(crate::xbox_native::start(shared.clone()));
+            }
+            std::thread::sleep(Duration::from_secs(1));
+            continue;
+        }
+        if let Some(x) = xbox.take() {
+            x.stop();
             *shared.frame.lock().unwrap() = None;
         }
         // The PS5 in the app ("ps5:"): chiaki-ng's stream, decoded here

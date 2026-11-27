@@ -357,9 +357,10 @@ async function loadWindows() {
   const sel = $("window_title");
   sel.innerHTML = "";
   sel.add(new Option(t("Looking for sources ..."), cfg.window_title));
-  const { windows, devices, obs, screens = [], xbox = null, ps5 = null } = await invoke("list_sources");
+  const { windows, devices, obs, screens = [], xbox = null, xbox_native = null, ps5 = null } = await invoke("list_sources");
   knownScreens = screens;
   xboxTitle = xbox;
+  xboxValue = xbox_native;
   sel.innerHTML = "";
   const group = (label) => {
     const g = document.createElement("optgroup");
@@ -378,10 +379,12 @@ async function loadWindows() {
   const add = (g, text, value, full) => { g.appendChild(opt(text, value, full)); values.push(value); };
   // remote play in a window of the app (its window's title is the source)
   ps5Value = ps5;
-  if (xbox || ps5) {
+  if (xbox || xbox_native || ps5) {
     const g = group(t("Remote Play in VI Translator"));
     if (ps5) add(g, `🎮 ${t("PS5 (in VI Translator)")}`, ps5);
-    if (xbox) add(g, `🎮 ${t("Xbox (in VI Translator)")}`, xbox);
+    // the app's own Xbox player, and Microsoft's web player in a window of the app
+    if (xbox_native) add(g, `🎮 ${t("Xbox (in VI Translator)")}`, xbox_native);
+    if (xbox) add(g, `🎮 ${t("Xbox (Microsoft's web player)")}`, xbox);
   }
   if (devices.length) {
     const g = group(t("Capture cards and cameras"));
@@ -419,9 +422,10 @@ async function loadWindows() {
   renderXbox();
   renderPs5();
 }
-// Xbox in the app: the source is its player's window, opened from here (and with the app)
+// Xbox in the app, two ways: the app's own player ("xbox:", drawn below) or Microsoft's web player,
+// whose source is its window, opened from here (and with the app)
 let xboxTitle = null;
-const renderXbox = (v = cfg.window_title) => { $("xbox-row").hidden = !xboxTitle || v !== xboxTitle; };
+const renderXbox = (v = cfg.window_title) => { $("xbox-row").hidden = !xboxTitle || v !== xboxTitle; renderXboxNative(v); };
 const openXbox = () => invoke("open_xbox").catch((e) => { $("source-status").textContent = String(e); });
 $("xbox-open").addEventListener("click", openXbox);
 $("window_title").addEventListener("change", (e) => {
@@ -429,6 +433,170 @@ $("window_title").addEventListener("change", (e) => {
   renderXbox(e.target.value);
   renderPs5(e.target.value);
 });
+
+// Xbox with the app's own player, as the phone apps have it: sign in with a code typed at
+// microsoft.com/link (no password in the app), choose the console once (it's remembered), then the
+// console, with its sound, controllers and the stream's quality. Microsoft's web player stays as the
+// other choice, at the top of the panel.
+let xboxValue = null;
+let xbox = null;
+const xboxUi = { consoles: null, searching: false, msg: "", changing: false };
+
+async function renderXboxNative(v = cfg.window_title) {
+  const native = !!xboxValue && v === xboxValue;
+  const web = !!xboxTitle && v === xboxTitle;
+  $("xbox-panel").hidden = !native && !web;
+  if (!native && !web) return;
+  if (native) { try { xbox = await invoke("xbox_status"); } catch { return; } }
+  drawXbox(native);
+}
+listen("xbox", (e) => {
+  xbox = e.payload;
+  if (!$("xbox-panel").hidden && xboxValue && cfg.window_title === xboxValue) drawXbox(true);
+});
+
+// the source switched to the other Xbox player (as choosing it in the list does)
+function xboxUse(v) {
+  if (!v || cfg.window_title === v) return;
+  const sel = $("window_title");
+  sel.value = v;
+  sel.dispatchEvent(new Event("change"));
+}
+
+function drawXbox(native) {
+  const box = $("xbox-panel");
+  box.innerHTML = "";
+  const pick = (v, label, on) => el("button", { class: `seg${on ? " on" : ""}`, "aria-pressed": on ? "true" : "false", onclick: () => xboxUse(v) }, label);
+  box.append(el("div", { class: "field" }, el("label", {}, t("Xbox player")),
+    el("div", { class: "segs" },
+      xboxValue ? pick(xboxValue, t("VI Translator's player"), native) : null,
+      xboxTitle ? pick(xboxTitle, t("Microsoft's web player"), !native) : null)));
+  if (!native || !xbox) return;
+  const s = xbox;
+  const err = s.error ? el("p", { class: "small ps5-err" }, I18N.tMsg(s.error)) : null;
+  if (!s.signed_in) {
+    box.append(ps5Step(1, t("Sign in with a code"), false, true, () => xboxCodeStep(s, err)),
+      ps5Step(2, t("Choose your Xbox"), false, false, () => null));
+    return;
+  }
+  if (!s.console || xboxUi.changing) {
+    if (xboxUi.consoles == null && !xboxUi.searching) xboxSearch();
+    box.append(xboxAccountStep(s), ps5Step(2, t("Choose your Xbox"), false, true, () => xboxConsoleStep(err)));
+    return;
+  }
+  box.append(xboxChosen(s, err));
+}
+
+function xboxAccountStep(s) {
+  return ps5Step(1, t("Sign in with a code"), true, false, () => el("div", { class: "row" },
+    el("div", { class: "grow" }, s.gamertag ? t("Signed in as {name}", { name: s.gamertag }) : t("Signed in")),
+    el("button", { class: "link", onclick: xboxSignOut }, t("Sign out"))));
+}
+
+async function xboxSignOut() {
+  if (!(await ask(t("Sign out of Microsoft in VI Translator? You can sign in again with a new code."), t("Sign out")))) return;
+  Object.assign(xboxUi, { consoles: null, changing: false, msg: "" });
+  try { await invoke("xbox_sign_out"); } catch {}
+  renderXboxNative();
+}
+
+function xboxCodeStep(s, err) {
+  if (!s.code) {
+    return el("div", {},
+      el("p", { class: "muted small" }, t("No password in VI Translator: you type a short code on Microsoft's page, on this PC or your phone.")),
+      el("button", { class: "btn primary", onclick: async () => {
+        try { xbox = await invoke("xbox_sign_in"); } catch (e) { xbox = { ...xbox, error: String(e) }; }
+        drawXbox(true);
+      } }, s.error ? t("Get a new code") : t("Get a code")),
+      err);
+  }
+  const msg = el("p", { class: "small muted" });
+  return el("div", {},
+    el("p", {}, t("On any device, go to {uri} and type this code:", { uri: s.code.uri.replace(/^https:\/\/(www\.)?/, "") })),
+    el("div", { class: "ps5-pin xbox-code", dir: "ltr" }, s.code.code),
+    el("div", { class: "row" },
+      el("button", { class: "btn primary", onclick: () => invoke("xbox_open_link").catch((e) => { msg.textContent = String(e); }) }, t("Open the page")),
+      el("button", { class: "btn", onclick: async () => {
+        try { await navigator.clipboard.writeText(s.code.code); msg.textContent = t("Copied."); } catch (e) { msg.textContent = String(e); }
+      } }, t("Copy the code"))),
+    el("p", { class: "muted small" }, el("span", { class: "ps5-spin" }), t("Waiting for you to sign in…")),
+    el("button", { class: "link", onclick: async () => { await invoke("xbox_cancel_sign_in"); renderXboxNative(); } }, t("Cancel")),
+    msg, err);
+}
+
+async function xboxSearch() {
+  xboxUi.searching = true;
+  xboxUi.msg = "";
+  if (xbox) drawXbox(true);
+  try { xboxUi.consoles = await invoke("xbox_consoles"); } catch (e) { xboxUi.consoles = []; xboxUi.msg = I18N.tMsg(String(e)); }
+  xboxUi.searching = false;
+  if (!$("xbox-panel").hidden && xbox) drawXbox(true);
+}
+
+const xboxPower = (p) => (/^on$/i.test(p) ? t("On") : /standby/i.test(p) ? t("Asleep") : /^off$/i.test(p) ? t("Off") : "");
+const xboxKind = (k) => ({ XboxSeriesX: "Xbox Series X", XboxSeriesS: "Xbox Series S", XboxOne: "Xbox One", XboxOneS: "Xbox One S", XboxOneX: "Xbox One X" }[k] || "");
+
+function xboxConsoleStep(err) {
+  const list = xboxUi.consoles || [];
+  return el("div", {},
+    xboxUi.searching ? el("p", { class: "muted small" }, el("span", { class: "ps5-spin" }), t("Looking for your consoles…")) : null,
+    list.map((c) => el("div", { class: "ps5-host" },
+      el("div", { class: "grow" }, el("b", {}, c.name), el("div", { class: "muted small" }, [xboxKind(c.kind), xboxPower(c.power)].filter(Boolean).join(" · "))),
+      el("button", { class: "btn primary", onclick: async () => {
+        xboxUi.changing = false;
+        await invoke("xbox_choose", { console: { id: c.id, name: c.name, kind: c.kind } });
+        renderXboxNative();
+      } }, t("Choose")))),
+    !xboxUi.searching && !list.length && !xboxUi.msg ? el("div", { class: "callout" }, t("No console on this account yet. On the Xbox, turn on Settings › Devices & connections › Remote features, then search again.")) : null,
+    xboxUi.msg ? el("p", { class: "small ps5-err" }, xboxUi.msg) : null,
+    !xboxUi.searching ? el("button", { class: "link", onclick: xboxSearch }, t("Search again")) : null,
+    xboxUi.changing ? el("button", { class: "link", onclick: () => { xboxUi.changing = false; drawXbox(true); } }, t("Cancel")) : null,
+    err);
+}
+
+function xboxChosen(s, err) {
+  const name = s.console.name || "Xbox";
+  const quality = el("select", { id: "xbox-quality" }, el("option", { value: "1080" }, "1080p"), el("option", { value: "720" }, "720p"));
+  quality.value = String(s.resolution || 1080);
+  quality.addEventListener("change", () => invoke("xbox_set_resolution", { resolution: +quality.value }));
+  // the Xbox's sound on this PC: on or off, and its volume (heard at once)
+  const on = el("input", { type: "checkbox", id: "xbox-sound" });
+  on.checked = s.sound !== false;
+  const vol = el("input", { type: "range", id: "xbox-volume", min: "0", max: "100", step: "5", title: t("Volume"), "aria-label": t("Volume") });
+  vol.value = String(s.volume ?? 100);
+  const pct = el("span", { class: "muted small ps5-pct" }, `${vol.value}%`);
+  const sound = () => {
+    vol.disabled = !on.checked;
+    pct.textContent = `${vol.value}%`;
+    xbox = { ...xbox, sound: on.checked, volume: +vol.value };
+    invoke("xbox_set_sound", { on: on.checked, volume: +vol.value });
+  };
+  on.addEventListener("change", sound);
+  vol.addEventListener("input", sound);
+  vol.disabled = !on.checked;
+  const pads = el("input", { type: "checkbox", id: "xbox-pads" });
+  pads.checked = s.controllers !== false;
+  pads.addEventListener("change", () => { xbox = { ...xbox, controllers: pads.checked }; invoke("xbox_set_controllers", { on: pads.checked }); });
+  return el("div", {},
+    el("div", { class: "ps5-step done" },
+      el("div", { class: "ps5-head" }, el("span", { class: "ps5-badge" }, "✓"),
+        el("div", {}, el("b", {}, name), el("div", { class: "small ps5-ok" }, `✓ ${t("Chosen")}`, s.gamertag ? ` · ${s.gamertag}` : ""))),
+      el("div", { class: "ps5-body" },
+        el("p", { class: "muted small" }, t("While the Xbox is the picture source, the app plays from it with Remote Play. If it is asleep, it is woken.")),
+        el("div", { class: "row" },
+          el("button", { class: "btn", onclick: () => { Object.assign(xboxUi, { changing: true, consoles: null }); drawXbox(true); } }, t("Change console")),
+          el("button", { class: "btn danger", onclick: xboxSignOut }, t("Sign out"))),
+        err)),
+    el("div", { class: "ps5-step ps5-settings" },
+      el("div", { class: "field" },
+        el("label", { class: "check" }, on, " ", el("span", {}, t("Play the Xbox's sound on this PC"))),
+        el("div", { class: "row ps5-volume" }, el("span", { class: "muted small" }, t("Volume")), el("div", { class: "grow" }, vol), pct)),
+      el("div", { class: "field" }, el("label", { class: "check" }, pads, " ", el("span", {}, t("Controllers connected to this PC play on the Xbox")))),
+      el("div", { class: "field" }, el("label", { for: "xbox-quality" }, t("Stream quality")), quality,
+        el("p", { class: "muted small" }, t("1080p reads small text best; 720p for a slower home network.")))),
+    el("p", { class: "muted small ps5-foot" }, t("Use Play to play full screen.")),
+  );
+}
 
 // PS5 in the app, linked once as the phone app does it, in three steps each done before the next
 // opens: sign in to PSN (Sony's page in a window of the app; or in a browser, pasting back the address
@@ -452,7 +620,7 @@ async function renderPs5(v = cfg.window_title) {
   const on = !!ps5Value && v === ps5Value;
   $("ps5-panel").hidden = !on;
   // (the capture card hint means nothing while remote play in the app is the source)
-  $("obs-card-hint").hidden = on || (!!xboxTitle && v === xboxTitle);
+  $("obs-card-hint").hidden = on || (!!xboxTitle && v === xboxTitle) || (!!xboxValue && v === xboxValue);
   if (!on) return;
   try { ps5 = await invoke("ps5_status"); } catch { return; }
   drawPs5();
@@ -887,7 +1055,7 @@ $("window_title").addEventListener("change", (e) => {
 
 // ------------------------------------------------------------------------------------- the game's part of a window
 
-const isWindowSource = (v) => !!v && !v.startsWith("device:") && !v.startsWith("obs:") && !v.startsWith("ps5:");
+const isWindowSource = (v) => !!v && !v.startsWith("device:") && !v.startsWith("obs:") && !v.startsWith("ps5:") && !v.startsWith("xbox:");
 // "Screen 1 — DELL U2720Q (2560 × 1440)"
 const screenLabel = (s) => `${t("Screen {n}", { n: s.number })}${s.name ? ` — ${s.name}` : ""} (${s.w} × ${s.h})`;
 // a source or overlay value as people read it (a screen's id means nothing to them)
