@@ -538,6 +538,14 @@ dialog.part .part-msg { font-size: 13px; color: var(--muted); min-height: 18px; 
   text-shadow: 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000, 0 0 3px #000; }
 /* PS5 in the app: the linking steps (as the phone app's) and the linked PS5 */
 #ps5-panel { margin-top: 10px; }
+/* Xbox: the player (the app's own or Microsoft's web player) as two joined buttons, and the sign-in code */
+#xbox-panel { margin-top: 10px; }
+#xbox-panel > .field:first-child { margin-top: 0; }
+.segs { display: flex; margin-top: 6px; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.seg { flex: 1; padding: 8px 10px; border: 0; background: var(--panel); color: var(--text); font: inherit; cursor: pointer; }
+.seg + .seg { border-inline-start: 1px solid var(--line); }
+.seg.on { background: var(--accent-ui); color: #fff; font-weight: 600; }
+.xbox-code { padding: 10px 0; border-radius: var(--radius-sm); background: var(--panel-2); user-select: all; }
 .ps5-step { margin-top: 10px; padding: 12px 14px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--line); }
 .ps5-step.open { border: 1.5px solid var(--accent-ui); }
 .ps5-step.off { opacity: .6; }
