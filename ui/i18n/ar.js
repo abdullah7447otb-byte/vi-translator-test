@@ -90,7 +90,7 @@ I18N.add("ar", {
   "Levantine (شامي)": "شامي",
   "Saudi (سعودي)": "سعودي",
   "Your notes for the model": "ملاحظاتك للنموذج",
-  "Optional. Names, places, terms or a tone to keep the same, one per line. They are sent with every line the model translates (ready translations don't use them).": "اختياري. أسماء أو أماكن أو مصطلحات أو أسلوب تبيه ثابت، كل واحد في سطر. تنرسل مع كل جملة يترجمها النموذج (الترجمات الجاهزة ما تستخدمها).",
+  "Optional. Names, places, terms or a tone to keep the same, one per line. They are sent with every line the model translates (ready translations don't use them).": "اختياري. أسماء أو أماكن أو مصطلحات أو أسلوب تريد أن يبقى ثابتًا، واحد في كل سطر. تُرسل مع كل سطر يترجمه النموذج (الترجمات الجاهزة لا تستخدمها).",
   "Each area is read separately. Position and size are a percentage of the window, so they stay right if the window is resized.": "تُقرأ كل منطقة على حدة. الموضع والحجم نسبة مئوية من النافذة، فيبقيان صحيحين عند تغيير حجمها.",
   "Below the game's text box (same left edge, at most its width)": "أسفل مربع نص اللعبة (نفس الحافة اليسرى، وبعرضه كحد أقصى)",
   "Just above the game's text (centred on it)": "فوق نص اللعبة مباشرةً (في وسطه)",
