@@ -1126,12 +1126,14 @@ const ENGINE_FIELDS = {
   claude: [
     ["claude_key", "Anthropic API key", "password"],
     ["claude_model", "Model", "select", null, [["claude-haiku-5-5", "Claude Haiku 5.5 — cheapest, fast"], ["claude-sonnet-5-5", "Claude Sonnet 5.5 — better"], ["claude-opus-5-5", "Claude Opus 5.5 — best, ~40× Haiku's price"]]],
-    ["dialect", "Arabic variety", "select", null, [["msa", "Modern Standard (الفصحى)"], ["egyptian", "Egyptian (مصري)"], ["gulf", "Gulf (خليجي)"], ["levantine", "Levantine (شامي)"]]],
+    ["dialect", "Arabic variety", "select", null, [["msa", "Modern Standard (الفصحى)"], ["egyptian", "Egyptian (مصري)"], ["gulf", "Gulf (خليجي)"], ["levantine", "Levantine (شامي)"], ["saudi", "Saudi (سعودي)"]]],
+    ["llm_notes", "Your notes for the model", "textarea", "Optional. Names, places, terms or a tone to keep the same, one per line. They are sent with every line the model translates (ready translations don't use them)."],
   ],
   openai: [
     ["openai_key", "OpenAI API key", "password"],
     ["openai_model", "Model", "select", null, [["gpt-6-luna", "GPT-6 Luna — cheapest, fast"], ["gpt-6.1-terra", "GPT-6.1 Terra — better"], ["gpt-6.2-sol", "GPT-6.2 Sol — best, ~20× Luna's price"]]],
-    ["dialect", "Arabic variety", "select", null, [["msa", "Modern Standard (الفصحى)"], ["egyptian", "Egyptian (مصري)"], ["gulf", "Gulf (خليجي)"], ["levantine", "Levantine (شامي)"]]],
+    ["dialect", "Arabic variety", "select", null, [["msa", "Modern Standard (الفصحى)"], ["egyptian", "Egyptian (مصري)"], ["gulf", "Gulf (خليجي)"], ["levantine", "Levantine (شامي)"], ["saudi", "Saudi (سعودي)"]]],
+    ["llm_notes", "Your notes for the model", "textarea", "Optional. Names, places, terms or a tone to keep the same, one per line. They are sent with every line the model translates (ready translations don't use them)."],
   ],
 };
 
@@ -1213,6 +1215,12 @@ function renderEngines() {
     if (type === "select") {
       input = document.createElement("select");
       for (const [v, txt] of options) input.add(new Option(t(txt), v));
+    } else if (type === "textarea") {
+      input = document.createElement("textarea");
+      input.rows = 4;
+      input.maxLength = 1500;
+      input.spellcheck = false;
+      input.dir = "auto";
     } else {
       input = document.createElement("input");
       input.type = type;
