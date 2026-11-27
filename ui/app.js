@@ -2803,13 +2803,32 @@ async function drawLookPreviews(form) {
 const scriptText = (v) => (typeof v === "string" ? v : v ? v[cfg.ui_lang] || v.en || Object.values(v)[0] || "" : "");
 
 /**
- * What's translated (Game pages): the name and the note of each switch the core lists for a game
- * (`groups` of page_options; GTA VI's: the phone, the pause menu, the help and notices).
+ * What's translated (Game pages): the heading of each group, and the name and note of each switch the core
+ * lists for a game (`groups` of page_options: one thing each, none covering another).
  */
+const CONTENT_GROUPS = {
+  phone: "Phone translations",
+  menus: "Pause menu and map",
+  notices: "Help, instructions and notices",
+  screens: "Other screens",
+};
 const CONTENT_TEXT = {
-  phone: ["Phone translations", "The phone's WhatUp chats, translated on a second phone beside it."],
-  menus: ["Pause menu and map", "The pause menu: the map and its index, lists, help pages, settings and buttons."],
-  notices: ["Help, instructions and notices", "The help box at the top left, the instructions under the subtitles, and the game's notices like “Controller disconnected”."],
+  phone_text: ["WhatUp chats", "The phone's chats, translated on a second phone beside it."],
+  phone_bubble: ["Message bubble", "A new message's bubble at the bottom right, translated above it."],
+  pause_home: ["First page and Game page", "The menu's first page (Map, Game, Store, Help…), saving and loading, and their questions."],
+  pause_map: ["Map", "The map's buttons and the objective card at the top left."],
+  pause_brief: ["Brief", "The Brief tab: what was said, help texts and objectives so far."],
+  pause_jason_lucia: ["Jason & Lucia", "The Jason & Lucia tab."],
+  pause_progress: ["Progress and stats", "The Progress tab's cards and the stats pages."],
+  pause_help: ["Help pages", "The Help menu's pages: Basics, Inventory, Vehicles and the rest."],
+  pause_settings: ["Settings pages", "The settings: controls, display, audio and the rest."],
+  pause_tabs: ["Tab names and buttons", "The row of tabs at the top and the buttons at the bottom right of every page."],
+  help: ["Help box", "The help box at the top left."],
+  instructions: ["Instructions", "The instructions under the subtitles."],
+  game_notices: ["Game notices", "The game's notices, like “Controller disconnected”."],
+  wasted: ["Wasted and Busted", "The big “wasted” when you die and “busted” when you're arrested."],
+  mission_failed: ["Mission failed", "The “failed” page when a mission is lost: its reason and buttons."],
+  weapon_wheel: ["Weapon wheel", "The weapon and item wheel: its tabs, the selected item and its stats."],
 };
 
 /** The pages a game's script has and the switches it declares, asked once per game. */
@@ -2831,27 +2850,42 @@ async function renderPages() {
     return;
   }
   o.more = o.more || {};
-  const isOn = (opt) => (opt.id in o.more ? o.more[opt.id] : opt.on);
-  // What's translated: the dialogue always; each of the game's switches (the core's list) stands for read
-  // areas, pages of the game and the phone, shown on when any of them is on and switching them all
-  const groups = (script.groups || []).filter((g) => CONTENT_TEXT[g.id]);
-  const covered = new Set(groups.flatMap((g) => g.pages));
+  // a switch as the profile has it: as set; else, one split from an older switch (`inherits`), as that one is
+  // set; else the script's default (as the core's `pagescript::option_on`)
+  const isOn = (opt) => {
+    if (opt.id in o.more) return o.more[opt.id];
+    if (opt.inherits && opt.inherits !== opt.id) {
+      if (opt.inherits in o.more) return o.more[opt.inherits];
+      const old = script.options.find((x) => x.id === opt.inherits);
+      if (old) return old.on;
+    }
+    return opt.on;
+  };
+  // What's translated: the dialogue always; then the game's switches (the core's list) under their groups'
+  // headings, each one thing (a read area, a switch of the game's pages, or a setting such as the phone's)
+  const switches = (script.groups || []).filter((g) => CONTENT_TEXT[g.id] && CONTENT_GROUPS[g.group]);
+  const covered = new Set(switches.flatMap((g) => g.pages));
   const pageOn = (id) => { const opt = script.options.find((x) => x.id === id); return opt ? isOn(opt) : false; };
   const areaOn = (id) => cfg.areas.some((a) => a.id === id && a.enabled);
-  const groupOn = (g) => (g.phone && cfg.phone_text !== false) || g.areas.some(areaOn) || g.pages.some(pageOn);
-  const setGroup = (g, on) => {
-    if (g.phone) cfg.phone_text = on;
+  // (the message bubble: as the phone in settings from before its own switch)
+  const settingOn = (id) => (id === "phone_bubble" ? (cfg.phone_bubble ?? cfg.phone_text !== false) : cfg[id] !== false);
+  const switchOn = (g) => (g.setting ? settingOn(g.setting) : g.areas.length ? g.areas.some(areaOn) : g.pages.some(pageOn));
+  const setSwitch = (g, on) => {
+    if (g.setting) cfg[g.setting] = on;
     for (const a of cfg.areas) if (g.areas.includes(a.id)) { a.enabled = on; setShown("area", a.id, on); }
     for (const id of g.pages) { o.more[id] = on; setShown("page", id, on); }
   };
-  const content = groups.length ? `
+  const headings = Object.keys(CONTENT_GROUPS).filter((id) => switches.some((g) => g.group === id));
+  const content = switches.length ? `
     <div class="card">
       <div style="font-weight:600">${t("What's translated")}</div>
       <label class="check" style="margin-top:10px"><input type="checkbox" checked disabled data-keep/> ${t("Dialogue and subtitles")}</label>
       <p class="muted small" style="margin:2px 0 0">${t("Always translated.")}</p>
-      ${groups.map((g) => `
-      <label class="check" style="margin-top:10px"><input type="checkbox" data-group="${AS.esc(g.id)}" data-keep ${groupOn(g) ? "checked" : ""}/> ${t(CONTENT_TEXT[g.id][0])}</label>
-      <p class="muted small" style="margin:2px 0 0">${t(CONTENT_TEXT[g.id][1])}</p>`).join("")}
+      ${headings.map((h) => `
+      <div style="font-weight:600;margin-top:16px">${t(CONTENT_GROUPS[h])}</div>
+      ${switches.filter((g) => g.group === h).map((g) => `
+      <label class="check" style="margin-top:8px"><input type="checkbox" data-switch="${AS.esc(g.id)}" data-keep ${switchOn(g) ? "checked" : ""}/> ${t(CONTENT_TEXT[g.id][0])}</label>
+      <p class="muted small" style="margin:2px 0 0">${t(CONTENT_TEXT[g.id][1])}</p>`).join("")}`).join("")}
       <button class="btn" id="pf-dialogue-only" data-keep style="margin-top:12px">${t("Dialogue only")}</button>
       <p class="muted small" style="margin:6px 0 0">${t("Turns off everything here except the dialogue and subtitles.")}</p>
     </div>` : "";
@@ -2867,13 +2901,13 @@ async function renderPages() {
       <div class="field" style="margin-top:10px"><label>${t("Reason and button font")}</label><select id="pf-text">${fontOptions(o.text_font)}</select></div>
     </div>`;
   f.querySelectorAll("[data-more]").forEach((el) => el.addEventListener("change", () => { o.more[el.dataset.more] = el.checked; setShown("page", el.dataset.more, el.checked); save(); }));
-  f.querySelectorAll("[data-group]").forEach((el) => el.addEventListener("change", () => {
-    setGroup(groups.find((g) => g.id === el.dataset.group), el.checked);
+  f.querySelectorAll("[data-switch]").forEach((el) => el.addEventListener("change", () => {
+    setSwitch(switches.find((g) => g.id === el.dataset.switch), el.checked);
     renderAreas();
     save();
   }));
   if ($("pf-dialogue-only")) $("pf-dialogue-only").addEventListener("click", () => {
-    for (const g of groups) setGroup(g, false);
+    for (const g of switches) setSwitch(g, false);
     for (const opt of script.options) { o.more[opt.id] = false; setShown("page", opt.id, false); }
     renderAreas();
     renderPages();
