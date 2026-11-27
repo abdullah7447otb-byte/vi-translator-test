@@ -28,10 +28,17 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()>
     result
 }
 
-/// Text to show (a name from the server or a settings file): no control characters, at most `max`
-/// characters. (The window escapes it too; this keeps it short and printable.)
+/// Text to show (a name from the server, a settings file or the player): no control characters and
+/// no bidi embeddings, overrides or isolates (one left open in an Arabic name turns the text after
+/// it around wherever the name is shown), at most `max` characters. (The window escapes it too;
+/// this keeps it short and printable.)
 pub fn clean_text(s: &str, max: usize) -> String {
-    s.chars().filter(|c| !c.is_control()).take(max).collect::<String>().trim().to_string()
+    s.chars().filter(|c| !c.is_control() && !bidi_control(*c)).take(max).collect::<String>().trim().to_string()
+}
+
+/// U+202A–U+202E (embeddings, overrides) and U+2066–U+2069 (isolates).
+fn bidi_control(c: char) -> bool {
+    matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 /// A colour as the style form and the overlays use it: "#rrggbb".
@@ -39,10 +46,13 @@ pub fn is_hex_color(s: &str) -> bool {
     s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// A font family name: letters, digits, spaces and - _ . only (anything else: none, the default).
+/// A font family name as installed fonts have them, in any script ("(A) Arslan Wessam A", an Arabic
+/// font known only by its Arabic name, with its marks): anything printable but what could end the
+/// quoted name in the windows' CSS (" \ ; { } < >). Anything else: none, the default.
 pub fn clean_font(s: &str) -> String {
     let s = s.trim();
-    if s.chars().count() <= 64 && s.chars().all(|c| c.is_alphanumeric() || " -_.".contains(c)) { s.to_string() } else { String::new() }
+    let ok = |c: char| !c.is_control() && !bidi_control(c) && !"\"\\;{}<>".contains(c);
+    if s.chars().count() <= 64 && s.chars().all(ok) { s.to_string() } else { String::new() }
 }
 
 /// A setting's keyword ("under_text", "bottom-center" …): a-z, 0-9, _ and - only, else none.
@@ -1055,6 +1065,8 @@ impl Config {
         let builtin_ids: Vec<String> = self.builtins.iter().map(|p| p.id.clone()).collect();
         self.profiles.retain(|p| !builtin_ids.contains(&p.id) && !p.id.is_empty() && seen.insert(p.id.clone()));
         for p in self.profiles.iter_mut() {
+            // (the player's own: names, fonts and numbers within what the app uses, as built-in ones')
+            p.sanitize();
             if p.name.trim().is_empty() {
                 p.name = "My profile".into();
             }
@@ -1530,5 +1542,38 @@ mod profile_tests {
         c.profile = "gone".into();
         c.normalize();
         assert_eq!(c.profile, "gta6", "an unknown profile falls back to a built-in one");
+    }
+
+    #[test]
+    fn a_profile_with_an_arabic_name_keeps_its_name_and_fonts() {
+        let mut c = Config::default();
+        let mut mine = builtin_profile("gta6").unwrap();
+        mine.id = "custom-ar".into();
+        // (an override left open after the name, as pasted from a chat app)
+        mine.name = "جي تي ايه السادسة (نسخة)\u{202e}".into();
+        mine.areas[0].font_family = "(A) Arslan Wessam A".into();
+        mine.areas[1].font_family = "خط النسخ العربي".into();
+        mine.style.font_family = "Noto Naskh Arabic UI".into();
+        mine.pages.title_font = "Bahij Muna".into();
+        c.profiles.push(mine);
+        c.profile = "custom-ar".into();
+        c.normalize();
+        let p = c.profiles.iter().find(|p| p.id == "custom-ar").unwrap();
+        assert_eq!(p.name, "جي تي ايه السادسة (نسخة)");
+        assert_eq!((c.areas[0].font_family.as_str(), c.areas[1].font_family.as_str()), ("(A) Arslan Wessam A", "خط النسخ العربي"));
+        assert_eq!((c.style.font_family.as_str(), c.profile_opts.title_font.as_str()), ("Noto Naskh Arabic UI", "Bahij Muna"));
+        // saved and read back the same
+        let back: Config = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.profiles.iter().find(|p| p.id == "custom-ar").unwrap().name, p.name);
+    }
+
+    #[test]
+    fn a_font_name_cant_end_the_css_string_it_goes_in() {
+        for bad in ["Evil\"; color: red", "a\\b", "x{y}", "<b>", "Arial\u{202e}"] {
+            assert_eq!(clean_font(bad), "", "{bad:?}");
+        }
+        for good in ["Segoe UI", "Bahnschrift SemiLight", "(A) Arslan Wessam A", "Font & Co.", "Kufi+", "خط", "Sakkal Majalla"] {
+            assert_eq!(clean_font(good), good);
+        }
     }
 }
