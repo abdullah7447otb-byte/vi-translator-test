@@ -310,6 +310,11 @@ pub struct Config {
     pub overlays_enabled: bool,
     /// GTA VI's phone in the player's hand (WhatUp, Snapmatic): its text translated beside it.
     pub phone_text: bool,
+    /// GTA VI's message bubble at the bottom right: its translation in a bubble above it.
+    /// None only in a settings file from before this setting (the bubble went with `phone_text` then):
+    /// set to `phone_text` once when it is loaded.
+    #[serde(default)]
+    pub phone_bubble: Option<bool>,
     /// The list of live translations (in the app and on the home-network page) keeps filling,
     /// whether or not the overlays are on.
     pub live_translations: bool,
@@ -525,38 +530,60 @@ impl Config {
     pub fn phone_text(&self) -> bool {
         self.phone_text && self.game() == "gta6"
     }
+    /// GTA VI's message bubble translated above it (as the phone, in settings from before its own switch).
+    pub fn phone_bubble(&self) -> bool {
+        self.phone_bubble.unwrap_or(self.phone_text) && self.game() == "gta6"
+    }
     /// The game profile's look puts each translation over the game's lines, on a black box.
     pub fn cover_look(&self) -> bool {
         self.profile_opts.more.get("translation_cover") == Some(&true)
     }
 }
 
-/// What's translated, as the player chooses it (Game pages): a switch stands for the profile's read
-/// areas, the game's pages (its pages script's switches) and the phone text it covers, all on or off
-/// together. The dialogue (the subtitles) is always translated, so no switch covers it. The windows
-/// show a switch as on when any of what it covers is on, and set all of it (`Config::set_shown`,
-/// `phone_text`); nothing of its own is saved, so the defaults stay the areas' and pages' own.
+/// What's translated, as the player chooses it (Game pages): one checkbox for each part of the game
+/// translated apart, none covering another, shown under its group's heading (`group`). Each stands for
+/// one thing: a read area of the profile (`areas`), a switch of the game's pages script (`pages`, saved in
+/// the profile's `more`), or a setting of the app's own (`setting`: "phone_text", "phone_bubble"). The
+/// dialogue (the subtitles) is always translated, so no switch covers it. Nothing of a switch's own is
+/// saved: the defaults stay the areas', pages' and settings' own (all on, as before there were switches).
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct ContentSwitch {
     pub id: &'static str,
+    pub group: &'static str,
     pub areas: Vec<&'static str>,
     pub pages: Vec<&'static str>,
-    pub phone: bool,
+    pub setting: &'static str,
 }
 
 /// A game's What's-translated switches (none for a game without them).
 /// GTA VI's side conversations (people in the street talking) aren't told apart from the story's
 /// dialogue: they come in the same subtitles, so they have no switch of their own.
 pub fn content_switches(game: &str) -> Vec<ContentSwitch> {
-    let sw = |id, areas: &[&'static str], pages: &[&'static str], phone| ContentSwitch { id, areas: areas.to_vec(), pages: pages.to_vec(), phone };
+    let setting = |group, id| ContentSwitch { id, group, areas: Vec::new(), pages: Vec::new(), setting: id };
+    let page = |group, id| ContentSwitch { id, group, areas: Vec::new(), pages: vec![id], setting: "" };
+    let area = |group, id| ContentSwitch { id, group, areas: vec![id], pages: Vec::new(), setting: "" };
     match game {
         "gta6" => vec![
-            // its WhatUp chats on a second phone beside it (`phone_text`)
-            sw("phone", &[], &[], true),
-            // the pause menu's pages: the map and its index, the lists, help pages, settings
-            sw("menus", &[], &["pause_menu"], false),
+            // the phone: its WhatUp chats on a second phone beside it, the message bubble at the bottom right
+            setting("phone", "phone_text"),
+            setting("phone", "phone_bubble"),
+            // the pause menu, part by part (the script's `pause_*` switches, each from the old `pause_menu`)
+            page("menus", "pause_home"),
+            page("menus", "pause_map"),
+            page("menus", "pause_brief"),
+            page("menus", "pause_jason_lucia"),
+            page("menus", "pause_progress"),
+            page("menus", "pause_help"),
+            page("menus", "pause_settings"),
+            page("menus", "pause_tabs"),
             // the help box (top left), the instructions under the subtitles, the game's notices
-            sw("notices", &["help", "instructions"], &["game_notices"], false),
+            area("notices", "help"),
+            area("notices", "instructions"),
+            page("notices", "game_notices"),
+            // the game's other screens
+            page("screens", "wasted"),
+            page("screens", "mission_failed"),
+            page("screens", "weapon_wheel"),
         ],
         _ => Vec::new(),
     }
@@ -826,6 +853,7 @@ impl Default for Config {
             timing_custom: Some(false),
             overlays_enabled: true,
             phone_text: true,
+            phone_bubble: None,
             live_translations: true,
             fps_badge: false,
             fps_corner: "top-right".into(),
@@ -1031,6 +1059,10 @@ impl Config {
         if c.timing_custom.is_none() {
             let d = Self::default();
             c.timing_custom = Some(c.interval_ms != d.interval_ms || c.stable_ms != d.stable_ms || c.clear_after_ms != d.clear_after_ms);
+        }
+        // A settings file from before `phone_bubble`: the bubble as the phone was (one switch for both then).
+        if c.phone_bubble.is_none() {
+            c.phone_bubble = Some(c.phone_text);
         }
         if !c.unreadable {
             c.defaults_moved = c.move_to_new_defaults();
@@ -1238,6 +1270,50 @@ impl Config {
 #[cfg(test)]
 mod profile_tests {
     use super::*;
+
+    #[test]
+    fn the_message_bubble_switch_starts_as_the_phone_was() {
+        let dir = std::env::temp_dir().join(format!("vit-bubble-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        // no settings yet: on, as the phone
+        let c = Config::load(&dir.join("none.json"));
+        assert_eq!(c.phone_bubble, Some(true));
+        assert!(c.phone_text);
+        // a settings file from before the switch: the bubble as the phone was
+        for (phone, bubble) in [(true, true), (false, false)] {
+            std::fs::write(&path, format!(r#"{{"phone_text": {phone}}}"#)).unwrap();
+            let c = Config::load(&path);
+            assert_eq!((c.phone_text, c.phone_bubble), (phone, Some(bubble)));
+        }
+        // set apart from the phone: kept
+        std::fs::write(&path, r#"{"phone_text": false, "phone_bubble": true}"#).unwrap();
+        let c = Config::load(&path);
+        assert_eq!((c.phone_text, c.phone_bubble), (false, Some(true)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn whats_translated_switches_are_one_thing_each() {
+        let list = content_switches("gta6");
+        let mut seen = std::collections::HashSet::new();
+        for s in &list {
+            assert!(seen.insert(s.id), "{} twice", s.id);
+            // exactly one thing: an area, a page switch or a setting (none overlapping another)
+            assert_eq!(s.areas.len() + s.pages.len() + usize::from(!s.setting.is_empty()), 1, "{}", s.id);
+            assert!(["phone", "menus", "notices", "screens"].contains(&s.group), "{}", s.id);
+        }
+        // the areas are GTA VI's own, shown by default; the subtitles in none (always translated)
+        let gta6 = builtin_profile("gta6").unwrap();
+        for id in list.iter().flat_map(|s| s.areas.iter()) {
+            assert!(gta6.areas.iter().any(|a| a.id == *id && a.enabled), "{id}");
+            assert_ne!(*id, "subtitles");
+        }
+        // the phone's settings: on by default
+        let c = Config::default();
+        assert!(c.phone_text && c.phone_bubble.unwrap_or(c.phone_text));
+        assert!(content_switches("rdr2").is_empty());
+    }
 
     #[test]
     fn ready_translations_are_on_unless_turned_off() {
