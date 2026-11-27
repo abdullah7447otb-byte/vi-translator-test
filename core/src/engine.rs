@@ -945,7 +945,9 @@ impl Reader {
             // No picture: once that has lasted as long as an English line may blink out, what was up
             // goes, as if the game took it away (else a page and the last line stay on the OBS page).
             let since = *no_frame_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= Duration::from_millis(clear_after_ms) {
+            // (a stream from a console drops frames now and then: a gap shorter than the floor isn't the
+            // game taking its text away)
+            if since.elapsed() >= Duration::from_millis(clear_after_ms.max(DROPOUT_FLOOR_MS)) {
                 if screen.is_some() {
                     hide_screen(&*ctx.sink, &ctx.live, &latest, &mut screen);
                 }
@@ -1752,7 +1754,7 @@ impl Reader {
                 // (when the English counts as gone: lines that stack up come and go quickly; an
                 // instruction stays up and is read over every kind of ground, sunlit gravel missing it
                 // for a moment now and then: gone after 350 ms at the least, not blinking)
-                let clear_ms = if stacks { clear_after_ms } else { clear_after_ms.max(350) };
+                let clear_ms = clear_ms_for(stacks, clear_after_ms);
                 // (read here, from the frame: grown; the host reads the area as it is)
                 let own_read = matches!((&frame, &ocr_now), (Some(_), Some(_)));
                 let grown;
@@ -2724,8 +2726,29 @@ fn hide_screen(sink: &dyn Sink, shared: &Live, latest: &Mutex<HashMap<String, u6
     sink.emit("screen", serde_json::Value::Null);
 }
 
+/// Shortest time a line may be missed before it counts as gone (ms). A subtitle drops out of a reading
+/// now and then (bright ground behind it, the text fading, a frame the stream dropped); ended after
+/// 100 ms, it came back as a new line that had to settle again, and a short subtitle could be gone
+/// before its translation, which the memory had, was shown.
+pub(crate) const DROPOUT_FLOOR_MS: u64 = 250;
+
+/// When an area's English counts as gone: lines that stack up after the dropout floor at least; an
+/// instruction stays up and is read over every kind of ground: 350 ms at least.
+pub(crate) fn clear_ms_for(stacks: bool, clear_after_ms: u64) -> u64 {
+    if stacks { clear_after_ms.max(DROPOUT_FLOOR_MS) } else { clear_after_ms.max(350) }
+}
+
 #[cfg(test)]
 mod english_color_tests {
+    #[test]
+    fn a_short_dropout_never_ends_a_line() {
+        // the old default, 100 ms: a subtitle missed for a moment stays up
+        assert_eq!(super::clear_ms_for(true, 100), super::DROPOUT_FLOOR_MS);
+        assert_eq!(super::clear_ms_for(true, 300), 300);
+        assert_eq!(super::clear_ms_for(false, 100), 350);
+        assert_eq!(super::clear_ms_for(false, 900), 900);
+    }
+
     use super::*;
 
     #[test]
