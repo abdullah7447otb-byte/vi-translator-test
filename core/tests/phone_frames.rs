@@ -47,9 +47,14 @@ fn the_phone_is_found_in_every_phone_frame_and_in_no_other() {
     assert!(names.len() >= 50, "the frame set is incomplete: {} frames", names.len());
     for name in &names {
         let (rgba, w, h) = load(&dir, name);
-        let t = std::time::Instant::now();
-        let pose = phone_pose::locate(&rgba, w, h).filter(|p| phone_pose::plausible(&p.bounds(), w, h));
-        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        // (the best of three runs: the cost of the search itself, not a shared runner's hiccup)
+        let mut ms = f64::MAX;
+        let mut pose = None;
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            pose = phone_pose::locate(&rgba, w, h).filter(|p| phone_pose::plausible(&p.bounds(), w, h));
+            ms = ms.min(t.elapsed().as_secs_f64() * 1000.0);
+        }
         let bright = phone::find_screen(&rgba, w, h);
         report.push(format!("{name:30} pose={:<5} tilt={:>6} bright={:<5} {ms:.2} ms", pose.is_some(), pose.map(|p| format!("{:.1}", p.tilt(w, h))).unwrap_or_default(), bright.is_some()));
         match PHONES.iter().find(|(n, ..)| n == name) {
