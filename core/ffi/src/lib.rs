@@ -648,13 +648,14 @@ impl Engine {
 
     fn pair(&self, address: &str, code: &str, device_name: &str) -> Result<String, PairError> {
         let port = self.tv_server.lock().unwrap().as_ref().map(|s| s.port);
-        let (Some(port), Some(ip)) = (port, vi_translator_core::net::lan_ip()) else { return Err(PairError::NotSharing) };
         let name = if device_name.trim().is_empty() { "Phone".to_string() } else { device_name.trim().chars().take(60).collect() };
         // (an address typed alone: the TV app's port)
         let address = match address.trim().parse::<std::net::Ipv4Addr>() {
             Ok(ip) => format!("{ip}:{}", tv::TV_PORT),
             Err(_) => address.trim().to_string(),
         };
+        // (this phone's address on the TV's network: not mobile data's or a VPN's)
+        let (Some(port), Some(ip)) = (port, vi_translator_core::net::lan_ip_toward(&address)) else { return Err(PairError::NotSharing) };
         tv::pair(&self.live.tvs, &address, code, &format!("{ip}:{port}"), &name).map_err(PairError::from)
     }
 }

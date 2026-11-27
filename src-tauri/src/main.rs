@@ -309,7 +309,8 @@ async fn connect_tv(webview: tauri::Webview, state: tauri::State<'_, AppState>, 
     let (c, shared) = (state.cfg.lock().unwrap().clone(), state.shared.clone());
     // the TV loads its page from the home-network sharing, which has to be on (the window turns it on first)
     let running = shared.lan_running.load(std::sync::atomic::Ordering::Relaxed);
-    let ip = lan::lan_ip();
+    // (this PC's address on the TV's network, when it's on several)
+    let ip = lan::lan_ip_toward(&address);
     let (true, true, Some(ip)) = (c.lan_page, running, ip) else { return Err(tv::PairError::NotSharing.code().into()) };
     let pc = format!("{ip}:{}", c.lan_port);
     tauri::async_runtime::spawn_blocking(move || tv::pair(&shared.tvs, &address, &code, &pc, &tv::pc_name()))
