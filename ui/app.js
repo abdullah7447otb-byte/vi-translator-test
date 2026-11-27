@@ -72,26 +72,65 @@ document.querySelectorAll(".modes button").forEach((b) => b.addEventListener("cl
 // "Change" on a Play card: open that part of Setup
 document.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => { setMode("setup"); openTab(b.dataset.go); }));
 
-// Play: the preview full screen — the window goes full screen and the picture fills it. Back with the
-// button, Esc, or a double-click on the picture.
+// Play: the preview full screen — the window goes full screen and the picture fills it (its own
+// shape: bars only where the screen's shape differs). From the button over the picture, F11 (from
+// Setup too: it opens Play), or a double-click on the picture; back with the button, Esc or F11. The
+// mouse pointer and the buttons go after a moment without moving the mouse, and come back with it.
 const isFullscreen = () => document.documentElement.classList.contains("fullscreen");
+// (the window really went full screen: then the window leaving full screen by itself — macOS's green
+// button, a Windows shortcut — ends it here too. Where it can't, the picture still fills the window.)
+let osFullscreen = false;
+let fsSince = 0;
 async function setFullscreen(on) {
+  fsSince = performance.now();
+  if (on && document.body.dataset.mode !== "play") setMode("play"); // (the full-screen picture is Play's)
   document.documentElement.classList.toggle("fullscreen", on);
   $("fullscreen").title = on ? t("Exit full screen (Esc)") : t("Full screen");
+  osFullscreen = false;
   try {
     await window.__TAURI__.window.getCurrentWindow().setFullscreen(on);
+    osFullscreen = on;
   } catch (e) {
     log({ error: String(e) });
   }
-  requestAnimationFrame(fitFrame); // the window's resize event fits it again once the size settles
+  fsActive();
+  requestAnimationFrame(fitFrame); // (the viewport's ResizeObserver fits it again once the size settles)
 }
 $("fullscreen").addEventListener("click", () => setFullscreen(!isFullscreen()));
 $("viewport").addEventListener("dblclick", (e) => {
-  if (document.body.dataset.mode === "play" && !e.target.closest("#fullscreen")) setFullscreen(!isFullscreen());
+  if (document.body.dataset.mode === "play" && !e.target.closest(".fs-btn")) setFullscreen(!isFullscreen());
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && isFullscreen()) setFullscreen(false);
+  else if (e.key === "F11" && !e.repeat) {
+    e.preventDefault();
+    setFullscreen(!isFullscreen());
+  }
 });
+// The window left full screen by itself: the picture goes back into the page too. (Not while it is
+// still going full screen: macOS animates into it, and says "not full screen" meanwhile.)
+window.addEventListener("resize", async () => {
+  if (!osFullscreen || !isFullscreen() || performance.now() - fsSince < 2000) return;
+  try {
+    if (!(await window.__TAURI__.window.getCurrentWindow().isFullscreen()) && osFullscreen) {
+      osFullscreen = false;
+      setFullscreen(false);
+    }
+  } catch {}
+});
+// In full screen: the pointer and the buttons hidden after 2.5 s without the mouse moving (not while
+// it is over a button).
+let fsIdleTimer = 0;
+function fsActive() {
+  document.documentElement.classList.remove("fs-idle");
+  clearTimeout(fsIdleTimer);
+  if (!isFullscreen()) return;
+  fsIdleTimer = setTimeout(() => {
+    if (isFullscreen() && !document.querySelector(".fs-btn:hover")) document.documentElement.classList.add("fs-idle");
+    else fsActive();
+  }, 2500);
+}
+for (const ev of ["mousemove", "mousedown", "wheel"]) document.addEventListener(ev, () => { if (isFullscreen()) fsActive(); }, { passive: true });
 
 /** The Play cards: source, language + service, read areas. */
 function updateGlance() {
@@ -123,6 +162,8 @@ function fitFrame() {
   drawLayer();
 }
 window.addEventListener("resize", fitFrame);
+// (and whenever the picture's place changes size: full screen settling, Play and Setup, the log's split)
+new ResizeObserver(() => fitFrame()).observe($("viewport"));
 
 function sampleSegments() {
   // "*word*" in the sample text shows as a highlighted word

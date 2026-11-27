@@ -258,9 +258,11 @@ html.fullscreen .fs-btn .fs-off { display: block; }
 /* full screen: only the picture (with its translations), on black, filling the screen */
 html.fullscreen body[data-mode="play"] .viewport { position: fixed; inset: 0; z-index: 100; aspect-ratio: auto;
   border: 0; border-radius: 0; box-shadow: none; background: #000; }
-html.fullscreen .fs-btn { opacity: 0; }
-html.fullscreen .viewport:hover .fs-btn { opacity: .75; }
+html.fullscreen .fs-btn { opacity: .75; }
 html.fullscreen .fs-btn:hover { opacity: 1; }
+/* full screen, the mouse still for a moment: no pointer, no buttons (they come back when it moves) */
+html.fullscreen.fs-idle .fs-btn { opacity: 0; pointer-events: none; }
+html.fullscreen.fs-idle, html.fullscreen.fs-idle * { cursor: none !important; }
 .layer { position: absolute; inset: 0; }
 .empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; color: #a193b5; gap: 6px; padding: 16px; }
 .empty-title { color: #f1ebf8; font-size: 18px; font-weight: 600; }
