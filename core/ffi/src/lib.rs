@@ -172,6 +172,8 @@ pub struct TvInfo {
     pub name: String,
     /// its page asked for the overlays in the last few seconds
     pub online: bool,
+    /// shows the translations (`set_tv_on`); off, it stays connected and shows nothing
+    pub on: bool,
 }
 
 #[derive(Debug, uniffi::Error)]
@@ -630,7 +632,13 @@ impl Engine {
 
     /// The connected TVs.
     pub fn list_tvs(&self) -> Vec<TvInfo> {
-        self.live.tvs.list().into_iter().map(|t| TvInfo { id: t.id, name: t.name, online: t.online }).collect()
+        self.live.tvs.list().into_iter().map(|t| TvInfo { id: t.id, name: t.name, online: t.online, on: t.on }).collect()
+    }
+
+    /// Switch a connected TV's translations on or off at once, while translating (kept with the
+    /// TV). False when there's no such TV.
+    pub fn set_tv_on(&self, id: String, on: bool) -> bool {
+        self.live.tvs.set_on(&id, on)
     }
 
     /// Disconnect a TV: its key stops working, and the TV shows a new code.

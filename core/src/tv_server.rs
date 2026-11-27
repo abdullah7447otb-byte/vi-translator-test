@@ -101,7 +101,7 @@ pub fn route(req: &Request, s: TcpStream, cfg: &Mutex<Config>, live: &Live, serv
         }
         "/tv.json" => {
             live.tvs.touch(param(query, "t"));
-            tv_state(cfg, live, s, param(query, "h"))
+            tv_state(cfg, live, s, param(query, "t"), param(query, "h"))
         }
         // the TV disconnected itself: its key is forgotten
         "/tv/forget" => {
@@ -129,12 +129,20 @@ pub fn route(req: &Request, s: TcpStream, cfg: &Mutex<Config>, live: &Live, serv
 /// What the overlays show now, for the TV page, with its version in `X-State`: when the page
 /// already has this version (`seen`), the answer waits up to a second for a change (a new line is
 /// on the TV at once, and nothing is sent while nothing changes), then is 204 if there was none.
-pub fn tv_state(cfg: &Mutex<Config>, live: &Live, mut s: TcpStream, seen: &str) {
+/// A TV switched off in the app (`Tvs::set_on`) gets the state with the overlays off: it draws nothing,
+/// and draws again as soon as it's switched on. So does this device's own viewer (a phone's overlay
+/// over its picture) with `device_overlays` off.
+pub fn tv_state(cfg: &Mutex<Config>, live: &Live, mut s: TcpStream, token: &str, seen: &str) {
     use std::hash::{Hash, Hasher};
     use std::io::Write;
     let start = std::time::Instant::now();
     loop {
-        let body = crate::live::overlay_state(cfg, live).to_string();
+        let mut state = crate::live::overlay_state(cfg, live);
+        let off = if live.tvs.is_local(token) { !cfg.lock().unwrap().device_overlays } else { !live.tvs.showing(token) };
+        if off {
+            state["overlays"] = serde_json::Value::Bool(false);
+        }
+        let body = state.to_string();
         let mut h = std::collections::hash_map::DefaultHasher::new();
         body.hash(&mut h);
         let version = format!("{:016x}", h.finish());
@@ -271,7 +279,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("vit-tvserver-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         live.tvs.load(dir.join("tvs.json"));
-        live.tvs.add(crate::tv::PairedTv { id: "tv1".into(), name: "Living room".into(), token: "key1".into() });
+        live.tvs.add(crate::tv::PairedTv { id: "tv1".into(), name: "Living room".into(), token: "key1".into(), off: false });
         let server = TvServer::start(0, cfg, live.clone(), None).unwrap();
         assert!(live.lan_running.load(Ordering::Relaxed));
         // not online until its page asks
@@ -291,6 +299,18 @@ mod tests {
         let version = head.lines().find_map(|l| l.strip_prefix("X-State: ")).unwrap().trim().to_string();
         let (head, _) = get(server.port, &format!("/tv.json?t=key1&h={version}"));
         assert!(head.starts_with("HTTP/1.1 204"), "{head}");
+        // switched off in the app: the waiting page gets the overlays off at once, and on again
+        assert_eq!(v["overlays"], true);
+        live.tvs.set_on("tv1", false);
+        let (head, body) = get(server.port, &format!("/tv.json?t=key1&h={version}"));
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        let off: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(off["overlays"], false);
+        let off_version = head.lines().find_map(|l| l.strip_prefix("X-State: ")).unwrap().trim().to_string();
+        live.tvs.set_on("tv1", true);
+        let (head, body) = get(server.port, &format!("/tv.json?t=key1&h={off_version}"));
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap()["overlays"], true);
         let (head, body) = get(server.port, "/fonts/Cairo.ttf");
         assert!(head.starts_with("HTTP/1.1 200") && body.len() > 1000, "{head}");
         let (head, _) = get(server.port, "/live.json");
@@ -305,13 +325,19 @@ mod tests {
     #[test]
     fn the_local_viewer_key_opens_the_tv_page() {
         let live = Arc::new(Live::default());
-        let server = TvServer::start(0, Arc::new(Mutex::new(Config::default())), live.clone(), None).unwrap();
+        let cfg = Arc::new(Mutex::new(Config::default()));
+        let server = TvServer::start(0, cfg.clone(), live.clone(), None).unwrap();
         let key = live.tvs.local_key();
         assert_eq!(key, live.tvs.local_key(), "the same key for the run");
         assert!(get(server.port, &format!("/tv?t={key}")).0.starts_with("HTTP/1.1 200"));
         assert!(live.tvs.list().is_empty(), "not a connected TV");
         let _ = get(server.port, &format!("/tv/forget?t={key}"));
         assert!(live.tvs.allowed(&key), "not forgotten");
+        // this device's own overlay switched off: its viewer draws nothing (the TVs go on)
+        let state = |k: &str| -> serde_json::Value { serde_json::from_slice(&get(server.port, &format!("/tv.json?t={k}&h=")).1).unwrap() };
+        assert_eq!(state(&key)["overlays"], true);
+        cfg.lock().unwrap().device_overlays = false;
+        assert_eq!(state(&key)["overlays"], false);
     }
 
     #[test]

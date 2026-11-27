@@ -469,26 +469,36 @@ function drawXbox(native) {
   const pick = (v, label, on) => el("button", { class: `seg${on ? " on" : ""}`, "aria-pressed": on ? "true" : "false", onclick: () => xboxUse(v) }, label);
   box.append(el("div", { class: "field" }, el("label", {}, t("Xbox player")),
     el("div", { class: "segs" },
-      xboxValue ? pick(xboxValue, t("VI Translator's player"), native) : null,
+      xboxValue ? pick(xboxValue, t("VI Translator's player (recommended)"), native) : null,
       xboxTitle ? pick(xboxTitle, t("Microsoft's web player"), !native) : null)));
   if (!native || !xbox) return;
   const s = xbox;
   const err = s.error ? el("p", { class: "small ps5-err" }, I18N.tMsg(s.error)) : null;
   if (!s.signed_in) {
-    box.append(ps5Step(1, t("Sign in with a code"), false, true, () => xboxCodeStep(s, err)),
-      ps5Step(2, t("Choose your Xbox"), false, false, () => null));
+    box.append(ps5Step(1, t("Sign in to Microsoft"), false, true, () => xboxCodeStep(s, err)),
+      ps5Step(2, t("Choose your Xbox"), false, false, () => null), xboxOnce());
     return;
   }
   if (!s.console || xboxUi.changing) {
     if (xboxUi.consoles == null && !xboxUi.searching) xboxSearch();
-    box.append(xboxAccountStep(s), ps5Step(2, t("Choose your Xbox"), false, true, () => xboxConsoleStep(err)));
+    box.append(xboxAccountStep(s), ps5Step(2, t("Choose your Xbox"), false, true, () => xboxConsoleStep(err)), xboxOnce());
     return;
   }
   box.append(xboxChosen(s, err));
 }
 
+/** What to set on the Xbox once, before it can be found and woken (as the phone apps show it). */
+function xboxOnce() {
+  return el("div", { class: "callout xbox-once" },
+    el("b", {}, t("On the Xbox, once")),
+    el("ul", {},
+      el("li", {}, t("Settings › Devices & connections › Remote features: turn on Enable remote features.")),
+      el("li", {}, t("Settings › General › Power options: choose Sleep, so the player can wake the console.")),
+      el("li", {}, t("Sign in on the Xbox with the same Microsoft account as in the player."))));
+}
+
 function xboxAccountStep(s) {
-  return ps5Step(1, t("Sign in with a code"), true, false, () => el("div", { class: "row" },
+  return ps5Step(1, t("Sign in to Microsoft"), true, false, () => el("div", { class: "row" },
     el("div", { class: "grow" }, s.gamertag ? t("Signed in as {name}", { name: s.gamertag }) : t("Signed in")),
     el("button", { class: "link", onclick: xboxSignOut }, t("Sign out"))));
 }
@@ -949,9 +959,12 @@ async function updateTvs() {
     : `<span class="tv-state" title="${AS.esc(t("The TV app isn't open, or the TV can't reach this PC"))}"><span class="dot"></span>${AS.esc(t("Offline"))}</span>`;
   const html = tvs.length
     ? `<div class="hint">${AS.esc(t("Connected TVs"))}</div>` + tvs.map((tv) => `<div class="tv-row"><span class="tv-name">📺 ${AS.esc(tv.name)}</span>
-        ${state(tv)}<button class="btn danger" data-remove-tv="${AS.esc(tv.id)}">${AS.esc(t("Remove"))}</button></div>`).join("")
+        ${state(tv)}<label class="switch" title="${AS.esc(t("Show the translations on this TV"))}"><input type="checkbox" data-tv-on="${AS.esc(tv.id)}" ${tv.on !== false ? "checked" : ""}/><span class="track"></span></label>
+        <button class="btn danger" data-remove-tv="${AS.esc(tv.id)}">${AS.esc(t("Remove"))}</button></div>`).join("")
     : "";
   if (box.innerHTML !== html) box.innerHTML = html;
+  knownTvs = tvs;
+  renderOutputs();
   // the header: how many of the connected TVs are online (hidden while none is connected)
   const pill = $("tv-pill"), on = tvs.filter((tv) => tv.online).length;
   pill.classList.toggle("hidden", !tvs.length);
@@ -959,6 +972,51 @@ async function updateTvs() {
   $("tv-pill-text").textContent = `📺 ${on}/${tvs.length}`;
   pill.title = t("TVs showing the translation now: {n} of {m}", { n: on, m: tvs.length });
 }
+// ------------------------------------------------------------------------------------- outputs on/off
+
+/**
+ * Where the translations are shown, each switched on or off at once while translating, nothing
+ * restarted: this PC's overlay windows (`device_overlays`), each connected TV (kept with the TV, in
+ * the core) and the OBS page (`obs_overlays`). On the Play screen, and beside each in Show on. The
+ * header's Overlays switch stays over them all.
+ */
+let knownTvs = [];
+function renderOutputs() {
+  if (!cfg) return;
+  $("device_overlays").checked = cfg.device_overlays !== false;
+  $("obs_overlays").checked = cfg.obs_overlays !== false;
+  const row = (attrs, on, name, extra = "") => `<label class="switch out-row"><input type="checkbox" ${attrs} ${on ? "checked" : ""}/><span class="track"></span><span class="out-name">${name}</span>${extra}</label>`;
+  const dot = (tv) => `<span class="tv-state${tv.online ? " on" : ""}" title="${AS.esc(tv.online ? t("Online") : t("Offline"))}"><span class="dot"></span></span>`;
+  const html = row('data-output="device"', cfg.device_overlays !== false, AS.esc(t("Overlays on this PC")))
+    + knownTvs.map((tv) => row(`data-tv-on="${AS.esc(tv.id)}"`, tv.on !== false, `📺 ${AS.esc(tv.name)}`, dot(tv))).join("")
+    + row('data-output="obs"', cfg.obs_overlays !== false, "OBS");
+  const box = $("ps-outputs");
+  if (box.innerHTML !== html) box.innerHTML = html;
+  $("ps-outputs-note").textContent = cfg.overlays_enabled === false
+    ? t("Overlays are off for everything: turn on Overlays at the top.")
+    : t("Turn each one on or off at any time, even while translating.");
+  $("ps-outputs-note").classList.toggle("warn", cfg.overlays_enabled === false);
+}
+/** An output switched: saved at once (no waiting for the usual pause), so it goes off or on now. */
+async function setOutput(input) {
+  if (input.dataset.tvOn) {
+    const id = input.dataset.tvOn, on = input.checked;
+    const tv = knownTvs.find((x) => x.id === id);
+    if (tv) tv.on = on;
+    try { await invoke("set_tv_on", { id, on }); } catch (err) { log({ error: String(err) }); }
+    updateTvs();
+    return;
+  }
+  cfg[input.dataset.output === "obs" ? "obs_overlays" : "device_overlays"] = input.checked;
+  renderOutputs();
+  save(false);
+  clearTimeout(saveTimer);
+  try { await invoke("save_config", { config: cfg }); $("saved").textContent = t("Saved ✓"); } catch (e) { log({ error: String(e) }); }
+}
+for (const id of ["ps-outputs", "tab-show"]) {
+  $(id).addEventListener("change", (e) => { if (e.target.matches("[data-output], [data-tv-on]")) setOutput(e.target); });
+}
+
 $("tv-pill").addEventListener("click", () => { setMode("setup"); openTab("show"); });
 // The TV loads its page from the home-network sharing: turned on if it's off, and waited for.
 async function sharingReady() {
@@ -1004,8 +1062,28 @@ $("tv-find").addEventListener("click", async () => {
   } catch (e) { box.textContent = String(e); }
   finally { if (run === tvLook) btn.disabled = false; }
 });
+// A TV that isn't found (another network, a mesh, a VPN): its address typed, then the code it shows.
+$("tv-type").addEventListener("click", () => {
+  const box = $("tv-found");
+  box.querySelector(".tv-looking, .tv-none")?.remove();
+  if (box.querySelector(".tv-typed")) { box.querySelector(".tv-addr").focus(); return; }
+  box.insertAdjacentHTML("beforeend", `<div class="tv-row tv-typed"><input class="tv-addr grow" dir="ltr" autocomplete="off" placeholder="192.168.1.30" title="${AS.esc(t("The TV's address"))}" />
+    <input class="tv-code" inputmode="numeric" maxlength="7" dir="ltr" autocomplete="off" placeholder="000 000" title="${AS.esc(t("The code shown on the TV"))}" />
+    <button class="btn tv-connect">${AS.esc(t("Connect"))}</button><div class="tv-msg hint"></div></div>`);
+  box.querySelector(".tv-addr").focus();
+});
 async function connectTv(row) {
   const msg = row.querySelector(".tv-msg"), b = row.querySelector(".tv-connect");
+  // (a typed address: checked here, as the PS5's is)
+  if (row.classList.contains("tv-typed")) {
+    const a = row.querySelector(".tv-addr").value.trim();
+    if (!/^\d{1,3}(\.\d{1,3}){3}(:\d{1,5})?$/.test(a)) {
+      msg.className = "tv-msg err";
+      msg.textContent = t("That isn't an address like 192.168.1.20.");
+      return;
+    }
+    row.dataset.address = a;
+  }
   b.disabled = true;
   msg.className = "tv-msg hint";
   msg.textContent = t("Connecting…");
@@ -2485,6 +2563,7 @@ listen("lan-control", (e) => {
     syncProfile();
   }
   $("overlays_enabled").checked = cfg.overlays_enabled;
+  renderOutputs();
   $("live_translations").checked = cfg.live_translations !== false;
   $("log-paused").hidden = cfg.live_translations !== false;
   renderAreas();
@@ -2855,7 +2934,8 @@ function lockControls() {
   showLive();
   $("live_translations").addEventListener("change", (e) => { cfg.live_translations = e.target.checked; showLive(); save(false); });
   // (save(): redraws the preview, which hides or shows the translations on it too)
-  $("overlays_enabled").addEventListener("change", (e) => { cfg.overlays_enabled = e.target.checked; save(); });
+  $("overlays_enabled").addEventListener("change", (e) => { cfg.overlays_enabled = e.target.checked; renderOutputs(); save(); });
+  renderOutputs();
   try {
     FONT_LIST = await invoke("list_fonts");
   } catch (e) {

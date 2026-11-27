@@ -34,6 +34,10 @@ pub struct PairedTv {
     pub id: String,
     pub name: String,
     pub token: String,
+    /// switched off in the app: the TV stays connected but shows nothing until switched on again
+    /// (missing in an older tvs.json: on)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub off: bool,
 }
 
 /// A connected TV, for the window (never its key).
@@ -44,6 +48,8 @@ pub struct TvInfo {
     /// showing the overlays now: its page asked for them in the last few seconds (it asks about
     /// once a second while the TV app is open)
     pub online: bool,
+    /// shows the translations (the app's switch for this TV); off, it stays connected and blank
+    pub on: bool,
 }
 
 /// A TV that asked for the overlays this recently is online.
@@ -142,7 +148,31 @@ impl Tvs {
     pub fn list(&self) -> Vec<TvInfo> {
         let seen = self.seen.lock().unwrap();
         let online = |id: &str| seen.iter().any(|(s, at)| s == id && at.elapsed() < ONLINE_FOR);
-        self.list.lock().unwrap().iter().map(|t| TvInfo { id: t.id.clone(), name: t.name.clone(), online: online(&t.id) }).collect()
+        self.list.lock().unwrap().iter().map(|t| TvInfo { id: t.id.clone(), name: t.name.clone(), online: online(&t.id), on: !t.off }).collect()
+    }
+
+    /// Switch a connected TV's translations on or off (kept in tvs.json). False when there's no such TV.
+    pub fn set_on(&self, id: &str, on: bool) -> bool {
+        let mut l = self.list.lock().unwrap();
+        let Some(t) = l.iter_mut().find(|t| t.id == id) else { return false };
+        if t.off == !on {
+            return true;
+        }
+        t.off = !on;
+        self.save(&l);
+        true
+    }
+
+    /// Is this the key of this device's own viewer (`local_key`)?
+    pub fn is_local(&self, token: &str) -> bool {
+        let local = self.local.lock().unwrap();
+        !local.is_empty() && same(local.as_bytes(), token.as_bytes())
+    }
+
+    /// Does the page with this key show the translations now? Off only for a connected TV switched
+    /// off in the app (this device's own viewer follows its own setting, not this).
+    pub fn showing(&self, token: &str) -> bool {
+        !self.list.lock().unwrap().iter().any(|t| t.off && same(t.token.as_bytes(), token.as_bytes()))
     }
 
     /// The connected TV with this key asked for its page or the overlays now (for `TvInfo::online`).
@@ -153,6 +183,7 @@ impl Tvs {
         seen.push((id, Instant::now()));
     }
 
+    /// (the same TV connected again replaces its old key, and shows the translations again)
     pub(crate) fn add(&self, tv: PairedTv) {
         let mut l = self.list.lock().unwrap();
         l.retain(|t| t.id != tv.id);
@@ -358,7 +389,7 @@ pub fn pair(tvs: &Tvs, address: &str, code: &str, pc: &str, pc_name: &str) -> Re
         200 => {
             let p: Paired = r.json().map_err(|_| PairError::NoAnswer)?;
             let name = if p.name.trim().is_empty() { "TV".to_string() } else { p.name.chars().take(60).collect() };
-            tvs.add(PairedTv { id: p.id.chars().take(64).collect(), name: name.clone(), token });
+            tvs.add(PairedTv { id: p.id.chars().take(64).collect(), name: name.clone(), token, off: false });
             Ok(name)
         }
         403 => Err(PairError::WrongCode),
@@ -424,7 +455,7 @@ impl Tvs {
             return (403, "{}".into());
         }
         wrong.retain(|(id, _)| *id != o.id);
-        self.add(PairedTv { id: o.id.clone(), name: name.clone(), token: p.token.clone() });
+        self.add(PairedTv { id: o.id.clone(), name: name.clone(), token: p.token.clone(), off: false });
         self.offered.lock().unwrap().retain(|x| x.id != o.id);
         p.result = Some(Ok(name));
         (200, serde_json::json!({ "pc_name": p.pc_name, "token": p.token }).to_string())
@@ -540,15 +571,23 @@ mod tests {
         let tvs = Tvs::default();
         tvs.load(path.clone());
         assert!(!tvs.allowed("") && !tvs.allowed("x"));
-        tvs.add(PairedTv { id: "tv1".into(), name: "Living room".into(), token: "k1".into() });
-        tvs.add(PairedTv { id: "tv1".into(), name: "Living room".into(), token: "k2".into() }); // connected again
+        tvs.add(PairedTv { id: "tv1".into(), name: "Living room".into(), token: "k1".into(), off: false });
+        tvs.add(PairedTv { id: "tv1".into(), name: "Living room".into(), token: "k2".into(), off: false }); // connected again
         assert!(!tvs.allowed("k1") && tvs.allowed("k2"));
         let again = Tvs::default();
         again.load(path.clone());
         assert!(again.allowed("k2"), "kept in the file");
         assert_eq!(again.list().len(), 1);
         assert!(again.remove_token("k2") && !again.allowed("k2"));
-        tvs.add(PairedTv { id: "tv2".into(), name: "Bedroom".into(), token: "k3".into() });
+        // switched off: connected still, its page blank; on again, and kept in the file
+        assert!(tvs.list()[0].on && tvs.showing("k2"));
+        assert!(tvs.set_on("tv1", false) && !tvs.list()[0].on && !tvs.showing("k2") && tvs.allowed("k2"));
+        let again = Tvs::default();
+        again.load(path.clone());
+        assert!(!again.list()[0].on && !again.showing("k2"));
+        assert!(!tvs.set_on("nope", true) && tvs.showing("anything-else"));
+        assert!(tvs.set_on("tv1", true) && tvs.showing("k2"));
+        tvs.add(PairedTv { id: "tv2".into(), name: "Bedroom".into(), token: "k3".into(), off: false });
         assert!(tvs.remove_id("tv2") && !tvs.allowed("k3"));
         let _ = std::fs::remove_dir_all(dir);
     }
