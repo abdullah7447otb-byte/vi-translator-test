@@ -242,16 +242,62 @@ impl From<tv::PairError> for PairError {
 // ------------------------------------------------------------------------------------- glue
 
 /// The app's recognizer as the core's OCR engine.
-struct HostOcr(Arc<dyn TextRecognizer>);
+struct HostOcr(Arc<dyn TextRecognizer>, Mutex<std::collections::VecDeque<(u64, Vec<RawWord>)>>);
+
+/// How many recent crops' readings are kept (an area can be read a few ways a frame: bands, crops).
+const SEEN_CROPS: usize = 24;
+
+/// A crop's look, coarse enough that the stream's noise doesn't change it and fine enough that other
+/// text does: its size and the mean brightness of a 64×16 grid of cells (each cell a mean over many
+/// pixels, so a thin letter changes it where a sampled pixel could miss it), in 32 steps.
+fn look_of(bgra: &[u8], w: u32, h: u32) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let (w, h) = (w as usize, h as usize);
+    let (gw, gh) = (w.clamp(1, 64), h.clamp(1, 16));
+    let mut sums = vec![0u64; gw * gh];
+    let mut counts = vec![0u64; gw * gh];
+    for y in 0..h {
+        let gy = y * gh / h;
+        let row = &bgra[y * w * 4..(y + 1) * w * 4];
+        for x in 0..w {
+            let p = &row[x * 4..x * 4 + 3];
+            let cell = gy * gw + x * gw / w;
+            sums[cell] += p[0] as u64 + 2 * p[1] as u64 + p[2] as u64;
+            counts[cell] += 4;
+        }
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (w, h).hash(&mut hasher);
+    for (s, n) in sums.iter().zip(&counts) {
+        ((s / (*n).max(1)) >> 3).hash(&mut hasher);
+    }
+    hasher.finish()
+}
 
 impl TextEngine for HostOcr {
     fn read(&self, bgra: &[u8], w: u32, h: u32) -> anyhow::Result<Vec<RawWord>> {
-        Ok(self
+        // A crop that looks as it did a moment ago (the same subtitle, a still menu) has the same
+        // words: the phone's text recognizer isn't asked again (it kept the phone hot for nothing).
+        let look = (bgra.len() == w as usize * h as usize * 4).then(|| look_of(bgra, w, h));
+        if let Some(look) = look {
+            if let Some((_, words)) = self.1.lock().unwrap().iter().find(|(l, _)| *l == look) {
+                return Ok(words.clone());
+            }
+        }
+        let words: Vec<RawWord> = self
             .0
             .recognize(bgra.to_vec(), w, h)
             .into_iter()
             .map(|o| RawWord { line: o.line, text: o.text, x: o.x, y: o.y, w: o.w, h: o.h })
-            .collect())
+            .collect();
+        if let Some(look) = look {
+            let mut seen = self.1.lock().unwrap();
+            if seen.len() >= SEEN_CROPS {
+                seen.pop_front();
+            }
+            seen.push_back((look, words.clone()));
+        }
+        Ok(words)
     }
     fn max_dim(&self) -> u32 {
         match self.0.max_dimension() {
@@ -322,7 +368,7 @@ pub struct Engine {
 fn snapshot_of(cfg: &Mutex<Config>, live: &Live, memory: &Mutex<Memory>, paths: &Paths, recognizer: &Arc<dyn TextRecognizer>, frame: &FrameData) -> anyhow::Result<snapshot::Snapshot> {
     let private = live.screen_private.lock().unwrap().clone();
     let c = cfg.lock().unwrap().clone();
-    let ocr = || Ok(Ocr::with_engine(Box::new(HostOcr(recognizer.clone()))));
+    let ocr = || Ok(Ocr::with_engine(Box::new(HostOcr(recognizer.clone(), Mutex::new(Default::default())))));
     let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0).to_string();
     snapshot::now(frame, &private, &c, memory, paths, &ocr, id)
 }
@@ -338,6 +384,9 @@ impl Engine {
         std::fs::create_dir_all(&db).map_err(failed)?;
         let paths = Paths { config: data.join("config.json"), data, db };
         let mut c = Config::load(&paths.config);
+        // (a phone: its own timing defaults, see config::PHONE_TIMING)
+        c.phone = true;
+        c.normalize();
         let mut save = std::mem::take(&mut c.defaults_moved);
         if c.install_id.is_empty() {
             // a random id for this install (no account)
@@ -359,7 +408,7 @@ impl Engine {
         std::thread::Builder::new()
             .name("vit-reader".into())
             .spawn(move || {
-                let ocr = Ocr::with_engine(Box::new(HostOcr(reading_recognizer)));
+                let ocr = Ocr::with_engine(Box::new(HostOcr(reading_recognizer, Mutex::new(Default::default()))));
                 let mut reader = engine::start(ctx);
                 for (job, answer) in rx {
                     let wait = match job {
@@ -394,6 +443,7 @@ impl Engine {
         let mut new: Config = serde_json::from_value(v).map_err(failed)?;
         // (what only the engine changes stays as it is)
         new.unreadable = c.unreadable;
+        new.phone = c.phone;
         new.normalize();
         *c = new;
         c.save(&self.paths.config).map_err(failed)?;
@@ -682,4 +732,33 @@ pub fn languages() -> Vec<Language> {
 #[uniffi::export]
 pub fn core_version() -> String {
     vi_translator_core::VERSION.to_string()
+}
+
+#[cfg(test)]
+mod look_tests {
+    use super::look_of;
+
+    fn picture(w: u32, h: u32, text_at: Option<(u32, u32)>, noise: u8) -> Vec<u8> {
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                let n = ((x * 7 + y * 13) % 3) as u8 * noise; // a little stream noise
+                let lit = text_at.is_some_and(|(x0, x1)| x >= x0 && x < x1 && y % 6 < 3 && x % 5 < 2);
+                let v = if lit { 240 } else { 20 + n };
+                px[i..i + 4].copy_from_slice(&[v, v, v, 255]);
+            }
+        }
+        px
+    }
+
+    #[test]
+    fn a_crop_looks_the_same_through_noise_but_not_with_other_text() {
+        let (w, h) = (640, 48);
+        let a = look_of(&picture(w, h, Some((100, 400)), 0), w, h);
+        assert_eq!(a, look_of(&picture(w, h, Some((100, 400)), 1), w, h), "noise of a step or two");
+        assert_ne!(a, look_of(&picture(w, h, Some((100, 300)), 0), w, h), "a shorter line");
+        assert_ne!(a, look_of(&picture(w, h, Some((150, 450)), 0), w, h), "a line elsewhere");
+        assert_ne!(a, look_of(&picture(w, h, None, 0), w, h), "no line");
+    }
 }

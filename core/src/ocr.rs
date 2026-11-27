@@ -18,6 +18,7 @@ pub trait TextEngine {
 }
 
 /// A word as the engine reports it, in the (prepared) image's pixels.
+#[derive(Clone)]
 pub struct RawWord {
     pub line: u32,
     pub text: String,
