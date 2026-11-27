@@ -21,8 +21,8 @@ use vi_translator_core::tv_server;
 
 /// The page's address and QR code (the core's).
 pub use vi_translator_core::lan_page::{LanInfo, info};
-/// This PC's address on the home network.
-pub use vi_translator_core::net::lan_ip;
+/// This PC's address on the home network a device (the TV) at an address reaches it at.
+pub use vi_translator_core::net::lan_ip_toward;
 use vi_translator_core::net::host_is_address;
 
 /// Runs for the app's lifetime: starts and stops the listener as the setting changes.
