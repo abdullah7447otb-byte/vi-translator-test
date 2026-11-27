@@ -901,6 +901,8 @@ impl Reader {
         let t0 = Instant::now();
         // (the player's, or the game's own: see Config::timing)
         let (interval_ms, stable_ms, clear_after_ms) = c.timing();
+        // (VI Translator's ready translations used or not: the memory takes them in or leaves them out)
+        ctx.memory.lock().unwrap().use_shared(c.shared_translations);
         if c.target_lang != last_lang {
             // another language: everything shown and cached is in the old one
             last_lang = c.target_lang.clone();
@@ -1907,7 +1909,7 @@ impl Reader {
                         // (in an area with reviewed translations only — the instructions — only a line with a
                         // reviewed one, as read or with its button icons: a line the memory knew from the translator
                         // left an empty black box up, nothing ever coming to fill it)
-                        let reviewed_only = fx.reviewed_only(&area.id);
+                        let reviewed_only = c.reviewed_only(&area.id);
                         let iconed = if reviewed_only { crop.as_ref().map(|cr| ocr::text_with_icons(cr, &words).0).unwrap_or_default() } else { String::new() };
                         let at_hand = || {
                             let m = ctx.memory.lock().unwrap();
@@ -2007,7 +2009,7 @@ impl Reader {
                     // what's up stays until its English counts as gone)
                     // (and as read with its button icons: "Hold L2 to interact with Andrew" read plain is not the
                     // reviewed "Hold ⟦1⟧ to interact with Andrew"; no instruction with a button was translated)
-                    let reviewed_only = c.fx(&area.id).reviewed_only(&area.id);
+                    let reviewed_only = c.reviewed_only(&area.id);
                     let allowed = !reviewed_only || {
                         let iconed = crop.as_ref().map(|cr| ocr::text_with_icons(cr, &words).0).unwrap_or_default();
                         let m = ctx.memory.lock().unwrap();
@@ -2048,7 +2050,7 @@ impl Reader {
                         // from the game's own highlight tags: those words in the colours this area's were last
                         // seen in, else GTA VI's pink, from its first frame; its own colours, when they show, follow.
                         // Only where the translation is the reviewed one: the colours carry no English words)
-                        if phrases.is_empty() && c.fx(&area.id).reviewed_only(&area.id) {
+                        if phrases.is_empty() && c.reviewed_only(&area.id) {
                             let colors = AREA_COLORS.lock().unwrap().get(&area.id).cloned().unwrap_or_else(|| vec![GTA6_HIGHLIGHT.to_string()]);
                             phrases = (0..4).map(|i| (String::new(), colors.get(i).or(colors.last()).cloned().unwrap_or_default())).collect();
                         }

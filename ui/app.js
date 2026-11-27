@@ -1119,6 +1119,31 @@ function renderLang() {
     : t("{name} has no free offline model: choose DeepL, Azure, Google, LibreTranslate or Claude.", { name: l.name });
 }
 
+/**
+ * VI Translator's ready translations first (on by default): turning them off asks first, as every line
+ * then waits for the translator.
+ */
+function renderShared() {
+  const box = $("shared_translations");
+  box.checked = cfg.shared_translations !== false;
+  if (box.dataset.wired) return;
+  box.dataset.wired = "1";
+  box.addEventListener("change", async () => {
+    if (!box.checked) {
+      // (with no translator, only the memory: lines the ready translations had aren't translated at all)
+      const none = cfg.engine === "local" && !hasOffline;
+      const text = t("Turn off VI Translator's ready translations? Every line will then wait for the translator chosen below, so translations will come much slower.")
+        + (none ? " " + t("With no translation service chosen, lines not in your own memory won't be translated at all.") : "");
+      if (!(await ask(text, t("Turn off")))) {
+        box.checked = true;
+        return;
+      }
+    }
+    cfg.shared_translations = box.checked;
+    save(false);
+  });
+}
+
 function renderEngines() {
   $("engines").innerHTML = "";
   for (const e of ENGINES) {
@@ -1283,7 +1308,7 @@ function renderAreas() {
             .map(([v, txt]) => `<option value="${v}" ${a.out_halign === v ? "selected" : ""}>${t(txt)}</option>`).join("")}</select>
         </div>` : ""}`;
     c.addEventListener("mousedown", () => { if (selected !== a.id) { selected = a.id; highlightCards(); drawLayer(); } });
-    c.querySelector(".en").addEventListener("change", (e) => { a.enabled = e.target.checked; setShown("area", a.id, a.enabled); save(); });
+    c.querySelector(".en").addEventListener("change", (e) => { a.enabled = e.target.checked; setShown("area", a.id, a.enabled); renderPages(); save(); });
     c.querySelector(".nm").addEventListener("input", (e) => { a.name = e.target.value; save(); });
     c.querySelector(".pl").addEventListener("change", (e) => {
       if (e.target.value === "custom") toCustom(a); // start the custom region where the Arabic is now
@@ -2456,6 +2481,16 @@ async function drawLookPreviews(form) {
 /** A script's text: plain, or by interface language (English the fallback). */
 const scriptText = (v) => (typeof v === "string" ? v : v ? v[cfg.ui_lang] || v.en || Object.values(v)[0] || "" : "");
 
+/**
+ * What's translated (Game pages): the name and the note of each switch the core lists for a game
+ * (`groups` of page_options; GTA VI's: the phone, the pause menu, the help and notices).
+ */
+const CONTENT_TEXT = {
+  phone: ["Phone translations", "The phone's WhatUp chats, translated on a second phone beside it."],
+  menus: ["Pause menu and map", "The pause menu: the map and its index, lists, help pages, settings and buttons."],
+  notices: ["Help, instructions and notices", "The help box at the top left, the instructions under the subtitles, and the game's notices like “Controller disconnected”."],
+};
+
 /** The pages a game's script has and the switches it declares, asked once per game. */
 const pageScripts = {};
 async function pageScript(game) {
@@ -2476,25 +2511,53 @@ async function renderPages() {
   }
   o.more = o.more || {};
   const isOn = (opt) => (opt.id in o.more ? o.more[opt.id] : opt.on);
-  // the switches the game's script declares (its pages come with layout updates)
-  const declared = script.options.map((opt) => `
+  // What's translated: the dialogue always; each of the game's switches (the core's list) stands for read
+  // areas, pages of the game and the phone, shown on when any of them is on and switching them all
+  const groups = (script.groups || []).filter((g) => CONTENT_TEXT[g.id]);
+  const covered = new Set(groups.flatMap((g) => g.pages));
+  const pageOn = (id) => { const opt = script.options.find((x) => x.id === id); return opt ? isOn(opt) : false; };
+  const areaOn = (id) => cfg.areas.some((a) => a.id === id && a.enabled);
+  const groupOn = (g) => (g.phone && cfg.phone_text !== false) || g.areas.some(areaOn) || g.pages.some(pageOn);
+  const setGroup = (g, on) => {
+    if (g.phone) cfg.phone_text = on;
+    for (const a of cfg.areas) if (g.areas.includes(a.id)) { a.enabled = on; setShown("area", a.id, on); }
+    for (const id of g.pages) { o.more[id] = on; setShown("page", id, on); }
+  };
+  const content = groups.length ? `
+    <div class="card">
+      <div style="font-weight:600">${t("What's translated")}</div>
+      <label class="check" style="margin-top:10px"><input type="checkbox" checked disabled data-keep/> ${t("Dialogue and subtitles")}</label>
+      <p class="muted small" style="margin:2px 0 0">${t("Always translated.")}</p>
+      ${groups.map((g) => `
+      <label class="check" style="margin-top:10px"><input type="checkbox" data-group="${AS.esc(g.id)}" data-keep ${groupOn(g) ? "checked" : ""}/> ${t(CONTENT_TEXT[g.id][0])}</label>
+      <p class="muted small" style="margin:2px 0 0">${t(CONTENT_TEXT[g.id][1])}</p>`).join("")}
+      <button class="btn" id="pf-dialogue-only" data-keep style="margin-top:12px">${t("Dialogue only")}</button>
+      <p class="muted small" style="margin:6px 0 0">${t("Turns off everything here except the dialogue and subtitles.")}</p>
+    </div>` : "";
+  // the switches the game's script declares (its pages come with layout updates), those above aside
+  const declared = script.options.filter((opt) => !covered.has(opt.id)).map((opt) => `
     <div class="card">
       <label class="check" style="font-weight:600"><input type="checkbox" data-more="${AS.esc(opt.id)}" ${isOn(opt) ? "checked" : ""}/> ${AS.esc(scriptText(opt.name) || opt.id)}</label>
       ${scriptText(opt.about) ? `<p class="muted small" style="margin:6px 0 0">${AS.esc(scriptText(opt.about))}</p>` : ""}
     </div>`).join("");
-  // (GTA VI's phone in the hand — its WhatUp chats translated on a second phone beside it: shown or not, the player's)
-  const phone = game === "gta6" ? `
-    <div class="card">
-      <label class="check" style="font-weight:600"><input type="checkbox" id="pf-phone" data-keep ${cfg.phone_text !== false ? "checked" : ""}/> ${t("Phone translations")}</label>
-      <p class="muted small" style="margin:6px 0 0">${t("The phone's WhatUp chats, translated on a second phone beside it.")}</p>
-    </div>` : "";
-  f.innerHTML = phone + declared + `
+  f.innerHTML = content + declared + `
     <div class="card">
       <div class="field"><label>${t("Title font")}</label><select id="pf-title">${fontOptions(o.title_font)}</select></div>
       <div class="field" style="margin-top:10px"><label>${t("Reason and button font")}</label><select id="pf-text">${fontOptions(o.text_font)}</select></div>
     </div>`;
   f.querySelectorAll("[data-more]").forEach((el) => el.addEventListener("change", () => { o.more[el.dataset.more] = el.checked; setShown("page", el.dataset.more, el.checked); save(); }));
-  if ($("pf-phone")) $("pf-phone").addEventListener("change", (e) => { cfg.phone_text = e.target.checked; save(); });
+  f.querySelectorAll("[data-group]").forEach((el) => el.addEventListener("change", () => {
+    setGroup(groups.find((g) => g.id === el.dataset.group), el.checked);
+    renderAreas();
+    save();
+  }));
+  if ($("pf-dialogue-only")) $("pf-dialogue-only").addEventListener("click", () => {
+    for (const g of groups) setGroup(g, false);
+    for (const opt of script.options) { o.more[opt.id] = false; setShown("page", opt.id, false); }
+    renderAreas();
+    renderPages();
+    save();
+  });
   for (const [id, key] of [["pf-title", "title_font"], ["pf-text", "text_font"]]) {
     const sel = $(id);
     paintFonts(sel);
@@ -2517,7 +2580,7 @@ function applyTheme() {
 function lockControls() {
   const on = locked();
   document.querySelectorAll("#tab-areas, #tab-pages").forEach((tab) =>
-    tab.querySelectorAll("input:not(.en):not([data-more]):not([data-keep]), select:not([data-more]), textarea, button:not([data-copy])").forEach((el) => { el.disabled = on || el.dataset.matched === "1"; }));
+    tab.querySelectorAll("input:not(.en):not([data-more]):not([data-keep]), select:not([data-more]), textarea, button:not([data-copy]):not([data-keep])").forEach((el) => { el.disabled = on || el.dataset.matched === "1"; }));
   $("add-area").disabled = on;
   // (its boxes can't be moved or resized, so the hint about doing that is gone too)
   $("drag-hint").hidden = on;
@@ -2556,6 +2619,7 @@ function lockControls() {
   } catch (e) {
     log({ error: t("Could not list fonts: {e}", { e }) });
   }
+  renderShared();
   renderEngines();
   applyLock();
   renderProfile();
