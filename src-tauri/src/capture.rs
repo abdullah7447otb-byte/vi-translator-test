@@ -142,6 +142,25 @@ pub fn yuy2_to_rgba(src: &[u8], w: u32, h: u32, c: YuvColor) -> Vec<u8> {
     out
 }
 
+/// A YUY2 frame at half its width and height (its even rows; of each 4 pixels, the 1st and 3rd one's
+/// brightness and the two pairs' colour averaged): a 4K card's picture for an app showing 1080p.
+#[cfg_attr(not(windows), allow(dead_code))] // (the Windows capture card reader's)
+pub fn yuy2_half(src: &[u8], w: u32, h: u32) -> (u32, u32, Vec<u8>) {
+    let (ow, oh) = ((w / 2) & !1, h / 2);
+    let mut out = vec![0u8; (ow * oh * 2) as usize];
+    for y in 0..oh as usize {
+        let row = &src[y * 2 * w as usize * 2..][..w as usize * 2];
+        let o = &mut out[y * ow as usize * 2..][..ow as usize * 2];
+        for (q, s) in o.chunks_exact_mut(4).zip(row.chunks_exact(8)) {
+            q[0] = s[0];
+            q[1] = ((s[1] as u16 + s[5] as u16 + 1) / 2) as u8;
+            q[2] = s[4];
+            q[3] = ((s[3] as u16 + s[7] as u16 + 1) / 2) as u8;
+        }
+    }
+    (ow, oh, out)
+}
+
 /// BGRX (rows `w * 4` bytes) → YUY2 in BT.709 video range, the colour `yuy2_to_rgba` and the preview's
 /// shader turn back into the same picture (each pair of pixels shares the average of their colour).
 #[cfg_attr(not(windows), allow(dead_code))] // (the Windows capture card reader's)
@@ -638,6 +657,22 @@ mod preview_size_tests {
         let f = shrink(&px(1920, 1080), 1920, 1080, 1920 * 4, false);
         assert_eq!((f.w, f.h), (1920, 1080), "1080p as it is");
         PREVIEW_MAX.store(PREVIEW_W, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn a_4k_yuy2_frame_halves_to_1080p() {
+        // 4 pixels: Y 10 20 30 40, U 100 then 110, V 200 then 211; the row under them is dropped
+        let (w, h) = (8u32, 2u32);
+        let mut src = Vec::new();
+        for _ in 0..2 {
+            src.extend_from_slice(&[10, 100, 20, 200, 30, 110, 40, 211]);
+        }
+        src.extend(vec![255u8; (w * 2) as usize]);
+        let (ow, oh, out) = yuy2_half(&src, w, h);
+        assert_eq!((ow, oh), (4, 1));
+        assert_eq!(out, [10, 105, 30, 206, 10, 105, 30, 206]);
+        let (ow, oh, out) = yuy2_half(&vec![0u8; 3840 * 2160 * 2], 3840, 2160);
+        assert_eq!((ow, oh, out.len()), (1920, 1080, 1920 * 1080 * 2));
     }
 }
 
