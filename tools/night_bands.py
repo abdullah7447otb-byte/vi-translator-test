@@ -47,7 +47,12 @@ function run(deband, local) {
 open("/tmp/night_bands.html", "w", encoding="utf-8").write(page)
 failed = []
 with sync_playwright() as p:
-    b = p.chromium.launch(args=["--use-gl=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"])
+    # (Playwright's own Chromium where it is installed, else the system's Chrome, as phone_render.py)
+    args = ["--use-gl=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"]
+    try:
+        b = p.chromium.launch(args=args)
+    except Exception:
+        b = p.chromium.launch(channel="chrome", args=args)
     pg = b.new_page()
     pg.goto("file:///tmp/night_bands.html")
     for deband, local, limit in [(0.4, 0, 2.0), (1, 0.5, 2.0)]:
