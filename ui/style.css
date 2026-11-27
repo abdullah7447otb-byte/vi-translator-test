@@ -338,6 +338,10 @@ body[data-mode="play"] .log-head { padding: 12px 22px; }
 .glance .s:empty { display: none; }
 .glance .link { float: none; flex: none; font-weight: 600; font-size: 12.5px; padding: 2px 0; }
 .glance .ok { color: var(--ok); } .glance .warn { color: var(--warn); }
+/* Play: the outputs, each with its own switch */
+.out-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.out-row { font-weight: 600; font-size: 13.5px; min-width: 0; }
+.out-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* ------------------------------------------------------------------ controls */
 
@@ -408,6 +412,8 @@ input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; margin:
 .tv-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .tv-code { width: 9.5em; height: var(--ctl-h); letter-spacing: .25em; text-align: center; font-variant-numeric: tabular-nums; }
 .tv-msg { flex-basis: 100%; }
+.tv-addr { flex: 1 1 9em; min-width: 0; height: var(--ctl-h); }
+#tv-type { margin-top: 8px; }
 .tv-msg:empty { display: none; }
 .tv-msg.err { color: var(--err); }/* OBS canvas size under the Browser Source address */
 .canvas-size { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-top: 10px; font-size: 13px; }
@@ -592,3 +598,7 @@ dialog.part .part-msg { font-size: 13px; color: var(--muted); min-height: 18px; 
 .field label.check { display: flex; align-items: center; gap: 8px; margin-bottom: 0; font-size: 13.5px; font-weight: 500; color: var(--text); }
 /* a checkbox under a note: the same gap as between the note and what is above it */
 .tab > .callout + .check, .tab > .callout + label.check { margin-top: 12px; }
+
+/* Xbox: what to set on the console once */
+.xbox-once ul { margin: 6px 0 0; padding-inline-start: 18px; }
+.xbox-once li { margin-top: 3px; }

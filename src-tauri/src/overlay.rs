@@ -130,7 +130,8 @@ pub fn position_loop(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared
         let c = cfg.lock().unwrap().clone();
         // Only show the Arabic while the overlay window is the one in front (not over other apps), over
         // the part of it showing the game.
-        let client = if c.overlays_enabled { capture::overlay_rect(&shared, true) } else { None };
+        // (the header's Overlays switch for every output, and this PC's own on the Play screen)
+        let client = if c.overlays_enabled && c.device_overlays { capture::overlay_rect(&shared, true) } else { None };
         // (a screen as the source: the overlays don't show up in screen captures, so the app never
         // reads its own Arabic back)
         let hide_from_capture = shared.reading_screen.load(Ordering::Relaxed) || shared.compat_capture.load(Ordering::Relaxed);

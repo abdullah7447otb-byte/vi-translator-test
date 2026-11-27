@@ -308,6 +308,12 @@ pub struct Config {
     #[serde(default)]
     pub timing_custom: Option<bool>,
     pub overlays_enabled: bool,
+    /// Each output's own switch, under `overlays_enabled` (each TV's is kept with the TV, tv.rs):
+    /// this device's own overlays: the overlay windows on a PC, the translations drawn over the
+    /// picture in a phone app (its viewer of the TV page, `Tvs::local_key`) ...
+    pub device_overlays: bool,
+    /// ... and the OBS browser source.
+    pub obs_overlays: bool,
     /// GTA VI's phone in the player's hand (WhatUp, Snapmatic): its text translated beside it.
     pub phone_text: bool,
     /// GTA VI's message bubble at the bottom right: its translation in a bubble above it.
@@ -852,6 +858,8 @@ impl Default for Config {
             clear_after_ms: DEFAULT_TIMING.clear_after_ms,
             timing_custom: Some(false),
             overlays_enabled: true,
+            device_overlays: true,
+            obs_overlays: true,
             phone_text: true,
             phone_bubble: None,
             live_translations: true,
