@@ -987,14 +987,18 @@ impl Reader {
                 // the script's pages whose switch is on in the profile
                 let script_pages: Vec<String> = pages
                     .as_ref()
-                    .map(|p| p.list.iter().filter(|i| p.switch_on(&c.profile_opts, &i.option)).map(|i| i.id.clone()).collect())
+                    .map(|p| p.list.iter().filter(|i| p.page_on(&c.profile_opts, i)).map(|i| i.id.clone()).collect())
                     .unwrap_or_default();
                 let screens_on = !script_pages.is_empty();
+                // (the parts of a page the player switches one by one: what its script reads, `vi.on`)
+                if let Some(p) = &pages {
+                    p.set_switches(&c.profile_opts);
+                }
                 let mut found: Option<screens::ScreenLayout> = None;
                 // A page on screen whose switch was just turned off (Game pages) goes now, not when the game
                 // closes it.
                 if let Some(old) = &screen {
-                    let on = pages.as_ref().and_then(|p| p.info(&old.id).map(|i| p.switch_on(&c.profile_opts, &i.option)));
+                    let on = pages.as_ref().and_then(|p| p.info(&old.id).map(|i| p.page_on(&c.profile_opts, i)));
                     // (a page its script no longer has goes too)
                     if on != Some(true) {
                         hide_screen(&*ctx.sink, &ctx.live, &latest, &mut screen);
@@ -1629,7 +1633,7 @@ impl Reader {
                     None => {
                         // GTA VI's message bubble at the bottom right (see chat.rs): its translation in a
                         // bubble like it, above it. Read again only when its box changes.
-                        let chat = if c.phone_text() { crate::chat::find_bubble(&f.rgba, f.w, f.h) } else { None };
+                        let chat = if c.phone_bubble() { crate::chat::find_bubble(&f.rgba, f.w, f.h) } else { None };
                         let bubble = chat.and_then(|r| {
                             let frac_r = screens::Rect { x: r.0 as f64 / f.w as f64, y: r.1 as f64 / f.h as f64, w: r.2 as f64 / f.w as f64, h: r.3 as f64 / f.h as f64 };
                             let sig = screens::region_sig(f, &frac_r);
