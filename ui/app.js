@@ -634,8 +634,9 @@ function ps5Linked(s) {
             try { await invoke("ps5_wake"); } catch (e) { note.textContent = String(e); }
           } }, t("Wake the PS5")),
           el("button", { class: "btn danger", onclick: async () => {
-            if (!confirm(t("Unlink {name}? To use it again, link it with a new PIN.", { name }))) return;
-            await invoke("ps5_forget");
+            // (window.confirm does nothing in the macOS webview: the page's own question)
+            if (!(await ask(t("Unlink {name}? To use it again, link it with a new PIN.", { name }), t("Unlink")))) return;
+            try { await invoke("ps5_forget"); } catch (e) { note.textContent = String(e); return; }
             Object.assign(ps5Ui, { searched: false, msg: "", msgErr: false });
             renderPs5();
           } }, t("Unlink"))),
