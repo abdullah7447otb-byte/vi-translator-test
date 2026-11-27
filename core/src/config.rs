@@ -899,7 +899,7 @@ pub struct DefaultTiming {
     pub stable_ms: u64,
     pub clear_after_ms: u64,
 }
-pub const DEFAULT_TIMING: DefaultTiming = DefaultTiming { capture_fps: 60, preview_fps: 60, interval_ms: 16, stable_ms: 80, clear_after_ms: 100 };
+pub const DEFAULT_TIMING: DefaultTiming = DefaultTiming { capture_fps: 60, preview_fps: 60, interval_ms: 16, stable_ms: 80, clear_after_ms: 300 };
 
 /// The built-in GTA VI profile with its look "Over the game's text" (the black box over the English).
 fn cover_shown() -> std::collections::BTreeMap<String, Shown> {
@@ -1046,11 +1046,15 @@ impl Config {
         // the player's own timing, or the game profile's (each value it has; 0 = it has none)
         let own = self.timing_custom == Some(true);
         let pick = |mine: u64, game: u64| if own || game == 0 { mine } else { game };
+        // (not their own: the app's current defaults, not values saved by an older version — a
+        // default that changes reaches every player who never chose their own)
+        let d = &DEFAULT_TIMING;
+        let (interval, stable, clear) = if own { (self.interval_ms, self.stable_ms, self.clear_after_ms) } else { (d.interval_ms, d.stable_ms, d.clear_after_ms) };
         // (within the Timing sliders' ranges, whatever a settings file or a layout says)
         (
-            pick(self.interval_ms, t.interval_ms).clamp(16, 1000),
-            pick(self.stable_ms, t.stable_ms).min(1500),
-            pick(self.clear_after_ms, t.clear_after_ms).clamp(50, 3000),
+            pick(interval, t.interval_ms).clamp(16, 1000),
+            pick(stable, t.stable_ms).min(1500),
+            pick(clear, t.clear_after_ms).clamp(50, 3000),
         )
     }
 
@@ -1073,6 +1077,11 @@ impl Config {
     ///    that profile's: a built-in one exactly as it is (it can't be changed), one of the
     ///    player's as they last saved it.
     pub fn normalize(&mut self) {
+        // Timing the player never chose is the app's current default (shown so on the Timing page too)
+        if self.timing_custom != Some(true) {
+            let d = &DEFAULT_TIMING;
+            (self.interval_ms, self.stable_ms, self.clear_after_ms) = (d.interval_ms, d.stable_ms, d.clear_after_ms);
+        }
         self.source_crop = self.source_crop.and_then(clean_crop);
         self.overlay_crop = self.overlay_crop.and_then(clean_crop);
         for id in BUILTINS {
@@ -1351,10 +1360,11 @@ mod profile_tests {
         c.normalize();
         assert_eq!(c.profile, "gta6");
         assert!(c.cover_look());
-        assert_eq!((c.interval_ms, c.stable_ms, c.clear_after_ms, c.capture_fps, c.preview_fps, c.picture_4k), (16, 80, 100, 60, 60, false));
-        assert_eq!(c.timing(), (16, 80, 100));
-        // once: what they choose afterwards stays
+        assert_eq!((c.interval_ms, c.stable_ms, c.clear_after_ms, c.capture_fps, c.preview_fps, c.picture_4k), (16, 80, 300, 60, 60, false));
+        assert_eq!(c.timing(), (16, 80, 300));
+        // once: what they choose afterwards stays (moving a Timing slider makes the timing their own)
         c.interval_ms = 200;
+        c.timing_custom = Some(true);
         c.shown.get_mut("gta6").unwrap().pages.insert("translation_cover".into(), false);
         assert!(!c.move_to_new_defaults());
         c.normalize();
@@ -1363,7 +1373,7 @@ mod profile_tests {
         let mut d = Config::default();
         d.normalize();
         assert!(d.cover_look());
-        assert_eq!(d.timing(), (16, 80, 100));
+        assert_eq!(d.timing(), (16, 80, 300));
     }
 
     #[test]
@@ -1490,6 +1500,18 @@ mod profile_tests {
         // back to the game's (their values are kept for later, but not used)
         c.timing_custom = Some(false);
         assert_eq!(c.timing(), (d.interval_ms, 120, 1500));
+    }
+
+    #[test]
+    fn timing_the_player_never_chose_follows_the_new_default() {
+        // saved by an older version with the old default, not their own
+        let mut c: Config = serde_json::from_str(r#"{"defaults_version": 6, "clear_after_ms": 100, "timing_custom": false}"#).unwrap();
+        c.normalize();
+        assert_eq!((c.clear_after_ms, c.timing().2), (DEFAULT_TIMING.clear_after_ms, DEFAULT_TIMING.clear_after_ms));
+        // their own stays theirs
+        let mut c: Config = serde_json::from_str(r#"{"defaults_version": 6, "stable_ms": 0, "clear_after_ms": 100, "timing_custom": true}"#).unwrap();
+        c.normalize();
+        assert_eq!((c.stable_ms, c.clear_after_ms), (0, 100));
     }
 
     #[test]
