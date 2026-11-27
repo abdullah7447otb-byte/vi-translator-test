@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["src-tauri", "core", "core/ffi", "ps"]
+members = ["src-tauri", "core", "core/ffi", "ps", "xbox"]
 # `cargo build` / `cargo test` at the top build the desktop app (and its core); the phone library
 # (core/ffi) is built on its own: see core/README.md
-default-members = ["src-tauri", "core", "core/ffi", "ps"]
+default-members = ["src-tauri", "core", "core/ffi", "ps", "xbox"]
 
 [workspace.package]
 # the app's version (the release workflow sets it from the tag)

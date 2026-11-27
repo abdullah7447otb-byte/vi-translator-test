@@ -98,7 +98,14 @@ window.I18N = (() => {
       "Downloading the free translation model: {file} ...",
       "Loading the translation model ...",
       "Free local translator ready.",
-      "OCR unavailable: {error}"
+      "OCR unavailable: {error}",
+      "Starting the stream from {name} …",
+      "Waking {name} …",
+      "Waiting for {name} to get ready …",
+      "Connecting to {name} …",
+      "Playing on {name} ({n} controller(s))",
+      "The Xbox refused the stream. ({error})",
+      "Microsoft refused the sign-in ({error})."
   ];
   const MSG_RE = MSGS.map((m) => {
     const names = [];
@@ -111,7 +118,8 @@ window.I18N = (() => {
       const hit = re.exec(s);
       if (hit) return t(m, Object.fromEntries(names.map((n, i) => [n, hit[i + 1]])));
     }
-    return s;
+    // (a whole message, e.g. why the Xbox's stream ended)
+    return t(s);
   }
 
   return { UI_LANGS, add, t, tMsg, setLang, apply, get lang() { return lang; } };
