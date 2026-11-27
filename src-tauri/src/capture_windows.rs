@@ -121,13 +121,42 @@ fn start_gdi(
     Ok(WindowCapture(CaptureMethod::Gdi { stop, thread: Some(thread), shared }))
 }
 
+/// Ask Windows once for capture without its yellow border round the captured window or screen:
+/// `IsBorderRequired` = false (Windows 11) only takes the border away for an app that asked for
+/// borderless capture (`GraphicsCaptureAccess`; a desktop app like this one is allowed without a
+/// prompt). False where Windows hasn't that (Windows 10, whose border stays) or says no.
+fn borderless_allowed() -> bool {
+    static ALLOWED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ALLOWED.get_or_init(|| {
+        use windows::Graphics::Capture::{GraphicsCaptureAccess, GraphicsCaptureAccessKind};
+        use windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus;
+        let (tx, rx) = std::sync::mpsc::channel();
+        // (on a thread of its own: an answer that never comes can't hold up the capture)
+        std::thread::spawn(move || {
+            let r = GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless).and_then(|op| op.join());
+            let _ = tx.send(r);
+        });
+        let answer = rx.recv_timeout(Duration::from_secs(3));
+        if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
+            eprintln!("[capture] borderless capture: {answer:?}");
+        }
+        matches!(answer, Ok(Ok(s)) if s == AppCapabilityAccessStatus::Allowed)
+    })
+}
+
+/// The border settings to try, in order (once borderless capture was asked for): none, then the default.
+fn border_settings() -> [DrawBorderSettings; 2] {
+    let _ = borderless_allowed();
+    [DrawBorderSettings::WithoutBorder, DrawBorderSettings::Default]
+}
+
 /// Start capturing the window titled `title`; returns the capture and the window's handle.
 pub fn start_window(title: &str, shared: Arc<Shared>) -> anyhow::Result<(WindowCapture, isize)> {
     let win = find(title).ok_or_else(|| anyhow::anyhow!("Window \"{title}\" not found. Open it, or pick another window."))?;
     let hwnd = win.as_raw_hwnd() as isize;
-    // Hide the yellow capture border where Windows allows it; fall back if refused.
+    // Hide the yellow capture border where Windows allows it (`border_settings`); fall back if refused.
     let mut last_err = String::new();
-    for border in [DrawBorderSettings::WithoutBorder, DrawBorderSettings::Default] {
+    for border in border_settings() {
         let settings = Settings::new(
             win,
             CursorCaptureSettings::WithoutCursor,
@@ -281,7 +310,7 @@ pub fn screen_rect(id: &str) -> Option<(i32, i32, i32, i32)> {
 pub fn start_screen(id: &str, shared: Arc<Shared>) -> anyhow::Result<WindowCapture> {
     let m = monitor(id).ok_or_else(|| anyhow::anyhow!("Screen \"{id}\" not found (unplugged?). Pick another source."))?;
     let mut last_err = String::new();
-    for border in [DrawBorderSettings::WithoutBorder, DrawBorderSettings::Default] {
+    for border in border_settings() {
         let settings = Settings::new(
             m,
             CursorCaptureSettings::WithoutCursor,
