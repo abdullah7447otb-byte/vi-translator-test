@@ -142,6 +142,120 @@ pub fn yuy2_to_rgba(src: &[u8], w: u32, h: u32, c: YuvColor) -> Vec<u8> {
     out
 }
 
+/// An IEEE half float's value (the FP16 frames of an HDR screen).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn f16_to_f32(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exp = ((h >> 10) & 0x1f) as i32;
+    let frac = (h & 0x3ff) as f32;
+    sign * match exp {
+        0 => frac * (2f32).powi(-24),
+        31 => {
+            if frac == 0.0 {
+                f32::INFINITY
+            } else {
+                f32::NAN
+            }
+        }
+        e => (1.0 + frac / 1024.0) * (2f32).powi(e - 15),
+    }
+}
+
+/// The tables `scrgb_to_rgba` works with, for one SDR white: each half float's value as a fraction
+/// of white (≥ 0), its sRGB byte when the pixel isn't brighter than white, and linear 0..=1 in 4096
+/// steps → sRGB. Made once per white (about a millisecond).
+#[cfg_attr(not(windows), allow(dead_code))]
+struct HdrTables {
+    white: f32,
+    lin: Vec<f32>,
+    direct: Vec<u8>,
+    srgb: Vec<u8>,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn hdr_tables(white: f32) -> Arc<HdrTables> {
+    static LAST: Mutex<Option<Arc<HdrTables>>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    if let Some(t) = last.as_ref().filter(|t| t.white == white) {
+        return t.clone();
+    }
+    let srgb: Vec<u8> = (0..4096)
+        .map(|i| {
+            let v = i as f32 / 4095.0;
+            let s = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+            (s * 255.0).round().clamp(0.0, 255.0) as u8
+        })
+        .collect();
+    let k = 1.0 / white.max(0.01);
+    let lin: Vec<f32> = (0..=u16::MAX).map(|b| f16_to_f32(b) * k).map(|v| if v.is_finite() { v.max(0.0) } else { 0.0 }).collect();
+    let direct = lin.iter().map(|&v| srgb[(v.min(1.0) * 4095.0 + 0.5) as usize]).collect();
+    let t = Arc::new(HdrTables { white, lin, direct, srgb });
+    *last = Some(t.clone());
+    t
+}
+
+/// An HDR screen's frame (FP16 scRGB: linear, 1.0 = 80 nits, rows `pitch` bytes apart) → RGBA as the
+/// same picture looks in SDR, for reading text and the game's colours. `white` is the screen's SDR
+/// white in scRGB (Windows' "SDR content brightness": 200 nits = 2.5), which becomes 255. Brighter
+/// than that — an HDR game's highlights — is brought down to it keeping its hue: a pink or yellow
+/// word above SDR white stays pink or yellow (Windows' own 8-bit capture clips each channel, and
+/// those words came out white). Only on HDR screens; about 4 ms for a 1080p frame, 13 for 4K, on 4
+/// cores (table lookups, no float powers per pixel).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn scrgb_to_rgba(src: &[u8], w: u32, h: u32, pitch: usize, white: f32) -> Vec<u8> {
+    let t = hdr_tables(white);
+    let (lin, direct, srgb) = (&t.lin[..], &t.direct[..], &t.srgb[..]);
+    let (w, h) = (w as usize, h as usize);
+    let mut out = vec![255u8; w * h * 4];
+    if w == 0 || h == 0 || src.len() < pitch * (h - 1) + w * 8 {
+        return out;
+    }
+    let rows = |out: &mut [u8], y0: usize| {
+        for (dy, o) in out.chunks_exact_mut(w * 4).enumerate() {
+            let row = &src[(y0 + dy) * pitch..][..w * 8];
+            for (p, s) in o.chunks_exact_mut(4).zip(row.chunks_exact(8)) {
+                let bits = |i: usize| u16::from_le_bytes([s[i], s[i + 1]]) as usize;
+                let (br, bg, bb) = (bits(0), bits(2), bits(4));
+                let (r, g, b) = (lin[br], lin[bg], lin[bb]);
+                let m = r.max(g).max(b);
+                if m <= 1.0 {
+                    (p[0], p[1], p[2]) = (direct[br], direct[bg], direct[bb]);
+                } else {
+                    let q = 4095.0 / m;
+                    (p[0], p[1], p[2]) = (srgb[(r * q + 0.5) as usize], srgb[(g * q + 0.5) as usize], srgb[(b * q + 0.5) as usize]);
+                }
+            }
+        }
+    };
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 4);
+    let per = h.div_ceil(threads);
+    std::thread::scope(|scope| {
+        for (i, part) in out.chunks_mut(per * w * 4).enumerate() {
+            scope.spawn(move || rows(part, i * per));
+        }
+    });
+    out
+}
+
+/// A YUY2 frame at half its width and height (its even rows; of each 4 pixels, the 1st and 3rd one's
+/// brightness and the two pairs' colour averaged): a 4K card's picture for an app showing 1080p.
+#[cfg_attr(not(windows), allow(dead_code))] // (the Windows capture card reader's)
+pub fn yuy2_half(src: &[u8], w: u32, h: u32) -> (u32, u32, Vec<u8>) {
+    let (ow, oh) = ((w / 2) & !1, h / 2);
+    let mut out = vec![0u8; (ow * oh * 2) as usize];
+    for y in 0..oh as usize {
+        let row = &src[y * 2 * w as usize * 2..][..w as usize * 2];
+        let o = &mut out[y * ow as usize * 2..][..ow as usize * 2];
+        for (q, s) in o.chunks_exact_mut(4).zip(row.chunks_exact(8)) {
+            q[0] = s[0];
+            q[1] = ((s[1] as u16 + s[5] as u16 + 1) / 2) as u8;
+            q[2] = s[4];
+            q[3] = ((s[3] as u16 + s[7] as u16 + 1) / 2) as u8;
+        }
+    }
+    (ow, oh, out)
+}
+
 /// BGRX (rows `w * 4` bytes) → YUY2 in BT.709 video range, the colour `yuy2_to_rgba` and the preview's
 /// shader turn back into the same picture (each pair of pixels shares the average of their colour).
 #[cfg_attr(not(windows), allow(dead_code))] // (the Windows capture card reader's)
@@ -638,6 +752,51 @@ mod preview_size_tests {
         let f = shrink(&px(1920, 1080), 1920, 1080, 1920 * 4, false);
         assert_eq!((f.w, f.h), (1920, 1080), "1080p as it is");
         PREVIEW_MAX.store(PREVIEW_W, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn half_floats() {
+        for (bits, v) in [(0x0000u16, 0.0f32), (0x3c00, 1.0), (0x3800, 0.5), (0x4100, 2.5), (0x4500, 5.0), (0xbc00, -1.0), (0x0001, 5.960_464_5e-8)] {
+            assert_eq!(f16_to_f32(bits), v, "{bits:#06x}");
+        }
+    }
+
+    #[test]
+    fn an_hdr_frame_keeps_its_highlight_colours() {
+        // SDR white at 200 nits (2.5); one row of: SDR white, a pink word twice as bright, mid grey,
+        // a darker blue (negative red: outside sRGB), then 8 bytes of row padding
+        let px = |r: u16, g: u16, b: u16| [r.to_le_bytes(), g.to_le_bytes(), b.to_le_bytes(), 0x3c00u16.to_le_bytes()].concat();
+        let mut src = Vec::new();
+        src.extend(px(0x4100, 0x4100, 0x4100));
+        src.extend(px(0x4500, 0x4000, 0x4500)); // (5, 2, 5): above white
+        src.extend(px(0x3c00, 0x3c00, 0x3c00)); // 1.0 = 0.4 of white
+        src.extend(px(0xbc00, 0x0000, 0x3c00));
+        src.extend([0u8; 8]);
+        let out = scrgb_to_rgba(&src, 4, 1, 40, 2.5);
+        assert_eq!(&out[0..4], &[255, 255, 255, 255], "SDR white is white");
+        assert_eq!(&out[4..8], &[255, 170, 255, 255], "the pink word stays pink (Windows' SDR picture made it white)");
+        assert_eq!(&out[8..12], &[170, 170, 170, 255], "40 % of white, in sRGB");
+        assert_eq!(&out[12..16], &[0, 0, 170, 255]);
+        // many rows (split between threads) come out the same
+        let rows: Vec<u8> = (0..37).flat_map(|_| src.clone()).collect();
+        let many = scrgb_to_rgba(&rows, 4, 37, 40, 2.5);
+        assert!(many.chunks_exact(16).all(|r| r == &out[..]));
+    }
+
+    #[test]
+    fn a_4k_yuy2_frame_halves_to_1080p() {
+        // 4 pixels: Y 10 20 30 40, U 100 then 110, V 200 then 211; the row under them is dropped
+        let (w, h) = (8u32, 2u32);
+        let mut src = Vec::new();
+        for _ in 0..2 {
+            src.extend_from_slice(&[10, 100, 20, 200, 30, 110, 40, 211]);
+        }
+        src.extend(vec![255u8; (w * 2) as usize]);
+        let (ow, oh, out) = yuy2_half(&src, w, h);
+        assert_eq!((ow, oh), (4, 1));
+        assert_eq!(out, [10, 105, 30, 206, 10, 105, 30, 206]);
+        let (ow, oh, out) = yuy2_half(&vec![0u8; 3840 * 2160 * 2], 3840, 2160);
+        assert_eq!((ow, oh, out.len()), (1920, 1080, 1920 * 1080 * 2));
     }
 }
 

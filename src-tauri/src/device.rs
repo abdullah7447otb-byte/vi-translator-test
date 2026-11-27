@@ -95,20 +95,73 @@ unsafe fn yuv_color(t: &IMFMediaType, h: u32) -> crate::capture::YuvColor {
     }
 }
 
-/// How much a format of the card is wanted: its size first (up to 1920×1080, or 3840×2160 with `big`;
-/// a larger one counts less the larger it is), then its frame rate (up to 60), then uncompressed.
-fn format_score(w: u32, h: u32, fps: f64, compressed: bool, big: bool) -> i64 {
+//// How much a format of the card is wanted: its size first (up to 1920×1080, or 3840×2160 with `big`;
+/// a larger one counts less the larger it is), then its frame rate (up to 60), then 8-bit colour
+/// (a 10-bit HDR format such as P010 is the last choice at its size: not every PC's Media Foundation
+/// turns it into RGB), then uncompressed.
+fn format_score(w: u32, h: u32, fps: f64, compressed: bool, deep: bool, big: bool) -> i64 {
     let area = (w as i64) * (h as i64);
     let most: i64 = if big { 3840 * 2160 } else { 1920 * 1080 };
     let size_score = if area <= most { area } else { most - (area - most) / 4 };
-    size_score * 1000 + (fps.min(60.0) * 10.0) as i64 + if compressed { 0 } else { 5 }
+    size_score * 1000 + (fps.min(60.0) * 10.0) as i64 + if deep { 0 } else { 6 } + if compressed { 0 } else { 3 }
 }
 
-/// Open the device: YUY2 frames as the card sends them, or else RGB32. Prefers 1920×1080 (plenty for
-/// reading text, and what most cards stream), or with `big` (the 4K picture) its largest size up to
-/// 3840×2160; then the highest frame rate, then uncompressed formats. `pick = false` keeps the card's
-/// current format (needed while another app is streaming it).
-fn open(name: &str, pick: bool, big: bool) -> Result<(IMFSourceReader, u32, u32, Out)> {
+/// A 10-bit (or deeper) format: HDR from a 4K card.
+fn deep_format(g: &windows::core::GUID) -> bool {
+    [
+        MFVideoFormat_P010,
+        MFVideoFormat_P016,
+        MFVideoFormat_Y210,
+        MFVideoFormat_Y216,
+        MFVideoFormat_Y410,
+        MFVideoFormat_Y416,
+        MFVideoFormat_v210,
+        MFVideoFormat_v216,
+        MFVideoFormat_v410,
+        MFVideoFormat_A2R10G10B10,
+        MFVideoFormat_A16B16G16R16F,
+    ]
+    .contains(g)
+}
+
+/// How many of the card's best formats are tried, best first, before the one it is already sending:
+/// a 4K card whose best format won't start (a 10-bit one this PC can't convert, or more than its USB
+/// link carries) then runs at its next best — 4K in another format, or 1440p — not at whatever it
+/// last sent (often 1080p).
+const TRIES: usize = 3;
+
+/// Which format to open the card in.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Pick {
+    /// the n-th best of its formats (0: the best)
+    Best(usize),
+    /// the one it is already sending (another app such as OBS has it streaming)
+    Current,
+}
+
+/// The card's formats (size, frame rate, compressed, 10-bit) in the order they are tried: best first,
+/// each score once (the same size, rate and kind in another subtype adds nothing).
+fn rank(formats: &[(u32, u32, f64, bool, bool)], big: bool) -> Vec<usize> {
+    let mut seen = Vec::new();
+    let mut order: Vec<(i64, usize)> = Vec::new();
+    for (i, &(w, h, fps, compressed, deep)) in formats.iter().enumerate() {
+        let s = format_score(w, h, fps, compressed, deep, big);
+        if !seen.contains(&s) {
+            seen.push(s);
+            order.push((s, i));
+        }
+    }
+    order.sort_by_key(|&(s, i)| (std::cmp::Reverse(s), i));
+    order.into_iter().map(|(_, i)| i).collect()
+}
+
+/// What `open` says when the card has fewer formats than the pick asks for.
+const NO_MORE: &str = "no more formats to try";
+
+/// Open the device: YUY2 frames as the card sends them, or else RGB32, in the format `pick` says
+/// (`rank`: 1920×1080 first — plenty for reading text, and what most cards stream — or with `big`,
+/// the 4K picture, its largest size up to 3840×2160). Also says the largest size the card offers.
+fn open(name: &str, pick: Pick, big: bool) -> Result<(IMFSourceReader, u32, u32, Out, (u32, u32))> {
     let act = devices()?
         .into_iter()
         .find(|(n, _)| n == name)
@@ -125,30 +178,29 @@ fn open(name: &str, pick: bool, big: bool) -> Result<(IMFSourceReader, u32, u32,
         let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
         let reader = MFCreateSourceReaderFromMediaSource(&source, &attrs)?;
 
-        let mut best: Option<(i64, IMFMediaType)> = None;
+        let mut types = Vec::new();
+        let mut formats = Vec::new();
         for i in 0.. {
             let Ok(t) = reader.GetNativeMediaType(STREAM, i) else { break };
             let (w, h) = size_of(&t);
-            let fps = fps_of(&t).min(60.0);
-            let compressed = t.GetGUID(&MF_MT_SUBTYPE).is_ok_and(|g| g == MFVideoFormat_MJPG);
-            let score = format_score(w, h, fps, compressed, big);
-            if best.as_ref().is_none_or(|(s, _)| score > *s) {
-                best = Some((score, t));
-            }
+            let sub = t.GetGUID(&MF_MT_SUBTYPE).unwrap_or_default();
+            formats.push((w, h, fps_of(&t), sub == MFVideoFormat_MJPG, deep_format(&sub)));
+            types.push(t);
         }
-        // Another app (OBS) may already be streaming the card in its own format: then keep that one.
-        if let (true, Some((_, t))) = (pick, &best) {
-            let _ = reader.SetCurrentMediaType(STREAM, None, t);
+        let largest = formats.iter().map(|f| (f.0, f.1)).max_by_key(|&(w, h)| w as u64 * h as u64).unwrap_or((0, 0));
+        if let Pick::Best(n) = pick {
+            let i = *rank(&formats, big).get(n).ok_or_else(|| anyhow!(NO_MORE))?;
+            reader.SetCurrentMediaType(STREAM, None, &types[i]).context("the card won't send that format")?;
         }
         if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
             let cur = reader.GetCurrentMediaType(STREAM)?;
             let (w, h) = size_of(&cur);
-            eprintln!("[device] pick {pick}: {w}x{h} @ {:.1} fps, subtype {:?}", fps_of(&cur), cur.GetGUID(&MF_MT_SUBTYPE));
+            eprintln!("[device] {pick:?}: {w}x{h} @ {:.1} fps, subtype {:?} (largest {largest:?})", fps_of(&cur), cur.GetGUID(&MF_MT_SUBTYPE));
         }
         let cur = reader.GetCurrentMediaType(STREAM)?;
         let (w, h) = size_of(&cur);
         if cur.GetGUID(&MF_MT_SUBTYPE).is_ok_and(|g| g == MFVideoFormat_YUY2) && w > 0 && h > 0 && w % 2 == 0 {
-            return Ok((reader, w, h, Out::Yuy2(yuv_color(&cur, h))));
+            return Ok((reader, w, h, Out::Yuy2(yuv_color(&cur, h)), largest));
         }
         let out = MFCreateMediaType()?;
         out.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
@@ -160,7 +212,17 @@ fn open(name: &str, pick: bool, big: bool) -> Result<(IMFSourceReader, u32, u32,
         if w == 0 || h == 0 {
             return Err(anyhow!("the device reports no picture size"));
         }
-        Ok((reader, w, h, Out::Rgb32))
+        Ok((reader, w, h, Out::Rgb32, largest))
+    }
+}
+
+/// The status while capturing: the size, and for a card that could send more than it does because
+/// the 4K picture is off, how to get its full size.
+fn capturing(name: &str, w: u32, h: u32, largest: (u32, u32), big: bool) -> String {
+    if !big && largest.1 > h && largest.1 > 1080 {
+        format!("Capturing device \"{name}\" ({w}×{h}; up to {}×{} with the 4K picture on)", largest.0, largest.1)
+    } else {
+        format!("Capturing device \"{name}\" ({w}×{h})")
     }
 }
 
@@ -244,27 +306,29 @@ pub fn start(name: String, shared: Arc<Shared>, big: bool) -> DeviceCapture {
     let handle = std::thread::spawn(move || {
         let status = &shared.status;
         init();
-        // First in our preferred format; if the card won't start streaming in it (another app such as
-        // OBS has it running in a different format), again in whatever format it is already sending.
+        // In its best formats first, each until one sends a frame; then (another app such as OBS has it
+        // running in a format of its own) in whatever format it is already sending.
         let mut opened = None;
         let mut why = String::new();
-        for pick in [true, false] {
+        for pick in (0..TRIES).map(Pick::Best).chain([Pick::Current]) {
             match open(&name, pick, big) {
-                Ok((reader, w, h, out)) => {
+                Ok((reader, w, h, out, largest)) => {
                     let (mut flags, mut sample) = (0u32, None);
                     match unsafe { reader.ReadSample(STREAM, 0, None, Some(&mut flags), None, Some(&mut sample)) } {
                         Ok(()) if flags & MF_SOURCE_READERF_ERROR.0 as u32 == 0 => {
-                            opened = Some((reader, w, h, out));
+                            opened = Some((reader, w, h, out, largest));
                             break;
                         }
                         Ok(()) => why = format!("flags {flags:#x}"),
                         Err(e) => why = format!("{e}"),
                     }
                 }
+                // (a card with fewer formats: on to the current one, the earlier try's error says more)
+                Err(e) if e.to_string() == NO_MORE => {}
                 Err(e) => why = format!("{e:#}"),
             }
         }
-        let Some((reader, mut w, mut h, mut out)) = opened else {
+        let Some((reader, mut w, mut h, mut out, largest)) = opened else {
             if why.contains("0xC00D3704") {
                 why = "another app is using it (OBS's Video Capture Device keeps it to itself) — pick the card's OBS source (📺) instead".into();
             }
@@ -272,7 +336,7 @@ pub fn start(name: String, shared: Arc<Shared>, big: bool) -> DeviceCapture {
             std::thread::sleep(Duration::from_secs(2)); // the manager retries after this
             return;
         };
-        *status.lock().unwrap() = format!("Capturing device \"{name}\" ({w}×{h})");
+        *status.lock().unwrap() = capturing(&name, w, h, largest, big);
         if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
             eprintln!("[device] reading {w}x{h} as {out:?}");
         }
@@ -305,7 +369,7 @@ pub fn start(name: String, shared: Arc<Shared>, big: bool) -> DeviceCapture {
                 match current(&reader) {
                     Some(now) => {
                         (w, h, out) = now;
-                        *status.lock().unwrap() = format!("Capturing device \"{name}\" ({w}×{h})");
+                        *status.lock().unwrap() = capturing(&name, w, h, largest, big);
                     }
                     None => {
                         *status.lock().unwrap() = format!("Capture device \"{name}\" changed its picture: opening it again");
@@ -327,6 +391,9 @@ pub fn start(name: String, shared: Arc<Shared>, big: bool) -> DeviceCapture {
                         shared.put_full(w, h, crate::capture::yuy2_to_rgba(&px, w, h, color));
                     }
                     if preview {
+                        // (a card running wider than the app's picture may be — 4K with the 4K picture
+                        // off — at half its size: the window gets no more than it shows)
+                        let (w, h, px) = if w > crate::capture::preview_w() { crate::capture::yuy2_half(&px, w, h) } else { (w, h, px) };
                         // A game running slower than the console's 60 Hz output (30 fps) arrives as
                         // each frame twice: an exact copy of the last one sent isn't sent again (the
                         // window has it already). The next frame is looked at right away.
@@ -344,9 +411,10 @@ pub fn start(name: String, shared: Arc<Shared>, big: bool) -> DeviceCapture {
                 }
                 Out::Rgb32 => {
                     let Ok(mut px) = copy_rows(&sample, w, h, 4) else { continue };
-                    if preview && w % 2 == 0 {
+                    if preview && w % 2 == 0 && w <= crate::capture::preview_w() {
                         // (a card that sends MJPEG, decoded by Windows) as YUY2 for the window's GPU, full
                         // size: no JPEG on the way. An exact copy of the last frame isn't sent again.
+                        // (Wider than the app's picture may be: made smaller, below.)
                         let yuy2 = crate::capture::bgrx_to_yuy2(&px, w, h);
                         let copy = shared.preview_yuv.lock().unwrap().as_ref().is_some_and(|(_, f)| f.w == w && f.h == h && f.data == yuy2);
                         if copy {
@@ -449,31 +517,69 @@ pub fn grab_once(name: &str) -> Result<Arc<FrameData>> {
 
 #[cfg(test)]
 mod tests {
-    use super::format_score;
+    use super::{capturing, format_score, rank};
 
-    /// The best of a 4K card's usual formats.
-    fn pick(big: bool) -> (u32, u32, f64, bool) {
-        let formats = [(3840, 2160, 30.0, false), (3840, 2160, 60.0, true), (2560, 1440, 60.0, false), (1920, 1080, 60.0, false), (1920, 1080, 60.0, true), (1280, 720, 60.0, false)];
-        *formats.iter().max_by_key(|(w, h, fps, c)| format_score(*w, *h, *fps, *c, big)).unwrap()
+    /// A 4K card's usual formats: (width, height, fps, MJPEG, 10-bit).
+    const CARD_4K: [(u32, u32, f64, bool, bool); 7] = [
+        (3840, 2160, 30.0, false, false),
+        (3840, 2160, 60.0, true, false),
+        (2560, 1440, 60.0, false, false),
+        (1920, 1080, 60.0, false, false),
+        (1920, 1080, 60.0, true, false),
+        (1280, 720, 60.0, false, false),
+        (3840, 2160, 60.0, false, true),
+    ];
+
+    /// The formats in the order they are tried.
+    fn order(formats: &[(u32, u32, f64, bool, bool)], big: bool) -> Vec<(u32, u32, f64, bool, bool)> {
+        rank(formats, big).into_iter().map(|i| formats[i]).collect()
     }
 
     #[test]
     fn a_4k_card_runs_at_1080p_unless_the_4k_picture_is_on() {
-        assert_eq!(pick(false), (1920, 1080, 60.0, false), "1080p60, uncompressed");
-        assert_eq!(pick(true), (3840, 2160, 60.0, true), "4K60 (MJPEG) over 4K30");
+        assert_eq!(order(&CARD_4K, false)[0], (1920, 1080, 60.0, false, false), "1080p60, uncompressed");
+        assert_eq!(order(&CARD_4K, true)[0], (3840, 2160, 60.0, true, false), "4K60 (MJPEG) over 4K30");
+    }
+
+    #[test]
+    fn a_4k_card_whose_best_format_fails_stays_at_4k() {
+        // the next tries are 4K too (10-bit, then 30 fps), before any smaller size
+        let tried = order(&CARD_4K, true);
+        assert_eq!(tried[1], (3840, 2160, 60.0, false, true), "4K60 in 10-bit after 8-bit");
+        assert_eq!(tried[2], (3840, 2160, 30.0, false, false));
+        assert_eq!(tried[3].1, 1440);
+    }
+
+    #[test]
+    fn eight_bit_before_ten_bit_at_the_same_size() {
+        assert!(format_score(3840, 2160, 60.0, true, false, true) > format_score(3840, 2160, 60.0, false, true, true));
+        // (but a larger 10-bit picture before a smaller 8-bit one)
+        assert!(format_score(3840, 2160, 60.0, false, true, true) > format_score(2560, 1440, 60.0, false, false, true));
     }
 
     #[test]
     fn a_1080p_card_is_the_same_either_way() {
-        let formats = [(1920, 1080, 60.0, false), (1280, 720, 60.0, false)];
+        let formats = [(1920, 1080, 60.0, false, false), (1280, 720, 60.0, false, false)];
         for big in [false, true] {
-            let best = formats.iter().max_by_key(|(w, h, fps, c)| format_score(*w, *h, *fps, *c, big)).unwrap();
-            assert_eq!(best.0, 1920);
+            assert_eq!(order(&formats, big)[0].0, 1920);
         }
     }
 
     #[test]
+    fn the_same_format_in_two_subtypes_is_tried_once() {
+        let formats = [(1920, 1080, 60.0, false, false), (1920, 1080, 60.0, false, false), (1280, 720, 60.0, false, false)];
+        assert_eq!(rank(&formats, false), vec![0, 2]);
+    }
+
+    #[test]
     fn nothing_above_4k_is_preferred() {
-        assert!(format_score(3840, 2160, 60.0, false, true) > format_score(7680, 4320, 60.0, false, true));
+        assert!(format_score(3840, 2160, 60.0, false, false, true) > format_score(7680, 4320, 60.0, false, false, true));
+    }
+
+    #[test]
+    fn a_4k_card_at_1080p_says_how_to_get_4k() {
+        assert_eq!(capturing("4K X", 1920, 1080, (3840, 2160), false), "Capturing device \"4K X\" (1920×1080; up to 3840×2160 with the 4K picture on)");
+        assert_eq!(capturing("4K X", 3840, 2160, (3840, 2160), true), "Capturing device \"4K X\" (3840×2160)");
+        assert_eq!(capturing("HD60 X", 1920, 1080, (1920, 1080), false), "Capturing device \"HD60 X\" (1920×1080)");
     }
 }

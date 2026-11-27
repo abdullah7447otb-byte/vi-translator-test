@@ -72,26 +72,65 @@ document.querySelectorAll(".modes button").forEach((b) => b.addEventListener("cl
 // "Change" on a Play card: open that part of Setup
 document.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => { setMode("setup"); openTab(b.dataset.go); }));
 
-// Play: the preview full screen — the window goes full screen and the picture fills it. Back with the
-// button, Esc, or a double-click on the picture.
+// Play: the preview full screen — the window goes full screen and the picture fills it (its own
+// shape: bars only where the screen's shape differs). From the button over the picture, F11 (from
+// Setup too: it opens Play), or a double-click on the picture; back with the button, Esc or F11. The
+// mouse pointer and the buttons go after a moment without moving the mouse, and come back with it.
 const isFullscreen = () => document.documentElement.classList.contains("fullscreen");
+// (the window really went full screen: then the window leaving full screen by itself — macOS's green
+// button, a Windows shortcut — ends it here too. Where it can't, the picture still fills the window.)
+let osFullscreen = false;
+let fsSince = 0;
 async function setFullscreen(on) {
+  fsSince = performance.now();
+  if (on && document.body.dataset.mode !== "play") setMode("play"); // (the full-screen picture is Play's)
   document.documentElement.classList.toggle("fullscreen", on);
   $("fullscreen").title = on ? t("Exit full screen (Esc)") : t("Full screen");
+  osFullscreen = false;
   try {
     await window.__TAURI__.window.getCurrentWindow().setFullscreen(on);
+    osFullscreen = on;
   } catch (e) {
     log({ error: String(e) });
   }
-  requestAnimationFrame(fitFrame); // the window's resize event fits it again once the size settles
+  fsActive();
+  requestAnimationFrame(fitFrame); // (the viewport's ResizeObserver fits it again once the size settles)
 }
 $("fullscreen").addEventListener("click", () => setFullscreen(!isFullscreen()));
 $("viewport").addEventListener("dblclick", (e) => {
-  if (document.body.dataset.mode === "play" && !e.target.closest("#fullscreen")) setFullscreen(!isFullscreen());
+  if (document.body.dataset.mode === "play" && !e.target.closest(".fs-btn")) setFullscreen(!isFullscreen());
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && isFullscreen()) setFullscreen(false);
+  else if (e.key === "F11" && !e.repeat) {
+    e.preventDefault();
+    setFullscreen(!isFullscreen());
+  }
 });
+// The window left full screen by itself: the picture goes back into the page too. (Not while it is
+// still going full screen: macOS animates into it, and says "not full screen" meanwhile.)
+window.addEventListener("resize", async () => {
+  if (!osFullscreen || !isFullscreen() || performance.now() - fsSince < 2000) return;
+  try {
+    if (!(await window.__TAURI__.window.getCurrentWindow().isFullscreen()) && osFullscreen) {
+      osFullscreen = false;
+      setFullscreen(false);
+    }
+  } catch {}
+});
+// In full screen: the pointer and the buttons hidden after 2.5 s without the mouse moving (not while
+// it is over a button).
+let fsIdleTimer = 0;
+function fsActive() {
+  document.documentElement.classList.remove("fs-idle");
+  clearTimeout(fsIdleTimer);
+  if (!isFullscreen()) return;
+  fsIdleTimer = setTimeout(() => {
+    if (isFullscreen() && !document.querySelector(".fs-btn:hover")) document.documentElement.classList.add("fs-idle");
+    else fsActive();
+  }, 2500);
+}
+for (const ev of ["mousemove", "mousedown", "wheel"]) document.addEventListener(ev, () => { if (isFullscreen()) fsActive(); }, { passive: true });
 
 /** The Play cards: source, language + service, read areas. */
 function updateGlance() {
@@ -123,6 +162,8 @@ function fitFrame() {
   drawLayer();
 }
 window.addEventListener("resize", fitFrame);
+// (and whenever the picture's place changes size: full screen settling, Play and Setup, the log's split)
+new ResizeObserver(() => fitFrame()).observe($("viewport"));
 
 function sampleSegments() {
   // "*word*" in the sample text shows as a highlighted word
@@ -1287,7 +1328,7 @@ function renderAreas() {
       ${fxFields(a)}
       <div class="row field inline-label">
         <label>${a.match_size !== false ? t("Fine-tune") : t("Text size")}</label>
-        <input type="range" class="fs" min="0.5" max="2" step="0.05" value="${a.font_scale}" />
+        <input type="range" class="fs" ${rangeAttrs(a.font_scale, 0.5, 2, 0.05)} />
         <span class="val fsv">${Math.round(a.font_scale * 100)}%</span>
       </div>
       <details class="area-style"${styleOpen.has(a.id) ? " open" : ""}><summary>${t("Text style")}</summary><div class="form"></div></details>
@@ -1340,7 +1381,7 @@ function renderAreas() {
       save();
     });
     c.querySelector(".fs").addEventListener("input", (e) => {
-      a.font_scale = Number(e.target.value);
+      a.font_scale = rangeMoved(e.target, 0.5, 2, 0.05);
       c.querySelector(".fsv").textContent = `${Math.round(a.font_scale * 100)}%`;
       save();
     });
@@ -1463,7 +1504,7 @@ function renderStyleForm(form, a) {
       f.querySelector("input").addEventListener("change", (e) => setStyle(key, e.target.checked));
     } else if (type === "size") {
       // slider + exact number, kept in sync
-      f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" min="${min}" max="${max}" step="${step}" value="${AS.esc(s[key])}" />
+      f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" ${rangeAttrs(s[key], min, max, step)} />
         <input type="number" min="${min}" max="${max}" step="${step}" value="${AS.esc(s[key])}" style="width:72px" /><span class="val" style="min-width:18px">px</span></div>`;
       const [range, num] = f.querySelectorAll("input");
       // the text size, while the area matches the game's: the game's size is used (its Fine-tune
@@ -1474,7 +1515,7 @@ function renderStyleForm(form, a) {
         f.style.opacity = "0.55";
         f.insertAdjacentHTML("beforeend", `<div class="muted small" style="margin:4px 0 0">${t("Follows the game's text size. Change it with Fine-tune above, or untick “Match the game's text size”.")}</div>`);
       }
-      range.addEventListener("input", () => { num.value = range.value; setStyle(key, Number(range.value)); });
+      range.addEventListener("input", () => { const v = rangeMoved(range, min, max, step); num.value = v; setStyle(key, v); });
       num.addEventListener("change", () => {
         const v = Math.min(Math.max(Number(num.value) || s[key], min), max);
         num.value = range.value = v;
@@ -1485,8 +1526,8 @@ function renderStyleForm(form, a) {
       f.querySelector("input").addEventListener("input", (e) => { f.querySelector(".val").textContent = e.target.value; setStyle(key, e.target.value); });
     } else {
       const fmt = (v) => (step < 1 ? Number(v).toFixed(2) : String(v));
-      f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" min="${min}" max="${max}" step="${step}" value="${AS.esc(s[key])}" /><span class="val">${AS.esc(fmt(s[key]))}</span></div>`;
-      f.querySelector("input").addEventListener("input", (e) => { f.querySelector(".val").textContent = fmt(e.target.value); setStyle(key, Number(e.target.value)); });
+      f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" ${rangeAttrs(s[key], min, max, step)} /><span class="val">${AS.esc(fmt(rangeShown(s[key], min, max, step).value))}</span></div>`;
+      f.querySelector("input").addEventListener("input", (e) => { const v = rangeMoved(e.target, min, max, step); f.querySelector(".val").textContent = fmt(v); setStyle(key, v); });
     }
     form.appendChild(f);
   }
@@ -1507,6 +1548,31 @@ function renderStyleForm(form, a) {
 }
 
 // ------------------------------------------------------------------------------------- timing
+
+// Sliders whose number, dot and saved value agree. A value the slider's steps don't reach (a game's
+// timing, 80 ms on a 50 ms step) or outside its range would have its dot jump to the nearest step
+// while the number said otherwise: it is shown where it really is (within the range, as the app
+// uses it), on steps of its own until the slider is moved; a moved slider takes its own steps again.
+function rangeShown(v, min, max, step) {
+  const x = Math.min(Math.max(Number(v), min), max);
+  const k = (x - min) / step;
+  const onStep = Math.abs(k - Math.round(k)) < 1e-6;
+  return { value: Number.isFinite(x) ? x : min, step: onStep ? step : "any" };
+}
+/** The attributes of such a slider. */
+function rangeAttrs(v, min, max, step) {
+  const r = rangeShown(v, min, max, step);
+  return `min="${min}" max="${max}" step="${r.step}" value="${r.value}"`;
+}
+/** A moved slider's value, on its own steps (and back on them, if it was shown between two). */
+function rangeMoved(input, min, max, step) {
+  const raw = Number(input.value);
+  const v = Math.min(Math.max(min + Math.round((raw - min) / step) * step, min), max);
+  const fixed = Number(v.toFixed(6)); // (0.1 + 0.2: no float dust in the settings)
+  if (input.step !== String(step)) input.step = step;
+  if (Number(input.value) !== fixed) input.value = fixed;
+  return fixed;
+}
 
 // The preview's fps badge: shown or not, and which corner (Show on → Preview).
 const FPS_CORNERS = [["top-left", "Top left"], ["top-right", "Top right"], ["bottom-left", "Bottom left"], ["bottom-right", "Bottom right"]];
@@ -1544,7 +1610,7 @@ function renderTiming() {
     ["capture_fps", "Frames captured for reading text (per second)", 1, 60, 1, "Full-size frames used for reading text, game pages and saved frames. Also how often the pause menu checks whether its text changed. 12 is plenty; more costs CPU, especially at 4K. From OBS, about 12 is the most it can deliver."],
     ["preview_fps", "Live preview frame rate (per second)", 5, 60, 5, "Only the picture in this app (small frames, made only while it's visible). Doesn't change how text is read."],
     ["interval_ms", "How often areas are read (ms)", 16, 1000, 2, "Lower = faster reaction, more CPU."],
-    ["stable_ms", "Wait for text to settle before translating (ms)", 0, 1500, 50, "Avoids translating half-faded lines."],
+    ["stable_ms", "Wait for text to settle before translating (ms)", 0, 1500, 10, "Avoids translating half-faded lines."],
     ["clear_after_ms", "Treat the English as gone after (ms)", 50, 3000, 10, "Ignores short OCR blinks. The translation then stays as long as the English was on screen, and switches to the next line as soon as it is ready."],
   ];
   // The last three: the game profile's timing unless the player chose their own (Config::timing).
@@ -1554,10 +1620,10 @@ function renderTiming() {
   const inUse = (k) => (cfg.timing_custom === true || !(game[k] > 0) ? cfg[k] : game[k]);
   for (const [key, label, min, max, step, help] of fields) {
     const timed = TIMED.includes(key);
-    const v = timed ? inUse(key) : cfg[key];
+    const v = rangeShown(timed ? inUse(key) : cfg[key], min, max, step).value;
     const f = document.createElement("div");
     f.className = "field";
-    f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" min="${min}" max="${max}" step="${step}" value="${v}" /><span class="val">${v}</span></div>${help ? `<div class="muted small" style="margin:4px 0 0">${t(help)}</div>` : ""}`;
+    f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" ${rangeAttrs(v, min, max, step)} /><span class="val">${v}</span></div>${help ? `<div class="muted small" style="margin:4px 0 0">${t(help)}</div>` : ""}`;
     f.querySelector("input").addEventListener("input", (e) => {
       // moving one of the three: the player's own timing from now on, starting from what was in use
       if (timed && cfg.timing_custom !== true) {
@@ -1565,8 +1631,8 @@ function renderTiming() {
         cfg.timing_custom = true;
         if (gameHas) renderTimingReset(form);
       }
-      cfg[key] = Number(e.target.value);
-      f.querySelector(".val").textContent = e.target.value;
+      cfg[key] = rangeMoved(e.target, min, max, step);
+      f.querySelector(".val").textContent = cfg[key];
       save(false);
     });
     form.appendChild(f);
