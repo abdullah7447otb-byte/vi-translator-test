@@ -68,4 +68,10 @@ Each choice that was open, what was chosen, and why.
 
     What is left is the four reads that debanding needs, about 8 million a frame at 1080p. That is
     nothing for the Mac mini's GPU, but it can't be measured on a runner without one.
+16. **The window-capture test is a report on the CI Mac (the owner's choice, 2026-11-27).** It ran for
+    the first time in 1.6.0's runs (earlier runs stopped before it) and wants 55 pictures a second.
+    ScreenCaptureKit got 22.9 a second and CoreGraphics 15.2, from a test window drawn through
+    osascript on a runner without a GPU, which most likely doesn't change faster than that. The capture
+    code was not changed in 1.6.0. A fair gate would compare against the window's own count of the
+    changes it drew.
 

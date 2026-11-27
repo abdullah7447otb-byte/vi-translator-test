@@ -187,8 +187,11 @@ jobs:
       # A window that changes 60 times a second, captured as the app captures (ScreenCaptureKit, then the
       # old CoreGraphics way to compare). Needs the runner to allow screen recording: if it doesn't,
       # that's what the result says.
+      # (a report: the test window itself changes only about 22 times a second on the GPU-less runner, so
+      # 55 a second can't be reached there; the owner chose this on 2026-11-27, docs/decisions-1.6.md 16)
       - name: Window capture (macOS)
         if: matrix.os == 'macos'
+        continue-on-error: true
         run: |
           APP=target/universal-apple-darwin/release/vi-translator
           mkdir -p video-bench
