@@ -849,6 +849,26 @@ function ps5SmoothRow(s) {
     el("p", { class: "muted small" }, t("Reads the text at most 20 times a second while the PS5 plays, so a slower computer keeps up with the picture. Subtitles still show at once.")));
 }
 
+// motion smoothing (a Mac on macOS 26): GTA VI's 30 frames a second come twice each in the 60 a second
+// stream; a frame made halfway between takes the second's place. It shows the picture a frame later (17 ms
+// and its own time), so it is off unless turned on, and stream mode turns it off when it costs more than 20 ms.
+function ps5MotionRow(s) {
+  if (!/Mac/.test(navigator.platform) || !s.motion_supported) return null;
+  const on = el("input", { type: "checkbox", id: "ps5-motion" });
+  on.checked = s.motion === true;
+  on.addEventListener("change", () => {
+    ps5 = { ...ps5, motion: on.checked };
+    invoke("ps5_set_motion", { on: on.checked });
+  });
+  const now = s.motion && s.motion_state === 1 ? t("Working: {ms} ms a frame, the picture {late} ms later", { ms: s.motion_ms.toFixed(1), late: Math.round(16.7 + s.motion_ms) })
+    : s.motion && s.motion_state === -1 ? t("Turned itself off: this Mac couldn't make the frames in time")
+    : "";
+  return el("div", { class: "field" },
+    el("label", { class: "check" }, on, " ", el("span", {}, t("Motion smoothing (30 → 60 frames)"))),
+    el("p", { class: "muted small" }, t("GTA VI plays at 30 frames a second: the Mac makes a frame between each two, so the picture moves at 60. It shows the picture about one frame later; off for the lowest delay.")),
+    now ? el("p", { class: "muted small" }, now) : null);
+}
+
 // the picture decoded by the computer's own video decoder (Automatic) or by the app on the CPU
 function ps5DecodeRow(s) {
   const sel = el("select", { id: "ps5-decode" },
@@ -945,7 +965,7 @@ function ps5Linked(s) {
       ps5SoundRow(s),
       el("div", { class: "field" }, el("label", { for: "ps5-quality" }, t("Stream quality")), quality,
         el("p", { class: "muted small" }, t("1080p reads small text best; 720p for a slower home network."))),
-      ps5SmoothRow(s),
+      ps5SmoothRow(s), ps5MotionRow(s),
       ps5DecodeRow(s),
       ps5CodecRow(s),
       ps5ReadOnlyRow(s)),
@@ -2450,6 +2470,7 @@ function setStreamMode(on) {
       cover: cfg.profile_opts.more[AS.COVER] === true,
       delay: streamDelay(),
       check: checkMode,
+      motion: !!(typeof ps5 === "object" && ps5 && ps5.motion),
     };
     cfg.picture = { ...(cfg.picture || {}), [key]: { preset: "stream" } };
     changed.push(t("Picture effects off"));
@@ -2463,6 +2484,12 @@ function setStreamMode(on) {
     // (two frames may wait: network jitter doesn't show on the stream)
     streamDelay("smooth");
     if (checkMode) setCheckMode(false);
+    // (motion smoothing costs a frame and its own time: off for the stream when that passes 20 ms)
+    if (cfg.stream_saved.motion && 16.7 + (ps5.motion_ms || 0) > 20) {
+      invoke("ps5_set_motion", { on: false }).catch(() => {});
+      ps5 = { ...ps5, motion: false };
+      changed.push(t("Motion smoothing off"));
+    }
   } else {
     const s = cfg.stream_saved || {};
     const pic = { ...(cfg.picture || {}) };
@@ -2474,6 +2501,10 @@ function setStreamMode(on) {
     cfg.profile_opts.more[AS.COVER] = s.cover === true;
     setShown("page", AS.COVER, s.cover === true);
     if (s.delay) streamDelay(s.delay);
+    if (s.motion && typeof ps5 === "object" && ps5 && !ps5.motion) {
+      invoke("ps5_set_motion", { on: true }).catch(() => {});
+      ps5 = { ...ps5, motion: true };
+    }
     cfg.stream_saved = null;
     changed.push(t("Your settings are back"));
   }
@@ -2590,6 +2621,18 @@ async function updateHealth() {
   ].filter(Boolean).join("<br>");
 }
 setInterval(() => { if (document.querySelector("#tab-translator:not(.hidden), #health")) updateHealth(); }, 2000);
+// The Mac's network, as it bears on the stream (net_check.rs): said once a session each, in the activity log,
+// while a picture comes in (a cable below 1 Gb/s, Wi-Fi on beside the cable, AirDrop/AirPlay on Wi-Fi).
+const netSaid = new Set();
+setInterval(async () => {
+  if (!streaming) return;
+  const tips = await invoke("network_advice").catch(() => []);
+  for (const tip of tips || []) {
+    if (netSaid.has(tip)) continue;
+    netSaid.add(tip);
+    log({ info: t(tip) });
+  }
+}, 30000);
 
 function setSaveFrames(on) {
   cfg.debug_save_frames = on;
@@ -2743,7 +2786,10 @@ const PICTURE_GLSL = `
         // (one hash gives the direction, one of eight, and the distance, 4 to 16 px: no sin or cos a pixel)
         const vec2 DIRS[8] = vec2[8](vec2(1.0, 0.0), vec2(0.924, 0.383), vec2(0.707, 0.707), vec2(0.383, 0.924),
                                      vec2(0.0, 1.0), vec2(-0.383, 0.924), vec2(-0.707, 0.707), vec2(-0.924, 0.383));
-        float h = hash(vec2(p) + pFrame);
+        // (the same points for a whole tile of 8×8 pixels, a new set each frame: reads that land near each other
+        // are what a GPU reads fast — a random point for every pixel was most of the picture's time — and the
+        // frame-to-frame change and the dither below keep the tiles from showing)
+        float h = hash(vec2(p >> 3) + pFrame);
         vec2 dir = DIRS[int(h * 8.0) & 7] * (4.0 + 12.0 * fract(h * 37.0));
         ivec2 o1 = ivec2(dir), o2 = ivec2(-dir.y, dir.x);
         // (on the luma only: one read a point, no colour conversion. Bands at night are steps of brightness,
@@ -2844,6 +2890,17 @@ function pictureNow() {
   const saved = cfg?.picture?.[cfg?.window_title || ""];
   const p = saved && saved.preset !== "custom" ? PICTURE_PRESETS[saved.preset] : saved;
   return pictureCompare || !p ? PICTURE_PRESETS.default : { ...PICTURE_PRESETS.default, ...p };
+}
+/** The looks' strengths this frame, as pictureUniforms sets them. */
+function pictureLook() {
+  const p = pictureNow();
+  const night = !pictureCompare && p.auto_night !== false ? LEVELS.night : 0;
+  const motion = Math.min(1, LEVELS.motion / 14);
+  return {
+    sharp: p.sharp * (1 - 0.6 * motion),
+    local: pictureCompare ? 0 : Math.min(1, (p.local ?? 0) + 0.5 * night),
+    deband: pictureCompare ? 0 : Math.min(1, (p.deband ?? 0.4) + 0.4 * night),
+  };
 }
 function pictureUniforms(gl, u, w, h) {
   const p = pictureNow();
@@ -3121,6 +3178,56 @@ function i420Init() {
     return t;
   });
   I420.prog = prog;
+  // Two passes for the heavier looks (sharpening, detail in the dark): the frame turned to RGB once, into a
+  // half-float picture (no 8-bit step: dark gradients keep every shade), then the looks read that — one read a
+  // point instead of three planes and a colour conversion. A sharpened, debanded frame took about 20 reads a
+  // pixel in one pass; it takes about 13 (Mac's GPU in the webview at 60 frames a second: "Vivid" dropped
+  // frames). Without float pictures to draw into, one pass as before.
+  try {
+    if (gl.getExtension("EXT_color_buffer_float") || gl.getExtension("EXT_color_buffer_half_float")) {
+      const VS = `#version 300 es
+    void main() { vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
+      const conv = gl.createProgram();
+      gl.attachShader(conv, sh(gl.VERTEX_SHADER, VS));
+      gl.attachShader(conv, sh(gl.FRAGMENT_SHADER, `#version 300 es
+    precision highp float;
+    uniform highp sampler2D ty, tu, tv;
+    uniform int height;
+    uniform float yOff, yScale, cScale, kr, kgu, kgv, kb;
+    out vec4 color;
+    void main() {
+      ivec2 p = ivec2(gl_FragCoord.xy);
+      int row = height - 1 - p.y;
+      float Y = texelFetch(ty, ivec2(p.x, row), 0).r * 255.0;
+      float U = texelFetch(tu, ivec2(p.x >> 1, row >> 1), 0).r * 255.0;
+      float V = texelFetch(tv, ivec2(p.x >> 1, row >> 1), 0).r * 255.0;
+      float y = (Y - yOff) * yScale;
+      float u = (U - 128.0) * cScale, v = (V - 128.0) * cScale;
+      color = vec4(clamp(vec3(y + kr * v, y - kgu * u - kgv * v, y + kb * u) / 255.0, 0.0, 1.0), 1.0);
+    }`));
+      gl.linkProgram(conv);
+      const looks = gl.createProgram();
+      gl.attachShader(looks, sh(gl.VERTEX_SHADER, VS));
+      gl.attachShader(looks, sh(gl.FRAGMENT_SHADER, `#version 300 es
+    precision highp float;
+    uniform highp sampler2D trgb;
+    vec3 rgbAt(ivec2 p) { return texelFetch(trgb, p, 0).rgb; }
+    float yAt(ivec2 p) { return dot(texelFetch(trgb, p, 0).rgb, vec3(0.2126, 0.7152, 0.0722)); }
+    ${PICTURE_GLSL}`));
+      gl.linkProgram(looks);
+      if (gl.getProgramParameter(conv, gl.LINK_STATUS) && gl.getProgramParameter(looks, gl.LINK_STATUS)) {
+        const uc = {}, ul = {};
+        for (const n of ["ty", "tu", "tv", "height", "yOff", "yScale", "cScale", "kr", "kgu", "kgv", "kb"]) uc[n] = gl.getUniformLocation(conv, n);
+        for (const n of ["trgb", ...PICTURE_UNIFORMS]) ul[n] = gl.getUniformLocation(looks, n);
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+        I420.two = { conv, looks, uc, ul, tex, fbo: gl.createFramebuffer(), w: 0, h: 0 };
+      }
+    }
+  } catch (e) {
+    I420.two = null;
+  }
   return true;
 }
 /** Draw one I420 frame (`data`: w × h luma, then w/2 × h/2 U, then V; w and h even). */
@@ -3164,9 +3271,60 @@ function i420Draw(data, w, h, bt709, fullRange, stretch) {
   gl.uniform1f(u.yScale, 255 / (white - black));
   gl.uniform1f(u.cScale, cMul);
   for (const [n, v] of [["kr", kr], ["kgu", kgu], ["kgv", kgv], ["kb", kb]]) gl.uniform1f(u[n], v);
+  // (the heavier looks in two passes, see i420Init)
+  const look = pictureLook();
+  const T = I420.two;
+  if (T && (look.sharp > 0.001 || look.local > 0.001) && twoPass(gl, T, w, h, [kr, kgu, kgv, kb], black, white, cMul)) {
+    gl.activeTexture(gl.TEXTURE0);
+    return true;
+  }
   pictureUniforms(gl, u, w, h);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   gl.activeTexture(gl.TEXTURE0);
+  return true;
+}
+
+/** The frame (its planes bound to units 0–2) to RGB into a half-float picture, then the looks on it. False
+ *  when the picture can't be drawn into (then one pass). */
+function twoPass(gl, T, w, h, k, black, white, cMul) {
+  if (T.w !== w || T.h !== h) {
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, T.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, T.fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, T.tex, 0);
+    const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (!ok) {
+      I420.two = null;
+      return false;
+    }
+    Object.assign(T, { w, h });
+  }
+  // pass 1: to RGB
+  gl.bindFramebuffer(gl.FRAMEBUFFER, T.fbo);
+  gl.viewport(0, 0, w, h);
+  gl.useProgram(T.conv);
+  gl.uniform1i(T.uc.ty, 0);
+  gl.uniform1i(T.uc.tu, 1);
+  gl.uniform1i(T.uc.tv, 2);
+  gl.uniform1i(T.uc.height, h);
+  gl.uniform1f(T.uc.yOff, black);
+  gl.uniform1f(T.uc.yScale, 255 / (white - black));
+  gl.uniform1f(T.uc.cScale, cMul);
+  ["kr", "kgu", "kgv", "kb"].forEach((n, i) => gl.uniform1f(T.uc[n], k[i]));
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  // pass 2: the looks, onto the canvas
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, w, h);
+  gl.useProgram(T.looks);
+  gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D, T.tex);
+  gl.uniform1i(T.ul.trgb, 3);
+  pictureUniforms(gl, T.ul, w, h);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  // (the one-pass program back for the next frame's uploads and uniforms)
+  gl.useProgram(I420.prog);
   return true;
 }
 

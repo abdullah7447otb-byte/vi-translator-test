@@ -35,6 +35,12 @@ mod ffi {
         #[cfg(target_os = "macos")]
         pub fn vit_vt_hardware(p: *mut c_void) -> i32;
         #[cfg(target_os = "macos")]
+        pub fn vit_vt_set_smooth(p: *mut c_void, on: i32);
+        #[cfg(target_os = "macos")]
+        pub fn vit_vt_smooth_state(p: *mut c_void, avg_us: *mut std::ffi::c_long) -> i32;
+        #[cfg(target_os = "macos")]
+        pub fn vit_vt_smooth_supported() -> i32;
+        #[cfg(target_os = "macos")]
         pub fn vit_vt_decode(p: *mut c_void, data: *const u8, len: usize, y: *mut *const u8, uv: *mut *const u8, w: *mut i32, h: *mut i32, ys: *mut i32, uvs: *mut i32) -> i32;
         #[cfg(windows)]
         pub fn vit_mf_new(software: i32) -> *mut c_void;
@@ -69,6 +75,18 @@ enum Inner {
     Soft(openh264::decoder::Decoder),
     #[cfg(any(target_os = "macos", windows))]
     Hard(Native),
+}
+
+/// This computer can make frames between frames (macOS 26's VideoToolbox frame interpolation).
+pub fn smoothing_supported() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        (unsafe { ffi::vit_vt_smooth_supported() }) == 1
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 pub struct VideoDecoder {
@@ -144,6 +162,28 @@ impl VideoDecoder {
             let _ = hevc;
             None
         }
+    }
+
+    /// Motion smoothing on or off (a Mac's VideoToolbox only: a frame made between the PS5's, where a 30
+    /// frames a second game sends a frame twice; see native/vit_fi.m). Elsewhere nothing.
+    pub fn set_smooth(&mut self, on: bool) {
+        #[cfg(target_os = "macos")]
+        if let Inner::Hard(n) = &self.inner {
+            unsafe { ffi::vit_vt_set_smooth(n.0, on as i32) };
+        }
+        let _ = on;
+    }
+
+    /// Motion smoothing now: working (1), turned off by itself, too slow or failing (-1), off (0); and its
+    /// average time a frame (µs).
+    pub fn smooth_state(&self) -> (i32, i64) {
+        #[cfg(target_os = "macos")]
+        if let Inner::Hard(n) = &self.inner {
+            let mut us: std::ffi::c_long = 0;
+            let st = unsafe { ffi::vit_vt_smooth_state(n.0, &mut us) };
+            return (st, us as i64);
+        }
+        (0, 0)
     }
 
     /// Decodes HEVC (else H.264).

@@ -769,4 +769,12 @@ I18N.add("ar", {
   "Stream mode on: {what}": "وضع البث شغّال: {what}",
   "Stream mode off: {what}": "وضع البث مطفي: {what}",
   "already set": "كل شي جاهز من قبل",
+  "The Mac's cable runs below 1 Gb/s full duplex: try another cable or port on the router": "كيبل الماك شغال بأقل من 1 جيجابت أو بدون اتجاهين كاملين: جرّب كيبل ثاني أو منفذ ثاني في الراوتر",
+  "Wi-Fi is on beside the cable: turn Wi-Fi off in the menu bar while you play (AirDrop and AirPlay stop with it)": "الواي فاي شغّال مع الكيبل: اطفِ الواي فاي من شريط القائمة وقت اللعب (يوقف معه AirDrop وAirPlay)",
+  "AirDrop/AirPlay (AWDL) is active on Wi-Fi: it can delay the stream now and then. A cable helps most": "خدمة AirDrop/AirPlay (AWDL) شغّالة على الواي فاي، وممكن تأخر البث أحيانًا. الكيبل أفضل حل",
+  "Motion smoothing (30 → 60 frames)": "تنعيم الحركة (30 ← 60 فريم)",
+  "GTA VI plays at 30 frames a second: the Mac makes a frame between each two, so the picture moves at 60. It shows the picture about one frame later; off for the lowest delay.": "GTA VI تشتغل على 30 فريم بالثانية: الماك يصنع فريم بين كل فريمين، فتتحرك الصورة على 60. الصورة تتأخر تقريبًا فريم واحد؛ اطفه لأقل تأخير.",
+  "Working: {ms} ms a frame, the picture {late} ms later": "شغّال: {ms} جزء من الثانية لكل فريم، والصورة متأخرة {late} جزء من الثانية",
+  "Turned itself off: this Mac couldn't make the frames in time": "انطفى لحاله: الماك ما قدر يصنع الفريمات في وقتها",
+  "Motion smoothing off": "إيقاف تنعيم الحركة",
 });

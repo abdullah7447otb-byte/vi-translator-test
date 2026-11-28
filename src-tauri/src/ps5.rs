@@ -70,6 +70,10 @@ pub struct Saved {
     /// Smooth play: fewer frames read for text while the PS5 plays (see SMOOTH_READ); none: on
     #[serde(default)]
     pub smooth: Option<bool>,
+    /// Motion smoothing (a Mac on macOS 26): a frame made between the PS5's where the game sends one twice
+    /// (GTA VI's 30 frames a second in a 60 stream). Off unless turned on: it shows the picture a frame later.
+    #[serde(default)]
+    pub motion: bool,
     /// the PS5's sound on this computer: off, and its volume (0–100; none: 100)
     #[serde(default)]
     pub sound_off: bool,
@@ -132,6 +136,7 @@ pub fn init(app: AppHandle, data_dir: &Path) {
     let file = data_dir.join("ps5.json");
     let saved: Saved = std::fs::read_to_string(&file).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     ps::play::READ_ONLY.store(saved.read_only, Ordering::Relaxed);
+    ps::play::MOTION_SMOOTHING.store(saved.motion, Ordering::Relaxed);
     let _ = G.set(Global {
         app,
         file,
@@ -170,6 +175,10 @@ pub fn status() -> serde_json::Value {
         "resolution": if s.resolution == 720 { 720 } else { 1080 },
         "high_bitrate": s.high_bitrate && s.resolution != 720,
         "smooth": s.smooth != Some(false),
+        "motion": s.motion,
+        "motion_supported": ps::hwdec::smoothing_supported(),
+        "motion_state": ps::play::MOTION_STATE.load(Ordering::Relaxed),
+        "motion_ms": ps::play::MOTION_US.load(Ordering::Relaxed) as f64 / 1000.0,
         "sound": !s.sound_off,
         "volume": s.volume.unwrap_or(100),
         "software_decode": s.software_decode,
@@ -385,6 +394,14 @@ pub fn set_sound(on: bool, volume: u32) {
 }
 
 /// Smooth play on or off; at once.
+/// Motion smoothing on or off (saved; the playing stream takes it from the next frame).
+pub fn set_motion(on: bool) {
+    ps::play::MOTION_SMOOTHING.store(on, Ordering::Relaxed);
+    let mut s = saved();
+    s.motion = on;
+    save(&s);
+}
+
 pub fn set_smooth(on: bool) {
     let g = g();
     g.smooth.store(on, Ordering::Relaxed);

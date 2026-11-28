@@ -251,6 +251,12 @@ impl Drop for Player {
     }
 }
 
+/// Motion smoothing, as the settings say (read on every frame by the decoder thread), and what it is doing:
+/// 1 working, -1 turned itself off (too slow or failing), 0 off; and its average time a frame (µs).
+pub static MOTION_SMOOTHING: AtomicBool = AtomicBool::new(false);
+pub static MOTION_STATE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+pub static MOTION_US: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
 /// After falling back to OpenH264, the hardware decoder is tried again this long after (on a key frame).
 const RETRY_HARDWARE: Duration = Duration::from_secs(60);
 
@@ -379,8 +385,12 @@ fn decode_thread(
                 fell_back_at = Some(now);
             }
         }
+        dec.set_smooth(MOTION_SMOOTHING.load(Ordering::Relaxed));
         match dec.decode(&frame, key) {
             Ok(Some(f)) => {
+                let (st, us) = dec.smooth_state();
+                MOTION_STATE.store(st, Ordering::Relaxed);
+                MOTION_US.store(us, Ordering::Relaxed);
                 stats.frames.fetch_add(1, Ordering::Relaxed);
                 if screen.wants_frame() {
                     screen.frame(f);

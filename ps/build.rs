@@ -73,7 +73,8 @@ fn main() {
         b.define("_GNU_SOURCE", None);
     }
     // everything but Remote Play over the internet (holepunch, AIA) and the decoders the app doesn't use
-    let leave_out = ["aia.c", "aia_openssl.c", "holepunch.c", "holepunch-test.c", "ffmpegdecoder.c", "pidecoder.c"];
+    // (and takion.c: Barqawi's copy is built instead, native/takion.c — a bigger receive buffer on a Mac)
+    let leave_out = ["aia.c", "aia_openssl.c", "holepunch.c", "holepunch-test.c", "ffmpegdecoder.c", "pidecoder.c", "takion.c"];
     for f in c_files(&lib.join("src")).into_iter().chain(c_files(&lib.join("src/remote"))) {
         if !leave_out.contains(&f.file_name().unwrap().to_str().unwrap()) {
             b.file(f);
@@ -83,7 +84,7 @@ fn main() {
         b.file(nanopb.join(f));
     }
     b.file(root.join("generated/takion.pb.c"));
-    b.file(root.join("native/stubs.c")).file(root.join("native/vit_ps.c"));
+    b.file(root.join("native/stubs.c")).file(root.join("native/vit_ps.c")).file(root.join("native/takion.c"));
     b.cargo_metadata(false).compile("vit_chiaki");
 
     // linked users first (GNU ld reads static libraries once, in order: chiaki needs jerasure and Mbed TLS)
@@ -105,15 +106,24 @@ fn main() {
         b.cargo_metadata(false).compile("vit_hwdec");
         println!("cargo:rustc-link-lib=static=vit_hwdec");
     }
+    // motion smoothing on a Mac: VideoToolbox's frame interpolation, Objective-C, looked up at run time
+    if os == "macos" {
+        let mut b = cc::Build::new();
+        base(&mut b);
+        b.file(root.join("native/vit_fi.m")).flag("-fobjc-arc");
+        b.cargo_metadata(false).compile("vit_fi");
+        println!("cargo:rustc-link-lib=static=vit_fi");
+    }
     if windows {
         for l in ["mfplat", "mfuuid", "d3d11", "dxguid", "ole32"] {
             println!("cargo:rustc-link-lib={l}");
         }
     }
     if os == "macos" {
-        for f in ["CoreServices", "VideoToolbox", "CoreMedia", "CoreVideo", "CoreFoundation"] {
+        for f in ["CoreServices", "VideoToolbox", "CoreMedia", "CoreVideo", "CoreFoundation", "Foundation"] {
             println!("cargo:rustc-link-lib=framework={f}");
         }
+        println!("cargo:rustc-link-lib=objc");
     }
     println!("cargo:rerun-if-changed=native");
     println!("cargo:rerun-if-changed=generated");

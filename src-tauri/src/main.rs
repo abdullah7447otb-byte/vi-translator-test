@@ -17,6 +17,7 @@ mod ocr_engine;
 mod overlay;
 mod picture_find;
 mod check_picture;
+mod net_check;
 mod preview_shot;
 mod probe;
 #[cfg(debug_assertions)]
@@ -506,7 +507,15 @@ fn ps5_set_sound(webview: tauri::Webview, on: bool, volume: u32) -> Result<(), S
     Ok(())
 }
 
-/// Smooth play: fewer frames read for text while the PS5 plays.
+/// Motion smoothing: a frame made between the PS5's where the game sends one twice (macOS 26).
+#[tauri::command]
+fn ps5_set_motion(webview: tauri::Webview, on: bool) -> Result<(), String> {
+    main_only(&webview)?;
+    ps5::set_motion(on);
+    Ok(())
+}
+
+/// Smooth play (fewer frames read for text while the PS5 plays).
 #[tauri::command]
 fn ps5_set_smooth(webview: tauri::Webview, on: bool) -> Result<(), String> {
     main_only(&webview)?;
@@ -1280,7 +1289,20 @@ fn health_json(state: &AppState) -> serde_json::Value {
         "watchdog": vi_translator_core::watchdog::health(),
         "version": env!("CARGO_PKG_VERSION"),
         "os": std::env::consts::OS,
+        "network": net_json(),
     })
+}
+
+/// The Mac's network as it bears on the stream (net_check.rs): what was found and what to do about it.
+fn net_json() -> serde_json::Value {
+    let n = net_check::now();
+    serde_json::json!({ "ethernet": n.ethernet, "wifi_on": n.wifi_on, "awdl_active": n.awdl_active, "advice": net_check::advice(&n) })
+}
+
+/// What the player can do about the Mac's network now (none when all is well), for the play view.
+#[tauri::command]
+fn network_advice() -> Vec<&'static str> {
+    net_check::advice(&net_check::now())
 }
 
 #[tauri::command]
@@ -2386,7 +2408,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(hotkey::plugin())
         .manage(AppState { cfg: cfg.clone(), shared: shared.clone(), saver: saver.clone(), memory: memory.clone(), update: update.clone() })
-        .invoke_handler(tauri::generate_handler![app_version, glossary_built_in, dev_build, dev_report, has_offline, memory_line, recent_lines, correct_line, health_status, set_check_mode, area_debug, check_report, export_srt, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, test_llm_server, apple_status, open_translation_settings, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_decode, ps5_set_hevc, ps5_set_read_only, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin, set_tv_on, xbox_cancel_sign_in, xbox_choose, xbox_consoles, xbox_forget_console, xbox_open_link, xbox_set_controllers, xbox_set_resolution, xbox_set_sound, xbox_sign_in, xbox_sign_out, xbox_status])
+        .invoke_handler(tauri::generate_handler![app_version, glossary_built_in, network_advice, dev_build, dev_report, has_offline, memory_line, recent_lines, correct_line, health_status, set_check_mode, area_debug, check_report, export_srt, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, test_llm_server, apple_status, open_translation_settings, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_motion, ps5_set_decode, ps5_set_hevc, ps5_set_read_only, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin, set_tv_on, xbox_cancel_sign_in, xbox_choose, xbox_consoles, xbox_forget_console, xbox_open_link, xbox_set_controllers, xbox_set_resolution, xbox_set_sound, xbox_sign_in, xbox_sign_out, xbox_status])
         .setup(move |app| {
             if let Some(w) = app.get_webview_window("main") {
                 let test = if updater::TEST_BUILD { " (test build · updates off)" } else { "" };
