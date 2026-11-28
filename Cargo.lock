@@ -7810,7 +7810,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vi-translator"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -7851,7 +7851,7 @@ dependencies = [
 
 [[package]]
 name = "vi-translator-core"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -7874,7 +7874,7 @@ dependencies = [
 
 [[package]]
 name = "vi-translator-ffi"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -7885,7 +7885,7 @@ dependencies = [
 
 [[package]]
 name = "vi-translator-ps"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "cc",
  "cpu-time",
@@ -7897,7 +7897,7 @@ dependencies = [
 
 [[package]]
 name = "vi-translator-xbox"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "bytes",
  "openh264",
