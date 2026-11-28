@@ -28,10 +28,17 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()>
     result
 }
 
-/// Text to show (a name from the server or a settings file): no control characters, at most `max`
-/// characters. (The window escapes it too; this keeps it short and printable.)
+/// Text to show (a name from the server, a settings file or the player): no control characters and
+/// no bidi embeddings, overrides or isolates (one left open in an Arabic name turns the text after
+/// it around wherever the name is shown), at most `max` characters. (The window escapes it too;
+/// this keeps it short and printable.)
 pub fn clean_text(s: &str, max: usize) -> String {
-    s.chars().filter(|c| !c.is_control()).take(max).collect::<String>().trim().to_string()
+    s.chars().filter(|c| !c.is_control() && !bidi_control(*c)).take(max).collect::<String>().trim().to_string()
+}
+
+/// U+202A–U+202E (embeddings, overrides) and U+2066–U+2069 (isolates).
+fn bidi_control(c: char) -> bool {
+    matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 /// A colour as the style form and the overlays use it: "#rrggbb".
@@ -39,10 +46,13 @@ pub fn is_hex_color(s: &str) -> bool {
     s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// A font family name: letters, digits, spaces and - _ . only (anything else: none, the default).
+/// A font family name as installed fonts have them, in any script ("(A) Arslan Wessam A", an Arabic
+/// font known only by its Arabic name, with its marks): anything printable but what could end the
+/// quoted name in the windows' CSS (" \ ; { } < >). Anything else: none, the default.
 pub fn clean_font(s: &str) -> String {
     let s = s.trim();
-    if s.chars().count() <= 64 && s.chars().all(|c| c.is_alphanumeric() || " -_.".contains(c)) { s.to_string() } else { String::new() }
+    let ok = |c: char| !c.is_control() && !bidi_control(c) && !"\"\\;{}<>".contains(c);
+    if s.chars().count() <= 64 && s.chars().all(ok) { s.to_string() } else { String::new() }
 }
 
 /// A setting's keyword ("under_text", "bottom-center" …): a-z, 0-9, _ and - only, else none.
@@ -264,6 +274,11 @@ pub struct Config {
     pub snap_hotkey: String,
     /// local | deepl | azure | google | libre | claude | openai
     pub engine: String,
+    /// VI Translator's ready translations first (the shared pack downloaded for the game: reviewed
+    /// lines, shown at once); a line it hasn't goes to `engine`. Off: the pack isn't used, and every
+    /// line the player's own memory doesn't know goes to the translator (much slower). On in a
+    /// settings file from before this setting.
+    pub shared_translations: bool,
     /// Language to translate into (see `langs::LANGS`): "ar", "hi", "tr" …
     pub target_lang: String,
     /// Look for a newer version of the app (on start and daily) and offer it.
@@ -288,8 +303,11 @@ pub struct Config {
     /// `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`); empty: OpenAI. Its key is optional.
     #[serde(default)]
     pub openai_url: String,
-    /// Claude only: msa | egyptian | gulf | levantine
+    /// Claude and ChatGPT only: msa | egyptian | gulf | levantine | saudi
     pub dialect: String,
+    /// Claude and ChatGPT only: the player's own notes added to the prompt (names, terms, tone).
+    /// Empty: the prompt is unchanged.
+    pub llm_notes: String,
     pub interval_ms: u64,
     pub stable_ms: u64,
     pub clear_after_ms: u64,
@@ -299,8 +317,19 @@ pub struct Config {
     #[serde(default)]
     pub timing_custom: Option<bool>,
     pub overlays_enabled: bool,
+    /// Each output's own switch, under `overlays_enabled` (each TV's is kept with the TV, tv.rs):
+    /// this device's own overlays: the overlay windows on a PC, the translations drawn over the
+    /// picture in a phone app (its viewer of the TV page, `Tvs::local_key`) ...
+    pub device_overlays: bool,
+    /// ... and the OBS browser source.
+    pub obs_overlays: bool,
     /// GTA VI's phone in the player's hand (WhatUp, Snapmatic): its text translated beside it.
     pub phone_text: bool,
+    /// GTA VI's message bubble at the bottom right: its translation in a bubble above it.
+    /// None only in a settings file from before this setting (the bubble went with `phone_text` then):
+    /// set to `phone_text` once when it is loaded.
+    #[serde(default)]
+    pub phone_bubble: Option<bool>,
     /// The list of live translations (in the app and on the home-network page) keeps filling,
     /// whether or not the overlays are on.
     pub live_translations: bool,
@@ -398,6 +427,9 @@ pub struct Config {
     /// The settings file was there but couldn't be read (nor kept aside) at start: it isn't saved over.
     #[serde(skip)]
     pub unreadable: bool,
+    /// Running on a phone (set by the phone library, never saved): the phone's timing defaults.
+    #[serde(skip)]
+    pub phone: bool,
     /// Which changes of the app's defaults this settings file has had (see `DEFAULTS_VERSION`).
     /// A file from before it reads 0.
     #[serde(default)]
@@ -545,13 +577,71 @@ impl Config {
         })
         .collect()
     }
+    /// Only reviewed translations in this area (`AreaFx::reviewed_only`), while they are used: with
+    /// the ready translations off there are none, and the area's lines go to the translator like any.
+    pub fn reviewed_only(&self, area: &str) -> bool {
+        self.shared_translations && self.fx(area).reviewed_only(area)
+    }
     /// The phone's text translated beside it: GTA VI's (its built-in profile, or a copy of it).
     pub fn phone_text(&self) -> bool {
         self.phone_text && self.game() == "gta6"
     }
+    /// GTA VI's message bubble translated above it (as the phone, in settings from before its own switch).
+    pub fn phone_bubble(&self) -> bool {
+        self.phone_bubble.unwrap_or(self.phone_text) && self.game() == "gta6"
+    }
     /// The game profile's look puts each translation over the game's lines, on a black box.
     pub fn cover_look(&self) -> bool {
         self.profile_opts.more.get("translation_cover") == Some(&true)
+    }
+}
+
+/// What's translated, as the player chooses it (Game pages): one checkbox for each part of the game
+/// translated apart, none covering another, shown under its group's heading (`group`). Each stands for
+/// one thing: a read area of the profile (`areas`), a switch of the game's pages script (`pages`, saved in
+/// the profile's `more`), or a setting of the app's own (`setting`: "phone_text", "phone_bubble"). The
+/// dialogue (the subtitles) is always translated, so no switch covers it. Nothing of a switch's own is
+/// saved: the defaults stay the areas', pages' and settings' own (all on, as before there were switches).
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct ContentSwitch {
+    pub id: &'static str,
+    pub group: &'static str,
+    pub areas: Vec<&'static str>,
+    pub pages: Vec<&'static str>,
+    pub setting: &'static str,
+}
+
+/// A game's What's-translated switches (none for a game without them).
+/// GTA VI's side conversations (people in the street talking) aren't told apart from the story's
+/// dialogue: they come in the same subtitles, so they have no switch of their own.
+pub fn content_switches(game: &str) -> Vec<ContentSwitch> {
+    let setting = |group, id| ContentSwitch { id, group, areas: Vec::new(), pages: Vec::new(), setting: id };
+    let page = |group, id| ContentSwitch { id, group, areas: Vec::new(), pages: vec![id], setting: "" };
+    let area = |group, id| ContentSwitch { id, group, areas: vec![id], pages: Vec::new(), setting: "" };
+    match game {
+        "gta6" => vec![
+            // the phone: its WhatUp chats on a second phone beside it, the message bubble at the bottom right
+            setting("phone", "phone_text"),
+            setting("phone", "phone_bubble"),
+            // the pause menu, part by part (the script's `pause_*` switches, each from the old `pause_menu`)
+            page("menus", "pause_home"),
+            page("menus", "pause_map"),
+            page("menus", "pause_brief"),
+            page("menus", "pause_jason_lucia"),
+            page("menus", "pause_progress"),
+            page("menus", "pause_help"),
+            page("menus", "pause_settings"),
+            page("menus", "pause_tabs"),
+            // the help box (top left), the instructions under the subtitles, the game's notices
+            area("notices", "help"),
+            area("notices", "instructions"),
+            page("notices", "game_notices"),
+            // the game's other screens
+            page("screens", "wasted"),
+            page("screens", "mission_failed"),
+            page("screens", "weapon_wheel"),
+        ],
+        _ => Vec::new(),
     }
 }
 
@@ -838,6 +928,7 @@ impl Default for Config {
             card_sound_volume: 100,
             snap_hotkey: String::new(),
             engine: "local".into(),
+            shared_translations: true,
             deepl_key: String::new(),
             azure_key: String::new(),
             azure_region: String::new(),
@@ -850,12 +941,16 @@ impl Default for Config {
             openai_model: "gpt-6-luna".into(),
             openai_url: String::new(),
             dialect: "msa".into(),
+            llm_notes: String::new(),
             interval_ms: DEFAULT_TIMING.interval_ms,
             stable_ms: DEFAULT_TIMING.stable_ms,
             clear_after_ms: DEFAULT_TIMING.clear_after_ms,
             timing_custom: Some(false),
             overlays_enabled: true,
+            device_overlays: true,
+            obs_overlays: true,
             phone_text: true,
+            phone_bubble: None,
             live_translations: true,
             fps_badge: false,
             fps_corner: "top-right".into(),
@@ -902,6 +997,7 @@ impl Default for Config {
             profile: "gta6".into(),
             profile_rev: 0,
             unreadable: false,
+            phone: false,
             defaults_version: DEFAULTS_VERSION,
             defaults_moved: false,
             profiles: Vec::new(),
@@ -938,7 +1034,11 @@ pub struct DefaultTiming {
     pub stable_ms: u64,
     pub clear_after_ms: u64,
 }
-pub const DEFAULT_TIMING: DefaultTiming = DefaultTiming { capture_fps: 60, preview_fps: 60, interval_ms: 16, stable_ms: 80, clear_after_ms: 100 };
+pub const DEFAULT_TIMING: DefaultTiming = DefaultTiming { capture_fps: 60, preview_fps: 60, interval_ms: 16, stable_ms: 80, clear_after_ms: 300 };
+/// A phone's timing: reading every frame as the desktop does kept a phone's processor and text
+/// recognizer busy without a break and made it hot. A fifth of a second between readings is still
+/// quick for subtitles, which stay up for a second at least (a short dropout doesn't end a line).
+pub const PHONE_TIMING: DefaultTiming = DefaultTiming { capture_fps: 12, preview_fps: 30, interval_ms: 200, stable_ms: 80, clear_after_ms: 300 };
 
 /// The built-in GTA VI profile with its look "Over the game's text" (the black box over the English).
 fn cover_shown() -> std::collections::BTreeMap<String, Shown> {
@@ -1093,6 +1193,10 @@ impl Config {
             let d = Self::default();
             c.timing_custom = Some(c.interval_ms != d.interval_ms || c.stable_ms != d.stable_ms || c.clear_after_ms != d.clear_after_ms);
         }
+        // A settings file from before `phone_bubble`: the bubble as the phone was (one switch for both then).
+        if c.phone_bubble.is_none() {
+            c.phone_bubble = Some(c.phone_text);
+        }
         if !c.unreadable {
             c.defaults_moved = c.move_to_new_defaults();
         }
@@ -1102,16 +1206,25 @@ impl Config {
 
     /// Reading timing in use (interval, settle, clear after; ms): the player's own where they moved
     /// the slider (Source → Timing), else the profile's game timing if it has one, else the app's.
+    /// The app's own timing for where it runs: a phone's, or the desktop's.
+    pub fn default_timing(&self) -> &'static DefaultTiming {
+        if self.phone { &PHONE_TIMING } else { &DEFAULT_TIMING }
+    }
+
     pub fn timing(&self) -> (u64, u64, u64) {
         let t = self.builtins.iter().chain(self.profiles.iter()).find(|p| p.id == self.profile).map(|p| p.timing.clone()).unwrap_or_default();
         // the player's own timing, or the game profile's (each value it has; 0 = it has none)
         let own = self.timing_custom == Some(true);
         let pick = |mine: u64, game: u64| if own || game == 0 { mine } else { game };
+        // (not their own: the app's current defaults, not values saved by an older version — a
+        // default that changes reaches every player who never chose their own)
+        let d = self.default_timing();
+        let (interval, stable, clear) = if own { (self.interval_ms, self.stable_ms, self.clear_after_ms) } else { (d.interval_ms, d.stable_ms, d.clear_after_ms) };
         // (within the Timing sliders' ranges, whatever a settings file or a layout says)
         (
-            pick(self.interval_ms, t.interval_ms).clamp(16, 1000),
-            pick(self.stable_ms, t.stable_ms).min(1500),
-            pick(self.clear_after_ms, t.clear_after_ms).clamp(50, 3000),
+            pick(interval, t.interval_ms).clamp(if self.phone { 100 } else { 16 }, 1000),
+            pick(stable, t.stable_ms).min(1500),
+            pick(clear, t.clear_after_ms).clamp(50, 3000),
         )
     }
 
@@ -1139,6 +1252,16 @@ impl Config {
         }
         if !matches!(self.character.as_str(), "jason" | "lucia") {
             self.character = "jason".into();
+        }
+        // Timing the player never chose is the app's current default (shown so on the Timing page too)
+        let d = self.default_timing();
+        if self.timing_custom != Some(true) {
+            (self.interval_ms, self.stable_ms, self.clear_after_ms) = (d.interval_ms, d.stable_ms, d.clear_after_ms);
+        }
+        // (a phone: frame rates within its own sliders' ranges, 1–30)
+        if self.phone {
+            if self.capture_fps > 30 { self.capture_fps = d.capture_fps; }
+            if self.preview_fps > 30 { self.preview_fps = d.preview_fps; }
         }
         self.source_crop = self.source_crop.and_then(clean_crop);
         self.overlay_crop = self.overlay_crop.and_then(clean_crop);
@@ -1178,6 +1301,8 @@ impl Config {
         let builtin_ids: Vec<String> = self.builtins.iter().map(|p| p.id.clone()).collect();
         self.profiles.retain(|p| !builtin_ids.contains(&p.id) && !p.id.is_empty() && seen.insert(p.id.clone()));
         for p in self.profiles.iter_mut() {
+            // (the player's own: names, fonts and numbers within what the app uses, as built-in ones')
+            p.sanitize();
             if p.name.trim().is_empty() {
                 p.name = "My profile".into();
             }
@@ -1305,6 +1430,66 @@ mod profile_tests {
     use super::*;
 
     #[test]
+    fn the_message_bubble_switch_starts_as_the_phone_was() {
+        let dir = std::env::temp_dir().join(format!("vit-bubble-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        // no settings yet: on, as the phone
+        let c = Config::load(&dir.join("none.json"));
+        assert_eq!(c.phone_bubble, Some(true));
+        assert!(c.phone_text);
+        // a settings file from before the switch: the bubble as the phone was
+        for (phone, bubble) in [(true, true), (false, false)] {
+            std::fs::write(&path, format!(r#"{{"phone_text": {phone}}}"#)).unwrap();
+            let c = Config::load(&path);
+            assert_eq!((c.phone_text, c.phone_bubble), (phone, Some(bubble)));
+        }
+        // set apart from the phone: kept
+        std::fs::write(&path, r#"{"phone_text": false, "phone_bubble": true}"#).unwrap();
+        let c = Config::load(&path);
+        assert_eq!((c.phone_text, c.phone_bubble), (false, Some(true)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn whats_translated_switches_are_one_thing_each() {
+        let list = content_switches("gta6");
+        let mut seen = std::collections::HashSet::new();
+        for s in &list {
+            assert!(seen.insert(s.id), "{} twice", s.id);
+            // exactly one thing: an area, a page switch or a setting (none overlapping another)
+            assert_eq!(s.areas.len() + s.pages.len() + usize::from(!s.setting.is_empty()), 1, "{}", s.id);
+            assert!(["phone", "menus", "notices", "screens"].contains(&s.group), "{}", s.id);
+        }
+        // the areas are GTA VI's own, shown by default; the subtitles in none (always translated)
+        let gta6 = builtin_profile("gta6").unwrap();
+        for id in list.iter().flat_map(|s| s.areas.iter()) {
+            assert!(gta6.areas.iter().any(|a| a.id == *id && a.enabled), "{id}");
+            assert_ne!(*id, "subtitles");
+        }
+        // the phone's settings: on by default
+        let c = Config::default();
+        assert!(c.phone_text && c.phone_bubble.unwrap_or(c.phone_text));
+        assert!(content_switches("rdr2").is_empty());
+    }
+
+    #[test]
+    fn ready_translations_are_on_unless_turned_off() {
+        // a settings file from before the switch: on, as the app worked
+        let old: Config = serde_json::from_str(r#"{"engine": "deepl"}"#).unwrap();
+        assert!(old.shared_translations && Config::default().shared_translations);
+        assert!(old.reviewed_only("instructions") && !old.reviewed_only("subtitles"));
+        // off: kept, and no area waits for reviewed lines that aren't used (the instructions go to the translator)
+        let mut c: Config = serde_json::from_str(r#"{"shared_translations": false}"#).unwrap();
+        assert!(!c.shared_translations);
+        assert!(!c.reviewed_only("instructions"));
+        let back: Config = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert!(!back.shared_translations);
+        c.shared_translations = true;
+        assert!(c.reviewed_only("instructions"));
+    }
+
+    #[test]
     fn the_fade_in_is_off_unless_chosen_and_150_saved_before_v7_is_let_go() {
         // a settings file from v1.4.3: the old default 150 written with any area's effects, 250 chosen
         let mut c: Config = serde_json::from_str(r#"{"defaults_version": 6, "area_fx": {
@@ -1400,10 +1585,11 @@ mod profile_tests {
         c.normalize();
         assert_eq!(c.profile, "gta6");
         assert!(c.cover_look());
-        assert_eq!((c.interval_ms, c.stable_ms, c.clear_after_ms, c.capture_fps, c.preview_fps, c.picture_4k), (16, 80, 100, 60, 60, false));
-        assert_eq!(c.timing(), (16, 80, 100));
-        // once: what they choose afterwards stays
+        assert_eq!((c.interval_ms, c.stable_ms, c.clear_after_ms, c.capture_fps, c.preview_fps, c.picture_4k), (16, 80, 300, 60, 60, false));
+        assert_eq!(c.timing(), (16, 80, 300));
+        // once: what they choose afterwards stays (moving a Timing slider makes the timing their own)
         c.interval_ms = 200;
+        c.timing_custom = Some(true);
         c.shown.get_mut("gta6").unwrap().pages.insert("translation_cover".into(), false);
         assert!(!c.move_to_new_defaults());
         c.normalize();
@@ -1412,7 +1598,7 @@ mod profile_tests {
         let mut d = Config::default();
         d.normalize();
         assert!(d.cover_look());
-        assert_eq!(d.timing(), (16, 80, 100));
+        assert_eq!(d.timing(), (16, 80, 300));
     }
 
     #[test]
@@ -1542,6 +1728,37 @@ mod profile_tests {
     }
 
     #[test]
+    fn a_phone_reads_at_its_own_pace() {
+        // a phone's settings saved with the desktop's pace (every 16 ms, 60 fps), not its own
+        let mut c: Config = serde_json::from_str(r#"{"defaults_version": 6, "interval_ms": 16, "capture_fps": 60, "preview_fps": 60, "timing_custom": false}"#).unwrap();
+        c.phone = true;
+        c.normalize();
+        assert_eq!(c.timing(), (PHONE_TIMING.interval_ms, PHONE_TIMING.stable_ms, PHONE_TIMING.clear_after_ms));
+        assert_eq!((c.capture_fps, c.preview_fps), (12, 30));
+        // a phone player's own timing stays theirs, within the phone's range
+        let mut c: Config = serde_json::from_str(r#"{"defaults_version": 6, "interval_ms": 16, "timing_custom": true}"#).unwrap();
+        c.phone = true;
+        c.normalize();
+        assert_eq!(c.timing().0, 100);
+        // the desktop keeps its own pace
+        let mut d = Config::default();
+        d.normalize();
+        assert_eq!(d.timing().0, DEFAULT_TIMING.interval_ms);
+    }
+
+    #[test]
+    fn timing_the_player_never_chose_follows_the_new_default() {
+        // saved by an older version with the old default, not their own
+        let mut c: Config = serde_json::from_str(r#"{"defaults_version": 6, "clear_after_ms": 100, "timing_custom": false}"#).unwrap();
+        c.normalize();
+        assert_eq!((c.clear_after_ms, c.timing().2), (DEFAULT_TIMING.clear_after_ms, DEFAULT_TIMING.clear_after_ms));
+        // their own stays theirs
+        let mut c: Config = serde_json::from_str(r#"{"defaults_version": 6, "stable_ms": 0, "clear_after_ms": 100, "timing_custom": true}"#).unwrap();
+        c.normalize();
+        assert_eq!((c.stable_ms, c.clear_after_ms), (0, 100));
+    }
+
+    #[test]
     fn older_settings_keep_the_players_own_timing() {
         let dir = std::env::temp_dir().join(format!("vit-timing-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -1653,6 +1870,39 @@ mod profile_tests {
         c.profile = "gone".into();
         c.normalize();
         assert_eq!(c.profile, "gta6", "an unknown profile falls back to a built-in one");
+    }
+
+    #[test]
+    fn a_profile_with_an_arabic_name_keeps_its_name_and_fonts() {
+        let mut c = Config::default();
+        let mut mine = builtin_profile("gta6").unwrap();
+        mine.id = "custom-ar".into();
+        // (an override left open after the name, as pasted from a chat app)
+        mine.name = "جي تي ايه السادسة (نسخة)\u{202e}".into();
+        mine.areas[0].font_family = "(A) Arslan Wessam A".into();
+        mine.areas[1].font_family = "خط النسخ العربي".into();
+        mine.style.font_family = "Noto Naskh Arabic UI".into();
+        mine.pages.title_font = "Bahij Muna".into();
+        c.profiles.push(mine);
+        c.profile = "custom-ar".into();
+        c.normalize();
+        let p = c.profiles.iter().find(|p| p.id == "custom-ar").unwrap();
+        assert_eq!(p.name, "جي تي ايه السادسة (نسخة)");
+        assert_eq!((c.areas[0].font_family.as_str(), c.areas[1].font_family.as_str()), ("(A) Arslan Wessam A", "خط النسخ العربي"));
+        assert_eq!((c.style.font_family.as_str(), c.profile_opts.title_font.as_str()), ("Noto Naskh Arabic UI", "Bahij Muna"));
+        // saved and read back the same
+        let back: Config = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.profiles.iter().find(|p| p.id == "custom-ar").unwrap().name, p.name);
+    }
+
+    #[test]
+    fn a_font_name_cant_end_the_css_string_it_goes_in() {
+        for bad in ["Evil\"; color: red", "a\\b", "x{y}", "<b>", "Arial\u{202e}"] {
+            assert_eq!(clean_font(bad), "", "{bad:?}");
+        }
+        for good in ["Segoe UI", "Bahnschrift SemiLight", "(A) Arslan Wessam A", "Font & Co.", "Kufi+", "خط", "Sakkal Majalla"] {
+            assert_eq!(clean_font(good), good);
+        }
     }
 }
 

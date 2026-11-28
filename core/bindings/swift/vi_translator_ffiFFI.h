@@ -442,6 +442,11 @@ RustBuffer uniffi_vi_translator_ffi_fn_method_engine_screen_json(uint64_t ptr, R
 void uniffi_vi_translator_ffi_fn_method_engine_set_target_lang(uint64_t ptr, RustBuffer code, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VI_TRANSLATOR_FFI_FN_METHOD_ENGINE_SET_TV_ON
+#define UNIFFI_FFIDEF_UNIFFI_VI_TRANSLATOR_FFI_FN_METHOD_ENGINE_SET_TV_ON
+int8_t uniffi_vi_translator_ffi_fn_method_engine_set_tv_on(uint64_t ptr, RustBuffer id, int8_t on, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VI_TRANSLATOR_FFI_FN_METHOD_ENGINE_START_SYNC
 #define UNIFFI_FFIDEF_UNIFFI_VI_TRANSLATOR_FFI_FN_METHOD_ENGINE_START_SYNC
 void uniffi_vi_translator_ffi_fn_method_engine_start_sync(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -952,6 +957,12 @@ uint16_t uniffi_vi_translator_ffi_checksum_method_engine_screen_json(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_VI_TRANSLATOR_FFI_CHECKSUM_METHOD_ENGINE_SET_TARGET_LANG
 #define UNIFFI_FFIDEF_UNIFFI_VI_TRANSLATOR_FFI_CHECKSUM_METHOD_ENGINE_SET_TARGET_LANG
 uint16_t uniffi_vi_translator_ffi_checksum_method_engine_set_target_lang(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VI_TRANSLATOR_FFI_CHECKSUM_METHOD_ENGINE_SET_TV_ON
+#define UNIFFI_FFIDEF_UNIFFI_VI_TRANSLATOR_FFI_CHECKSUM_METHOD_ENGINE_SET_TV_ON
+uint16_t uniffi_vi_translator_ffi_checksum_method_engine_set_tv_on(void
     
 );
 #endif

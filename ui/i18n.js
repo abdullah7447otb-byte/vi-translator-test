@@ -104,7 +104,14 @@ window.I18N = (() => {
       "The translator has been on one line for {s} s",
       "Screen Recording is off for VI Translator: turn it on in System Settings › Privacy & Security › Screen Recording, then open VI Translator again.",
       "Open VI Translator from its .dmg (VI Translator.app in Applications): run as a bare program, macOS doesn't let it reach the PS5 or the phone page on your home network.",
-      "Playing on {name} ({pads} controller(s)) · {fps} fps · lost on the network: {net} · too late to decode: {late} (last 10 s)"
+      "Playing on {name} ({pads} controller(s)) · {fps} fps · lost on the network: {net} · too late to decode: {late} (last 10 s)",
+      "Starting the stream from {name} …",
+      "Waking {name} …",
+      "Waiting for {name} to get ready …",
+      "Connecting to {name} …",
+      "Playing on {name} ({n} controller(s))",
+      "The Xbox refused the stream. ({error})",
+      "Microsoft refused the sign-in ({error})."
   ];
   const MSG_RE = MSGS.map((m) => {
     const names = [];
@@ -117,7 +124,8 @@ window.I18N = (() => {
       const hit = re.exec(s);
       if (hit) return t(m, Object.fromEntries(names.map((n, i) => [n, hit[i + 1]])));
     }
-    return s;
+    // (a whole message, e.g. why the Xbox's stream ended)
+    return t(s);
   }
 
   return { UI_LANGS, add, t, tMsg, setLang, apply, get lang() { return lang; } };

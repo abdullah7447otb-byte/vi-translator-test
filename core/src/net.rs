@@ -2,7 +2,7 @@
 //! reading a request, answering it, capping connections, and this device's home-network address.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpStream, UdpSocket};
+use std::net::{Ipv4Addr, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -98,11 +98,101 @@ pub fn build_id() -> u64 {
     *ID.get_or_init(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0))
 }
 
-/// This device's address on the home network (the one used to reach the internet; no packet is sent).
-pub fn lan_ip() -> Option<String> {
+/// One of this device's IPv4 addresses on a home network, with its network's size.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LanAddr {
+    /// the interface's name ("wlan0", "en0", "Wi-Fi")
+    pub name: String,
+    pub ip: Ipv4Addr,
+    /// the network's prefix length (24 for 255.255.255.0)
+    pub prefix: u8,
+}
+
+impl LanAddr {
+    /// `other` is on this address's network.
+    pub fn contains(&self, other: Ipv4Addr) -> bool {
+        let mask = mask(self.prefix);
+        u32::from(self.ip) & mask == u32::from(other) & mask
+    }
+}
+
+/// The netmask of a prefix length, as a number.
+pub(crate) fn mask(prefix: u8) -> u32 {
+    if prefix == 0 { 0 } else { u32::MAX << (32 - u32::from(prefix.min(32))) }
+}
+
+/// Interfaces that are rarely the home network: mobile data (Android rmnet/ccmni, iPhone pdp_ip),
+/// VPNs and tunnels, virtual machines' and containers' networks. Their addresses come after the
+/// others (mobile operators often give private 10.x addresses too).
+fn unlikely_home(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    const PREFIXES: [&str; 17] =
+        ["rmnet", "ccmni", "pdp_ip", "v4-", "clat", "utun", "tun", "tap", "ipsec", "ppp", "wg", "docker", "br-", "veth", "virbr", "vboxnet", "vmnet"];
+    const PARTS: [&str; 8] = ["vethernet", "virtualbox", "vmware", "hyper-v", "wsl", "tailscale", "zerotier", "vpn"];
+    PREFIXES.iter().any(|p| n.starts_with(p)) || PARTS.iter().any(|p| n.contains(p))
+}
+
+/// The addresses a home network can be on, best first: private addresses (10/8, 172.16/12,
+/// 192.168/16), the likely Wi-Fi/Ethernet ones before mobile data, VPNs and virtual networks, and
+/// among those the one that reaches the internet (`route`) first. Link-local addresses (169.254/16)
+/// only when there's no private one; loopback, shared (100.64/10, mobile operators') and public
+/// addresses never.
+pub fn order_lan(addrs: Vec<LanAddr>, route: Option<Ipv4Addr>) -> Vec<LanAddr> {
+    let private: Vec<LanAddr> = addrs.iter().filter(|a| a.ip.is_private()).cloned().collect();
+    let mut out: Vec<LanAddr> = if private.is_empty() { addrs.into_iter().filter(|a| a.ip.is_link_local()).collect() } else { private };
+    out.sort_by_key(|a| (unlikely_home(&a.name), Some(a.ip) != route));
+    let mut seen = Vec::new();
+    out.retain(|a| {
+        let new = !seen.contains(&a.ip);
+        seen.push(a.ip);
+        new
+    });
+    out
+}
+
+/// This device's addresses on home networks, best first (see `order_lan`).
+pub fn lan_addrs() -> Vec<LanAddr> {
+    let addrs = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|i| match i.addr {
+            if_addrs::IfAddr::V4(a) if !a.ip.is_loopback() => Some(LanAddr { name: i.name, ip: a.ip, prefix: a.prefixlen }),
+            _ => None,
+        })
+        .collect();
+    order_lan(addrs, route_ip(Ipv4Addr::new(8, 8, 8, 8)))
+}
+
+/// The local address the system would send from to reach `to` (no packet is sent).
+fn route_ip(to: Ipv4Addr) -> Option<Ipv4Addr> {
     let s = UdpSocket::bind("0.0.0.0:0").ok()?;
-    s.connect("8.8.8.8:80").ok()?;
-    Some(s.local_addr().ok()?.ip().to_string())
+    s.connect((to, 80)).ok()?;
+    match s.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) if !ip.is_unspecified() => Some(ip),
+        _ => None,
+    }
+}
+
+/// This device's address on the home network: a private Wi-Fi/Ethernet address before mobile data,
+/// VPNs and virtual networks (see `order_lan`); the one used to reach the internet when there's no
+/// private address.
+pub fn lan_ip() -> Option<String> {
+    lan_addrs().first().map(|a| a.ip).or_else(|| route_ip(Ipv4Addr::new(8, 8, 8, 8))).map(|ip| ip.to_string())
+}
+
+/// Which of `addrs` a device at `target` reaches this one at: the one on its network, else the one
+/// the system sends from to reach it (`route`) when it's a home-network address, else none.
+pub fn pick_toward(addrs: &[LanAddr], target: Ipv4Addr, route: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
+    addrs.iter().find(|a| a.contains(target)).map(|a| a.ip).or_else(|| route.filter(|r| r.is_private() || r.is_link_local()))
+}
+
+/// This device's address as a device at `target` ("192.168.1.30", or "192.168.1.30:8792") reaches
+/// it: the address on the same network (not mobile data's or a VPN's); `lan_ip()` when `target`
+/// isn't an IPv4 address or no address fits.
+pub fn lan_ip_toward(target: &str) -> Option<String> {
+    let target = target.trim();
+    let ip = target.parse::<Ipv4Addr>().ok().or_else(|| target.parse::<std::net::SocketAddrV4>().ok().map(|a| *a.ip()));
+    ip.and_then(|t| pick_toward(&lan_addrs(), t, route_ip(t))).map(|ip| ip.to_string()).or_else(lan_ip)
 }
 
 /// An HTTP client builder for the core's downloads and translators. HTTPS is checked by the
@@ -173,6 +263,49 @@ mod tests {
         let r = read_request(&s);
         assert!(r.is_some_and(|r| r.path == "/"), "the first line is read, the endless header isn't");
         let _ = t.join();
+    }
+
+    fn addr(name: &str, ip: &str, prefix: u8) -> LanAddr {
+        LanAddr { name: name.into(), ip: ip.parse().unwrap(), prefix }
+    }
+
+    fn ips(addrs: &[LanAddr]) -> Vec<String> {
+        addrs.iter().map(|a| a.ip.to_string()).collect()
+    }
+
+    #[test]
+    fn home_addresses_come_first() {
+        // a phone on mobile data (the operator's private 10.x) and Wi-Fi, mobile data reaching the internet
+        let phone = vec![addr("rmnet_data0", "10.45.3.9", 30), addr("lo", "127.0.0.1", 8), addr("wlan0", "192.168.1.30", 24)];
+        assert_eq!(ips(&order_lan(phone, Some("10.45.3.9".parse().unwrap()))), ["192.168.1.30", "10.45.3.9"]);
+        // an iPhone: mobile data with a shared (CGNAT) address, a VPN, Wi-Fi
+        let iphone = vec![addr("pdp_ip0", "100.70.2.1", 32), addr("utun4", "10.8.0.2", 24), addr("en0", "172.20.10.4", 28)];
+        assert_eq!(ips(&order_lan(iphone, Some("10.8.0.2".parse().unwrap()))), ["172.20.10.4", "10.8.0.2"]);
+        // a PC with Hyper-V's network and two home networks: the one reaching the internet first
+        let pc = vec![addr("vEthernet (WSL)", "172.29.16.1", 20), addr("Ethernet", "192.168.0.10", 24), addr("Wi-Fi", "10.0.0.5", 16)];
+        assert_eq!(ips(&order_lan(pc.clone(), Some("10.0.0.5".parse().unwrap()))), ["10.0.0.5", "192.168.0.10", "172.29.16.1"]);
+        assert_eq!(ips(&order_lan(pc, None)), ["192.168.0.10", "10.0.0.5", "172.29.16.1"], "no internet: as listed");
+        // public, shared and loopback addresses never; link-local only without a private one
+        let odd = vec![addr("eth0", "203.0.113.5", 24), addr("en5", "169.254.10.2", 16), addr("pdp_ip0", "100.64.0.1", 10)];
+        assert_eq!(ips(&order_lan(odd.clone(), None)), ["169.254.10.2"]);
+        let with_private = [odd, vec![addr("en0", "192.168.50.2", 24)]].concat();
+        assert_eq!(ips(&order_lan(with_private, None)), ["192.168.50.2"]);
+        assert!(order_lan(vec![addr("lo", "127.0.0.1", 8)], None).is_empty());
+        // the same address twice (two names for one adapter): once
+        assert_eq!(ips(&order_lan(vec![addr("a", "192.168.1.2", 24), addr("b", "192.168.1.2", 24)], None)), ["192.168.1.2"]);
+    }
+
+    #[test]
+    fn the_address_toward_a_tv_is_on_its_network() {
+        let addrs = vec![addr("wlan0", "192.168.1.30", 24), addr("eth0", "10.0.4.2", 22), addr("rmnet0", "10.200.0.7", 30)];
+        let ip = |s: &str| s.parse::<Ipv4Addr>().unwrap();
+        assert_eq!(pick_toward(&addrs, ip("192.168.1.77"), None), Some(ip("192.168.1.30")));
+        assert_eq!(pick_toward(&addrs, ip("10.0.6.200"), None), Some(ip("10.0.4.2")), "a /22");
+        // not on any of them (a routed home network): the address the system sends from, if a home one
+        assert_eq!(pick_toward(&addrs, ip("192.168.7.5"), Some(ip("192.168.1.30"))), Some(ip("192.168.1.30")));
+        assert_eq!(pick_toward(&addrs, ip("192.168.7.5"), Some(ip("100.70.2.1"))), None);
+        assert!(addr("x", "192.168.1.30", 32).contains(ip("192.168.1.30")) && !addr("x", "192.168.1.30", 32).contains(ip("192.168.1.31")));
+        assert!(addr("x", "10.1.2.3", 0).contains(ip("8.8.8.8")));
     }
 
     #[test]

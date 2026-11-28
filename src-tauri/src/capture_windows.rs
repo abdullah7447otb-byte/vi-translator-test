@@ -138,13 +138,44 @@ fn start_gdi(
     Ok(WindowCapture(Some(CaptureMethod::Gdi { stop, thread: Some(thread), shared })))
 }
 
+/// Ask Windows once for capture without its yellow border round the captured window or screen:
+/// `IsBorderRequired` = false (Windows 11) only takes the border away for an app that asked for
+/// borderless capture (`GraphicsCaptureAccess`; a desktop app like this one is allowed without a
+/// prompt). False where Windows hasn't that (Windows 10, whose border stays) or says no.
+fn borderless_allowed() -> bool {
+    static ALLOWED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ALLOWED.get_or_init(|| {
+        use windows::Graphics::Capture::{GraphicsCaptureAccess, GraphicsCaptureAccessKind};
+        use windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus;
+        let (tx, rx) = std::sync::mpsc::channel();
+        // (on a thread of its own: an answer that never comes can't hold up the capture)
+        std::thread::spawn(move || {
+            let r = GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless).and_then(|op| op.join());
+            let _ = tx.send(r);
+        });
+        let answer = rx.recv_timeout(Duration::from_secs(3));
+        if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
+            vi_translator_core::vlog!("[capture] borderless capture: {answer:?}");
+        }
+        matches!(answer, Ok(Ok(s)) if s == AppCapabilityAccessStatus::Allowed)
+    })
+}
+
+/// The border settings to try, in order (once borderless capture was asked for): none, then the default.
+fn border_settings() -> [DrawBorderSettings; 2] {
+    let _ = borderless_allowed();
+    [DrawBorderSettings::WithoutBorder, DrawBorderSettings::Default]
+}
+
 /// Start capturing the window titled `title`; returns the capture and the window's handle.
 pub fn start_window(title: &str, shared: Arc<Shared>) -> anyhow::Result<(WindowCapture, isize)> {
     let win = find(title).ok_or_else(|| anyhow::anyhow!("Window \"{title}\" not found. Open it, or pick another window."))?;
     let hwnd = win.as_raw_hwnd() as isize;
-    // Hide the yellow capture border where Windows allows it; fall back if refused.
+    // on an HDR screen: its frames in HDR, for the game's colours (see `hdr_white`)
+    let hdr = window_screen(hwnd).and_then(|d| hdr_white(&d));
+    // Hide the yellow capture border where Windows allows it (`border_settings`); fall back if refused.
     let mut last_err = String::new();
-    for border in [DrawBorderSettings::WithoutBorder, DrawBorderSettings::Default] {
+    for border in border_settings() {
         let settings = Settings::new(
             win,
             CursorCaptureSettings::WithoutCursor,
@@ -152,8 +183,8 @@ pub fn start_window(title: &str, shared: Arc<Shared>) -> anyhow::Result<(WindowC
             SecondaryWindowSettings::Default,
             MinimumUpdateIntervalSettings::Default,
             DirtyRegionSettings::Default,
-            ColorFormat::Rgba8,
-            shared.clone(),
+            if hdr.is_some() { ColorFormat::Rgba16F } else { ColorFormat::Rgba8 },
+            (shared.clone(), hdr),
         );
         match Handler::start_free_threaded(settings) {
             Ok(c) => return Ok((WindowCapture(Some(CaptureMethod::Native(c))), hwnd)),
@@ -220,18 +251,24 @@ fn elevated(pid: u32) -> bool {
 
 struct Handler {
     shared: Arc<Shared>,
+    /// An HDR screen's SDR white (its frames come as FP16 scRGB, turned into SDR here)
+    hdr: Option<f32>,
     last: Instant,
     last_preview: Instant,
     scratch: Vec<u8>,
 }
 
 impl GraphicsCaptureApiHandler for Handler {
-    type Flags = Arc<Shared>;
+    type Flags = (Arc<Shared>, Option<f32>);
     type Error = BoxError;
 
     fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
         let ago = Instant::now() - Duration::from_secs(1);
-        Ok(Self { shared: ctx.flags, last: ago, last_preview: ago, scratch: Vec::new() })
+        let (shared, hdr) = ctx.flags;
+        if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
+            vi_translator_core::vlog!("[capture] HDR screen: {hdr:?}");
+        }
+        Ok(Self { shared, hdr, last: ago, last_preview: ago, scratch: Vec::new() })
     }
 
     fn on_frame_arrived(&mut self, frame: &mut Frame, _control: InternalCaptureControl) -> Result<(), Self::Error> {
@@ -244,6 +281,20 @@ impl GraphicsCaptureApiHandler for Handler {
         }
         let mut buf = frame.buffer_without_title_bar()?;
         let (w, h) = (buf.width(), buf.height());
+        if let Some(white) = self.hdr {
+            // HDR: one SDR picture for both (the preview shrinks it)
+            let pitch = buf.row_pitch() as usize;
+            let rgba = super::scrgb_to_rgba(buf.as_raw_buffer(), w, h, pitch, white);
+            if preview {
+                self.last_preview = Instant::now();
+                self.shared.put_preview(shrink(&rgba, w, h, w as usize * 4, false));
+            }
+            if full {
+                self.last = Instant::now();
+                self.shared.put_full(w, h, rgba);
+            }
+            return Ok(());
+        }
         if preview {
             self.last_preview = Instant::now();
             let pitch = buf.row_pitch() as usize;
@@ -259,6 +310,76 @@ impl GraphicsCaptureApiHandler for Handler {
 
     fn on_closed(&mut self) -> Result<(), Self::Error> {
         Ok(())
+    }
+}
+
+/// Windows HDR on the screen `device` ("\\.\DISPLAY1"): its SDR white in scRGB units (1.0 = 80 nits;
+/// Windows' "SDR content brightness", 200 nits = 2.5), or None when it shows SDR (Windows' automatic
+/// colour management on an SDR screen isn't HDR). On an HDR screen Windows' 8-bit capture clips what
+/// is brighter than SDR white channel by channel, and a game's coloured highlights came out white:
+/// there its frames are taken in FP16 and brought to SDR here (`capture::scrgb_to_rgba`). Looked at
+/// when the capture starts (HDR switched on or off meanwhile: from the next start).
+pub fn hdr_white(device: &str) -> Option<f32> {
+    use windows::Win32::Devices::Display::*;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    unsafe {
+        let (mut np, mut nm) = (0u32, 0u32);
+        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm) != ERROR_SUCCESS {
+            return None;
+        }
+        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
+        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
+        if QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut np, paths.as_mut_ptr(), &mut nm, modes.as_mut_ptr(), None) != ERROR_SUCCESS {
+            return None;
+        }
+        let header = |kind, size: usize, adapter, id| DISPLAYCONFIG_DEVICE_INFO_HEADER { r#type: kind, size: size as u32, adapterId: adapter, id };
+        for p in &paths[..np as usize] {
+            let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+                header: header(DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>(), p.sourceInfo.adapterId, p.sourceInfo.id),
+                ..Default::default()
+            };
+            if DisplayConfigGetDeviceInfo(&mut source.header) != 0 {
+                continue;
+            }
+            let n = source.viewGdiDeviceName.iter().position(|&c| c == 0).unwrap_or(source.viewGdiDeviceName.len());
+            if String::from_utf16_lossy(&source.viewGdiDeviceName[..n]) != device {
+                continue;
+            }
+            let mut color = DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO {
+                header: header(DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO, std::mem::size_of::<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>(), p.targetInfo.adapterId, p.targetInfo.id),
+                ..Default::default()
+            };
+            if DisplayConfigGetDeviceInfo(&mut color.header) != 0 {
+                return None;
+            }
+            // bits: supported, enabled, wide colour enforced (colour management on an SDR screen), force-disabled
+            let bits = color.Anonymous.value;
+            if bits & 0b0010 == 0 || bits & 0b1100 != 0 {
+                return None;
+            }
+            let mut white = DISPLAYCONFIG_SDR_WHITE_LEVEL {
+                header: header(DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, std::mem::size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>(), p.targetInfo.adapterId, p.targetInfo.id),
+                ..Default::default()
+            };
+            // (1000 = 80 nits; when Windows doesn't say: its default, 200 nits)
+            let level = if DisplayConfigGetDeviceInfo(&mut white.header) == 0 && white.SDRWhiteLevel > 0 { white.SDRWhiteLevel as f32 / 1000.0 } else { 2.5 };
+            return Some(level.clamp(1.0, 6.25));
+        }
+        None
+    }
+}
+
+/// The screen a window is (mostly) on: its device name, as `hdr_white` takes it.
+fn window_screen(hwnd: isize) -> Option<String> {
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MONITORINFOEXW, MonitorFromWindow};
+    unsafe {
+        let m = MonitorFromWindow(HWND(hwnd as *mut _), MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFOEXW { monitorInfo: MONITORINFO { cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32, ..Default::default() }, ..Default::default() };
+        if !GetMonitorInfoW(m, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO).as_bool() {
+            return None;
+        }
+        let n = info.szDevice.iter().position(|&c| c == 0).unwrap_or(info.szDevice.len());
+        Some(String::from_utf16_lossy(&info.szDevice[..n]))
     }
 }
 
@@ -297,8 +418,9 @@ pub fn screen_rect(id: &str) -> Option<(i32, i32, i32, i32)> {
 /// Start capturing a whole screen.
 pub fn start_screen(id: &str, shared: Arc<Shared>) -> anyhow::Result<WindowCapture> {
     let m = monitor(id).ok_or_else(|| anyhow::anyhow!("Screen \"{id}\" not found (unplugged?). Pick another source."))?;
+    let hdr = hdr_white(id);
     let mut last_err = String::new();
-    for border in [DrawBorderSettings::WithoutBorder, DrawBorderSettings::Default] {
+    for border in border_settings() {
         let settings = Settings::new(
             m,
             CursorCaptureSettings::WithoutCursor,
@@ -306,8 +428,8 @@ pub fn start_screen(id: &str, shared: Arc<Shared>) -> anyhow::Result<WindowCaptu
             SecondaryWindowSettings::Default,
             MinimumUpdateIntervalSettings::Default,
             DirtyRegionSettings::Default,
-            ColorFormat::Rgba8,
-            shared.clone(),
+            if hdr.is_some() { ColorFormat::Rgba16F } else { ColorFormat::Rgba8 },
+            (shared.clone(), hdr),
         );
         match Handler::start_free_threaded(settings) {
             Ok(c) => return Ok(WindowCapture(Some(CaptureMethod::Native(c)))),

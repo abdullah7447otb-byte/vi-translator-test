@@ -18,6 +18,7 @@ pub trait TextEngine {
 }
 
 /// A word as the engine reports it, in the (prepared) image's pixels.
+#[derive(Clone)]
 pub struct RawWord {
     pub line: u32,
     pub text: String,
@@ -526,9 +527,34 @@ pub fn centered_words(words: &[Word], crop_x: f64, frame_w: f64) -> Vec<Word> {
 pub fn clean(words: &[Word]) -> String {
     let text = words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
     let text = text.split_whitespace().map(split_glued).collect::<Vec<_>>().join(" ");
+    let text = drop_icon_misreads(&text);
     let letters = text.chars().filter(|c| c.is_alphabetic()).count();
     let total = text.chars().count().max(1);
     if letters >= 4 && letters as f64 / total as f64 > 0.5 { fix_contractions(&text) } else { String::new() }
+}
+
+/// Real words made of the letters an icon is misread as: alone at a line's start they're kept.
+const ICON_LIKE_WORDS: &[&str] = &["coco", "cocoa", "cocoon", "coon", "coop", "goo", "goon", "goop", "noon", "poo", "poop", "pogo", "capo", "agog"];
+
+/// The icon before a subtitle (a music note on the radio's lyrics, a TV or a speaker off screen) read
+/// as letters: "0000 to do today?", "cocoa pooo and the smoke…", "cocoa nooc Especially you." Leading
+/// words made only of the letters such a round icon reads as (o 0 c n p g a), at least three long with
+/// two o's or zeros, are dropped when one of them isn't a real word, so the line finds its translation
+/// and doesn't flip between the clean reading and the one with the prefix.
+pub fn drop_icon_misreads(text: &str) -> String {
+    let icon_like = |w: &str| {
+        let n = w.chars().count();
+        (3..=6).contains(&n)
+            && w.chars().all(|c| matches!(c, 'o' | '0' | 'c' | 'n' | 'p' | 'g' | 'a'))
+            && w.chars().filter(|&c| c == 'o' || c == '0').count() >= 2
+    };
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let run = words.iter().take_while(|w| icon_like(w)).count();
+    // (the run is the whole line: nothing after the icon, nothing to keep)
+    if run == 0 || run == words.len() || words[..run].iter().all(|w| ICON_LIKE_WORDS.contains(w)) {
+        return text.to_string();
+    }
+    words[run..].join(" ")
 }
 
 /// The text of the game's box that's always in one place (GTA VI's help, top left), told from a sign
@@ -1187,6 +1213,38 @@ pub fn fix_contractions(text: &str) -> String {
         }
     }
     out.join(" ")
+}
+
+#[cfg(test)]
+mod icon_misread_tests {
+    use super::drop_icon_misreads as d;
+
+    #[test]
+    fn an_icon_read_as_letters_before_a_line_is_dropped() {
+        assert_eq!(d("0000 to do today?"), "to do today?");
+        assert_eq!(d("pooo and the smoke of weed is in the air, from corner to corner."), "and the smoke of weed is in the air, from corner to corner.");
+        assert_eq!(d("cocoa pooo and the smoke of weed is in the air"), "and the smoke of weed is in the air");
+        assert_eq!(d("cocoa poooc nooc and the smoke of weed is in the air"), "and the smoke of weed is in the air");
+        assert_eq!(d("poooa poooc goog until a fat, dank-ass joint is citizen"), "until a fat, dank-ass joint is citizen");
+        assert_eq!(d("cocoa nooc Especially you. Don't you say anything, okay?"), "Especially you. Don't you say anything, okay?");
+    }
+
+    #[test]
+    fn real_words_and_clean_lines_stay() {
+        for s in [
+            "and the smoke of weed is in the air",
+            "noon tomorrow, at the docks",
+            "cocoa and cookies",
+            "Coco, get in the car.",
+            "goon squad's here",
+            "oo",
+            "pooo",
+            "too good to be true",
+            "on and on",
+        ] {
+            assert_eq!(d(s), s, "{s}");
+        }
+    }
 }
 
 #[cfg(test)]

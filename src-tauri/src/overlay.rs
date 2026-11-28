@@ -130,7 +130,8 @@ pub fn position_loop(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared
         let c = cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         // Only show the Arabic while the overlay window is the one in front (not over other apps), over
         // the part of it showing the game.
-        let client = if c.overlays_enabled { capture::overlay_rect(&shared, true) } else { None };
+        // (the header's Overlays switch for every output, and this PC's own on the Play screen)
+        let client = if c.overlays_enabled && c.device_overlays { capture::overlay_rect(&shared, true) } else { None };
         // (a screen as the source: the overlays don't show up in screen captures, so the app never
         // reads its own Arabic back)
         let hide_from_capture = shared.reading_screen.load(Ordering::Relaxed) || shared.compat_capture.load(Ordering::Relaxed);
@@ -270,13 +271,23 @@ mod win_ops {
 /// Linux: Tauri's own window calls (unfocusable, always on top, click-through once shown).
 #[cfg(all(not(windows), not(target_os = "macos")))]
 mod win_ops {
-    use tauri::{PhysicalPosition, PhysicalSize};
-
     pub fn never_focus(win: &tauri::WebviewWindow) {
         let _ = win.set_focusable(false);
     }
 
+    /// `r` is in the units the source window's rect comes in: points on macOS (kCGWindowBounds),
+    /// so a Retina screen (2 pixels a point) doesn't halve the overlays' place and size; pixels on Linux.
+    #[cfg(target_os = "macos")]
     pub fn place(win: &tauri::WebviewWindow, r: (i32, i32, i32, i32)) {
+        use tauri::{LogicalPosition, LogicalSize};
+        let _ = win.set_position(LogicalPosition::new(r.0 as f64, r.1 as f64));
+        let _ = win.set_size(LogicalSize::new(r.2.max(1) as f64, r.3.max(1) as f64));
+        let _ = win.set_always_on_top(true);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn place(win: &tauri::WebviewWindow, r: (i32, i32, i32, i32)) {
+        use tauri::{PhysicalPosition, PhysicalSize};
         let _ = win.set_position(PhysicalPosition::new(r.0, r.1));
         let _ = win.set_size(PhysicalSize::new(r.2.max(1) as u32, r.3.max(1) as u32));
         let _ = win.set_always_on_top(true);

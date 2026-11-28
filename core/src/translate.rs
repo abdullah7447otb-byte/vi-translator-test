@@ -262,12 +262,27 @@ const GTA6_CAST: &str = "\n\
              - The game is Grand Theft Auto VI. Its two lead characters: Jason (Jason Duval), a man, and\n\
                Lucia (Lucia Caminos), a woman.";
 
-const DIALECTS: [(&str, &str); 4] = [
+const DIALECTS: [(&str, &str); 5] = [
     ("msa", "Modern Standard Arabic (الفصحى), natural and readable, not stiff"),
     ("egyptian", "Egyptian Arabic dialect (اللهجة المصرية)"),
     ("gulf", "Gulf Arabic dialect (اللهجة الخليجية)"),
     ("levantine", "Levantine Arabic dialect (اللهجة الشامية)"),
+    ("saudi", "Saudi Arabic dialect (اللهجة السعودية): everyday speech as young Saudis talk, understood across the Kingdom"),
 ];
+
+/// The most of the player's notes that goes into a prompt (they are sent with every line).
+const NOTES_MAX_CHARS: usize = 1500;
+
+/// The player's own notes for the language models, as a block for the end of the system text
+/// (empty when there are none). Capped, so a long paste can't make every line expensive.
+fn player_notes(cfg: &Config) -> String {
+    let notes = cfg.llm_notes.trim();
+    if notes.is_empty() {
+        return String::new();
+    }
+    let notes: String = notes.chars().take(NOTES_MAX_CHARS).collect();
+    format!("\nPlayer's notes (follow them, unless they conflict with the rules above):\n{notes}")
+}
 
 /// USD per million tokens (input, output) for the cost counter.
 fn claude_price(model: &str) -> (f64, f64) {
@@ -507,7 +522,9 @@ impl Translator {
         };
         // (the player's glossary changes the offline model's answer: a new one is a new key)
         let glossary = if cfg.engine == "local" || cfg.engine == "apple" { cfg.glossary.as_str() } else { "" };
-        let key = format!("{}\u{1}{}\u{1}{}\u{1}{}\u{1}{:?}\u{1}{icon_sig}\u{1}{around}\u{1}{glossary}", cfg.engine, cfg.target_lang, cfg.dialect, line, phrases);
+        // (the player's notes for the language models change their answer too)
+        let notes = if is_llm(&cfg.engine) { cfg.llm_notes.trim() } else { "" };
+        let key = format!("{}\u{1}{}\u{1}{}\u{1}{notes}\u{1}{}\u{1}{:?}\u{1}{icon_sig}\u{1}{around}\u{1}{glossary}", cfg.engine, cfg.target_lang, cfg.dialect, line, phrases);
         if let Some(s) = self.cache.get(&key) {
             return Ok(s.clone());
         }
@@ -807,7 +824,8 @@ impl Translator {
                belongs in the {name} sentence, e.g. in Arabic \"Press <b1/> to jump\" -> \"اضغط <b1/> للقفز\". Keep every\n\
                icon tag exactly once.\n\
              - Use the context to get right who speaks to whom: in {name} that decides the grammatical gender\n\
-               and number of \"you\", of verbs and of adjectives.{cast}"
+               and number of \"you\", of verbs and of adjectives.{cast}{notes}",
+            notes = player_notes(cfg)
         );
         // Tag the highlighted phrases: "Go to the <c1>bank</c1>."
         let mut tagged = line.to_string();
@@ -938,7 +956,8 @@ impl Translator {
              - Use the whole screen as context (a menu, a map, a phone, a mission briefing) for the right words.\n\
              - Keep names of people, places, brands, vehicles and numbers as they are.\n\
              - Menu items, tabs and buttons stay short; sentences read naturally.\n\
-             - A block that is not real text (OCR noise, a logo) gets an empty string."
+             - A block that is not real text (OCR noise, a logo) gets an empty string.{notes}",
+            notes = player_notes(cfg)
         );
         let list: Vec<String> = blocks.iter().map(|(n, en)| format!("{n}: {en}")).collect();
         let prompt = format!("Text blocks:\n{}", list.join("\n"));
@@ -1687,5 +1706,37 @@ mod openai_tests {
         assert!(!super::made_up("J26 4B7", "طراز J26 4B7"));
         assert!(!super::made_up("Hey! Eyes open!", "انتبهوا! افتحوا أعينكم!"));
         assert!(!super::made_up("You got something you gotta say?", "عندك شيء تريد قوله؟"));
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    fn cfg_with(dialect: &str, notes: &str) -> Config {
+        Config { target_lang: "ar".into(), dialect: dialect.into(), llm_notes: notes.into(), ..Config::default() }
+    }
+
+    #[test]
+    fn saudi_is_a_dialect() {
+        let t = Translator::new(std::env::temp_dir());
+        let (system, _, _) = t.llm_prompt(&cfg_with("saudi", ""), "Let's go.", &[], &[]);
+        assert!(system.contains("اللهجة السعودية"), "{system}");
+    }
+
+    #[test]
+    fn notes_join_the_prompt_only_when_set() {
+        let t = Translator::new(std::env::temp_dir());
+        let (plain, _, _) = t.llm_prompt(&cfg_with("gulf", "  "), "Let's go.", &[], &[]);
+        assert!(!plain.contains("Player's notes"), "{plain}");
+        let (with, _, _) = t.llm_prompt(&cfg_with("gulf", "Keep the name Lucia in English letters."), "Let's go.", &[], &[]);
+        assert!(with.ends_with("Player's notes (follow them, unless they conflict with the rules above):\nKeep the name Lucia in English letters."), "{with}");
+    }
+
+    #[test]
+    fn long_notes_are_capped() {
+        let long = "x".repeat(NOTES_MAX_CHARS + 500);
+        let block = player_notes(&cfg_with("msa", &long));
+        assert_eq!(block.chars().filter(|&c| c == 'x').count(), NOTES_MAX_CHARS);
     }
 }

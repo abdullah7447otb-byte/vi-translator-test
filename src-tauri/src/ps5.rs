@@ -100,6 +100,9 @@ struct Global {
     error: Mutex<String>,
     /// the stream starts again (its quality changed, or the PS5 was unlinked)
     restart: AtomicBool,
+    /// a resting PS5 may be woken to play: at the app's start, after Wake, after the source was
+    /// changed. Not after a stream ended (the PS5 put into rest mode stays resting).
+    may_wake: AtomicBool,
     /// the sound as the settings say, read by the playing stream
     sound: Arc<ps::play::Sound>,
     /// smooth play as the settings say, read by the playing stream
@@ -136,6 +139,7 @@ pub fn init(app: AppHandle, data_dir: &Path) {
         pin: Mutex::new(None),
         error: Mutex::new(String::new()),
         restart: AtomicBool::new(false),
+        may_wake: AtomicBool::new(true),
         sound: Arc::new(ps::play::Sound::new(!saved.sound_off, saved.volume.unwrap_or(100))),
         smooth: AtomicBool::new(saved.smooth != Some(false)),
         saved: Mutex::new(saved),
@@ -392,6 +396,7 @@ pub fn set_smooth(on: bool) {
 /// Wakes the linked PS5 from rest mode.
 pub fn wake() -> Result<(), String> {
     let c = saved().console.ok_or("no PS5 linked")?;
+    g().may_wake.store(true, Ordering::Relaxed);
     let (rk, _) = c.keys().ok_or("bad keys")?;
     let cred = ps::credential(&rk).ok_or("bad keys")?;
     ps::wakeup(&c.host, cred).map_err(|e| e.to_string())
@@ -477,6 +482,11 @@ pub fn link(host: &str, pin: &str) -> Result<String, String> {
             Err(format!("The PS5 did not accept the PIN or the account. {why}").trim().to_string())
         }
     }
+}
+
+/// The PS5 is the source again (after another): a resting PS5 may be woken.
+pub fn may_wake_again() {
+    g().may_wake.store(true, Ordering::Relaxed);
 }
 
 pub fn forget() {
@@ -674,8 +684,23 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
             std::thread::sleep(Duration::from_secs(2));
             return;
         };
+        let mut state = find().unwrap_or_default().into_iter().find(|f| f.host == c.host || f.name == c.nickname);
+        // put into rest mode while playing: it stays resting until it's turned on (Wake, or its
+        // controller) instead of being woken again right away
+        if state.as_ref().is_some_and(|f| !f.on) && !g().may_wake.load(Ordering::Relaxed) {
+            set(format!("{} is resting. Wake the PS5 in Source to play again.", c.nickname));
+            while !s2.load(Ordering::Relaxed) && !g().may_wake.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_secs(3));
+                state = find().unwrap_or_default().into_iter().find(|f| f.host == c.host || f.name == c.nickname);
+                if state.as_ref().is_none_or(|f| f.on) {
+                    break;
+                }
+            }
+            if s2.load(Ordering::Relaxed) {
+                return;
+            }
+        }
         // asleep? wake it, and wait until it answers as on
-        let state = find().unwrap_or_default().into_iter().find(|f| f.host == c.host || f.name == c.nickname);
         let host = state.as_ref().map(|f| f.host.clone()).unwrap_or(c.host.clone());
         if state.as_ref().is_some_and(|f| !f.on) {
             set(format!("Waking {} …", c.nickname));
@@ -722,12 +747,15 @@ pub fn start(shared: Arc<Shared>) -> Ps5Capture {
         let mut window = std::collections::VecDeque::<(u64, u64, u64)>::new();
         let mut before = (0u64, 0u64, 0u64);
         g().restart.store(false, Ordering::Relaxed);
+        g().may_wake.store(true, Ordering::Relaxed);
         while !s2.load(Ordering::Relaxed) && !g().restart.swap(false, Ordering::Relaxed) {
             if let Some(pin) = g().pin.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
                 player.login_pin(&pin);
             }
             let ev = screen.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
             if let Some(ps::Event::Quit { error, why }) = ev {
+                // (rest mode, turned off, or the network: the next start doesn't wake it)
+                g().may_wake.store(false, Ordering::Relaxed);
                 set(if error { format!("PS5: the stream ended ({why})") } else { format!("PS5: {why}") });
                 *g().pin_wanted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 std::thread::sleep(Duration::from_secs(3));

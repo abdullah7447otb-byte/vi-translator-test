@@ -226,7 +226,7 @@ impl LivePage {
             "live": c.live_translations,
             "areas": c.areas.iter().map(|a| serde_json::json!({ "id": a.id, "name": a.name, "on": a.enabled })).collect::<Vec<_>>(),
             // (a page's name as the script gives it: text, or {"en": …, "ar": …} for the page to pick from)
-            "pages": opts.iter().map(|o| serde_json::json!({ "id": o.id, "name": o.name, "on": c.profile_opts.more.get(&o.id).copied().unwrap_or(o.on) })).collect::<Vec<_>>(),
+            "pages": opts.iter().map(|o| serde_json::json!({ "id": o.id, "name": o.name, "on": crate::pagescript::option_on(&opts, &c.profile_opts.more, &o.id) })).collect::<Vec<_>>(),
         })
     }
 }

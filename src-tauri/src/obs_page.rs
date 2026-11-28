@@ -30,6 +30,10 @@ fn app_origin(origin: &str) -> bool {
 
 fn state_json(cfg: &Mutex<Config>, shared: &Shared) -> Vec<u8> {
     let mut v = overlay_state(cfg, shared);
+    // the OBS output switched off on the Play screen: the page draws nothing until it's on again
+    if !cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).obs_overlays {
+        v["overlays"] = serde_json::Value::Bool(false);
+    }
     let extra = serde_json::json!({
         // for troubleshooting
         "status": shared.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),

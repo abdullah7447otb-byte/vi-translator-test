@@ -9,6 +9,9 @@ license = "AGPL-3.0-only"
 vi-translator-core = { path = "../core" }
 # PS5 remote play (chiaki-ng, built from source)
 vi-translator-ps = { path = "../ps" }
+# Xbox Remote Play with the app's own player (webrtc-rs)
+vi-translator-xbox = { path = "../xbox" }
+tokio = { version = "1", features = ["time"] }
 anyhow = "1.0.104"
 base64 = "0.23.1"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "bmp"] }
@@ -31,7 +34,7 @@ vi-translator-core = { path = "../core", features = ["offline"] }
 
 # Windows: OCR, window capture, capture cards and fonts through the system's own APIs
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Win32_Media_MediaFoundation", "Media_Ocr", "Graphics_Imaging", "Globalization", "Storage_Streams", "Foundation", "Foundation_Collections", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_WinRT", "Win32_Graphics_DirectWrite", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_Memory", "Win32_System_Registry", "Win32_Security", "Win32_System_Threading"] }
+windows = { version = "0.62.2", features = ["Win32_Media_MediaFoundation", "Media_Ocr", "Graphics_Imaging", "Globalization", "Storage_Streams", "Foundation", "Foundation_Collections", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_WinRT", "Win32_Graphics_DirectWrite", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_System_Com", "Win32_System_Memory", "Win32_System_Registry", "Win32_Security", "Win32_System_Threading", "Graphics_Capture", "Security_Authorization_AppCapabilityAccess", "Win32_Devices_Display", "Win32_System_Time"] }
 windows-capture = "2.0.1"
 # the page as WebView2 draws it (Debugging: save the preview); the version Tauri uses
 webview2-com = "0.39.1"

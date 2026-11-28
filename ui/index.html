@@ -141,6 +141,17 @@
           </div>
           <button class="link" data-go="areas" data-i18n>Change</button>
         </div>
+        <!-- where the translations are shown: each output switched on or off at once, while translating
+             (this PC's overlays, each connected TV, OBS; drawn by app.js) -->
+        <div class="glance">
+          <div class="glance-icon"><svg viewBox="0 0 24 24"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a8 8 0 0 1 8 8M2 16a4 4 0 0 1 4 4"/><path d="M2 20h.01"/></svg></div>
+          <div class="glance-body">
+            <div class="k" data-i18n>Show on</div>
+            <div id="ps-outputs" class="out-list"></div>
+            <div class="s" id="ps-outputs-note"></div>
+          </div>
+          <button class="link" data-go="show" data-i18n>Change</button>
+        </div>
       </section>
 
       <nav class="rail tabs">
@@ -170,6 +181,9 @@
             <p data-i18n>Sign in with your Microsoft account in the player's window, choose your console and play there. A controller connected to this PC plays in it.</p>
             <button id="xbox-open" class="btn" data-i18n>Open the Xbox player</button>
           </div>
+          <!-- Xbox remote play: the player (the app's own or Microsoft's web player) and, for the app's own,
+               sign-in with a code, the console chosen once and its settings (drawn by app.js) -->
+          <div id="xbox-panel" hidden></div>
           <!-- PS5 remote play in the app (chiaki-ng): linked once in three steps (PSN, the PS5, its PIN),
                then the linked PS5 with Wake, Unlink and the stream's quality (drawn by app.js) -->
           <div id="ps5-panel" hidden></div>
@@ -211,6 +225,7 @@
         <div class="tab hidden" id="tab-show">
           <h3 data-i18n>Overlays on this PC</h3>
           <p class="hint" data-i18n>The translations are drawn over the game's window. Pick another window when you read the picture from a capture card, OBS or another app's camera, but watch the game in this window.</p>
+          <label class="check"><input type="checkbox" id="device_overlays" data-output="device" /> <span data-i18n>Show the overlays on this PC</span></label>
           <div class="row">
             <select id="overlay_window" class="grow"></select>
             <button id="refresh-overlay-windows" class="btn icon" data-i18n-title title="Refresh the list"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.7-4.4M4 5v4h4"/><path d="M4 13a8 8 0 0 0 14.7 4.4M20 19v-4h-4"/></svg></button>
@@ -231,6 +246,7 @@
           <p class="hint" data-i18n>The translations over the game on a Google TV, Android TV, LG or Samsung TV, with the VI Translator app. Open the app on the TV, then connect it here with the code it shows.</p>
           <button id="tv-find" class="btn wide" data-i18n>Connect a TV</button>
           <div id="tv-found" class="tv-list"></div>
+          <button id="tv-type" class="link" data-i18n>Type the TV's address</button>
           <div id="tv-connected" class="tv-list"></div>
 
           <h3 data-i18n>Live translations on other devices</h3>
@@ -240,6 +256,7 @@
           <p class="muted small" data-i18n>Lets the page switch the overlays and the live translations, and show or hide read areas and game pages.</p>
 
           <h3>OBS</h3>
+          <label class="check"><input type="checkbox" id="obs_overlays" data-output="obs" /> <span data-i18n>Show the translations in OBS</span></label>
           <p class="muted small" data-i18n-html>Show the translation in OBS: add a <b>Browser Source</b> above your capture card source with this URL, width and height the same as your canvas (e.g. 1920 × 1080):</p>
           <div class="row">
             <input type="text" id="obs-url" class="grow" readonly dir="ltr" />
@@ -280,6 +297,10 @@
         </div>
 
         <div class="tab hidden" id="tab-translator">
+          <div class="card">
+            <label class="check" style="font-weight:600"><input type="checkbox" id="shared_translations" /> <span data-i18n>Use VI Translator's ready translations first</span></label>
+            <p class="muted small" style="margin:6px 0 0" data-i18n>Most GTA VI lines are already translated and reviewed, and are shown instantly. Only lines not found there go to the translator chosen below. Keep this on: with it off, every line waits for the translator and translations come much slower.</p>
+          </div>
           <h3 data-i18n>Language</h3>
           <div class="field"><select id="target-lang"></select></div>
           <p class="muted small" id="lang-note"></p>

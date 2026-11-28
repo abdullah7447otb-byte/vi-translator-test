@@ -72,26 +72,65 @@ document.querySelectorAll(".modes button").forEach((b) => b.addEventListener("cl
 // "Change" on a Play card: open that part of Setup
 document.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => { setMode("setup"); openTab(b.dataset.go); }));
 
-// Play: the preview full screen — the window goes full screen and the picture fills it. Back with the
-// button, Esc, or a double-click on the picture.
+// Play: the preview full screen — the window goes full screen and the picture fills it (its own
+// shape: bars only where the screen's shape differs). From the button over the picture, F11 (from
+// Setup too: it opens Play), or a double-click on the picture; back with the button, Esc or F11. The
+// mouse pointer and the buttons go after a moment without moving the mouse, and come back with it.
 const isFullscreen = () => document.documentElement.classList.contains("fullscreen");
+// (the window really went full screen: then the window leaving full screen by itself — macOS's green
+// button, a Windows shortcut — ends it here too. Where it can't, the picture still fills the window.)
+let osFullscreen = false;
+let fsSince = 0;
 async function setFullscreen(on) {
+  fsSince = performance.now();
+  if (on && document.body.dataset.mode !== "play") setMode("play"); // (the full-screen picture is Play's)
   document.documentElement.classList.toggle("fullscreen", on);
   $("fullscreen").title = on ? t("Exit full screen (Esc)") : t("Full screen");
+  osFullscreen = false;
   try {
     await window.__TAURI__.window.getCurrentWindow().setFullscreen(on);
+    osFullscreen = on;
   } catch (e) {
     log({ error: String(e) });
   }
-  requestAnimationFrame(fitFrame); // the window's resize event fits it again once the size settles
+  fsActive();
+  requestAnimationFrame(fitFrame); // (the viewport's ResizeObserver fits it again once the size settles)
 }
 $("fullscreen").addEventListener("click", () => setFullscreen(!isFullscreen()));
 $("viewport").addEventListener("dblclick", (e) => {
-  if (document.body.dataset.mode === "play" && !e.target.closest("#fullscreen")) setFullscreen(!isFullscreen());
+  if (document.body.dataset.mode === "play" && !e.target.closest(".fs-btn")) setFullscreen(!isFullscreen());
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && isFullscreen()) setFullscreen(false);
+  else if (e.key === "F11" && !e.repeat) {
+    e.preventDefault();
+    setFullscreen(!isFullscreen());
+  }
 });
+// The window left full screen by itself: the picture goes back into the page too. (Not while it is
+// still going full screen: macOS animates into it, and says "not full screen" meanwhile.)
+window.addEventListener("resize", async () => {
+  if (!osFullscreen || !isFullscreen() || performance.now() - fsSince < 2000) return;
+  try {
+    if (!(await window.__TAURI__.window.getCurrentWindow().isFullscreen()) && osFullscreen) {
+      osFullscreen = false;
+      setFullscreen(false);
+    }
+  } catch {}
+});
+// In full screen: the pointer and the buttons hidden after 2.5 s without the mouse moving (not while
+// it is over a button).
+let fsIdleTimer = 0;
+function fsActive() {
+  document.documentElement.classList.remove("fs-idle");
+  clearTimeout(fsIdleTimer);
+  if (!isFullscreen()) return;
+  fsIdleTimer = setTimeout(() => {
+    if (isFullscreen() && !document.querySelector(".fs-btn:hover")) document.documentElement.classList.add("fs-idle");
+    else fsActive();
+  }, 2500);
+}
+for (const ev of ["mousemove", "mousedown", "wheel"]) document.addEventListener(ev, () => { if (isFullscreen()) fsActive(); }, { passive: true });
 
 /** The Play cards: source, language + service, read areas. */
 function updateGlance() {
@@ -123,6 +162,8 @@ function fitFrame() {
   drawLayer();
 }
 window.addEventListener("resize", fitFrame);
+// (and whenever the picture's place changes size: full screen settling, Play and Setup, the log's split)
+new ResizeObserver(() => fitFrame()).observe($("viewport"));
 
 function sampleSegments() {
   // "*word*" in the sample text shows as a highlighted word
@@ -317,9 +358,10 @@ async function loadWindows() {
   const sel = $("window_title");
   sel.innerHTML = "";
   sel.add(new Option(t("Looking for sources ..."), cfg.window_title));
-  const { windows, devices, obs, screens = [], xbox = null, ps5 = null } = await invoke("list_sources");
+  const { windows, devices, obs, screens = [], xbox = null, xbox_native = null, ps5 = null } = await invoke("list_sources");
   knownScreens = screens;
   xboxTitle = xbox;
+  xboxValue = xbox_native;
   sel.innerHTML = "";
   const group = (label) => {
     const g = document.createElement("optgroup");
@@ -338,10 +380,12 @@ async function loadWindows() {
   const add = (g, text, value, full) => { g.appendChild(opt(text, value, full)); values.push(value); };
   // remote play in a window of the app (its window's title is the source)
   ps5Value = ps5;
-  if (xbox || ps5) {
+  if (xbox || xbox_native || ps5) {
     const g = group(t("Remote Play in VI Translator"));
     if (ps5) add(g, `🎮 ${t("PS5 (in VI Translator)")}`, ps5);
-    if (xbox) add(g, `🎮 ${t("Xbox (in VI Translator)")}`, xbox);
+    // the app's own Xbox player, and Microsoft's web player in a window of the app
+    if (xbox_native) add(g, `🎮 ${t("Xbox (in VI Translator)")}`, xbox_native);
+    if (xbox) add(g, `🎮 ${t("Xbox (Microsoft's web player)")}`, xbox);
   }
   if (devices.length) {
     const g = group(t("Capture cards and cameras"));
@@ -379,9 +423,10 @@ async function loadWindows() {
   renderXbox();
   renderPs5();
 }
-// Xbox in the app: the source is its player's window, opened from here (and with the app)
+// Xbox in the app, two ways: the app's own player ("xbox:", drawn below) or Microsoft's web player,
+// whose source is its window, opened from here (and with the app)
 let xboxTitle = null;
-const renderXbox = (v = cfg.window_title) => { $("xbox-row").hidden = !xboxTitle || v !== xboxTitle; };
+const renderXbox = (v = cfg.window_title) => { $("xbox-row").hidden = !xboxTitle || v !== xboxTitle; renderXboxNative(v); };
 const openXbox = () => invoke("open_xbox").catch((e) => { $("source-status").textContent = String(e); });
 $("xbox-open").addEventListener("click", openXbox);
 $("window_title").addEventListener("change", (e) => {
@@ -389,6 +434,180 @@ $("window_title").addEventListener("change", (e) => {
   renderXbox(e.target.value);
   renderPs5(e.target.value);
 });
+
+// Xbox with the app's own player, as the phone apps have it: sign in with a code typed at
+// microsoft.com/link (no password in the app), choose the console once (it's remembered), then the
+// console, with its sound, controllers and the stream's quality. Microsoft's web player stays as the
+// other choice, at the top of the panel.
+let xboxValue = null;
+let xbox = null;
+const xboxUi = { consoles: null, searching: false, msg: "", changing: false };
+
+async function renderXboxNative(v = cfg.window_title) {
+  const native = !!xboxValue && v === xboxValue;
+  const web = !!xboxTitle && v === xboxTitle;
+  $("xbox-panel").hidden = !native && !web;
+  if (!native && !web) return;
+  if (native) { try { xbox = await invoke("xbox_status"); } catch { return; } }
+  drawXbox(native);
+}
+listen("xbox", (e) => {
+  xbox = e.payload;
+  if (!$("xbox-panel").hidden && xboxValue && cfg.window_title === xboxValue) drawXbox(true);
+});
+
+// the source switched to the other Xbox player (as choosing it in the list does)
+function xboxUse(v) {
+  if (!v || cfg.window_title === v) return;
+  const sel = $("window_title");
+  sel.value = v;
+  sel.dispatchEvent(new Event("change"));
+}
+
+function drawXbox(native) {
+  const box = $("xbox-panel");
+  box.innerHTML = "";
+  const pick = (v, label, on) => el("button", { class: `seg${on ? " on" : ""}`, "aria-pressed": on ? "true" : "false", onclick: () => xboxUse(v) }, label);
+  box.append(el("div", { class: "field" }, el("label", {}, t("Xbox player")),
+    el("div", { class: "segs" },
+      xboxValue ? pick(xboxValue, t("VI Translator's player (recommended)"), native) : null,
+      xboxTitle ? pick(xboxTitle, t("Microsoft's web player"), !native) : null)));
+  if (!native || !xbox) return;
+  const s = xbox;
+  const err = s.error ? el("p", { class: "small ps5-err" }, I18N.tMsg(s.error)) : null;
+  if (!s.signed_in) {
+    box.append(ps5Step(1, t("Sign in to Microsoft"), false, true, () => xboxCodeStep(s, err)),
+      ps5Step(2, t("Choose your Xbox"), false, false, () => null), xboxOnce());
+    return;
+  }
+  if (!s.console || xboxUi.changing) {
+    if (xboxUi.consoles == null && !xboxUi.searching) xboxSearch();
+    box.append(xboxAccountStep(s), ps5Step(2, t("Choose your Xbox"), false, true, () => xboxConsoleStep(err)), xboxOnce());
+    return;
+  }
+  box.append(xboxChosen(s, err));
+}
+
+/** What to set on the Xbox once, before it can be found and woken (as the phone apps show it). */
+function xboxOnce() {
+  return el("div", { class: "callout xbox-once" },
+    el("b", {}, t("On the Xbox, once")),
+    el("ul", {},
+      el("li", {}, t("Settings › Devices & connections › Remote features: turn on Enable remote features.")),
+      el("li", {}, t("Settings › General › Power options: choose Sleep, so the player can wake the console.")),
+      el("li", {}, t("Sign in on the Xbox with the same Microsoft account as in the player."))));
+}
+
+function xboxAccountStep(s) {
+  return ps5Step(1, t("Sign in to Microsoft"), true, false, () => el("div", { class: "row" },
+    el("div", { class: "grow" }, s.gamertag ? t("Signed in as {name}", { name: s.gamertag }) : t("Signed in")),
+    el("button", { class: "link", onclick: xboxSignOut }, t("Sign out"))));
+}
+
+async function xboxSignOut() {
+  if (!(await ask(t("Sign out of Microsoft in VI Translator? You can sign in again with a new code."), t("Sign out")))) return;
+  Object.assign(xboxUi, { consoles: null, changing: false, msg: "" });
+  try { await invoke("xbox_sign_out"); } catch {}
+  renderXboxNative();
+}
+
+function xboxCodeStep(s, err) {
+  if (!s.code) {
+    return el("div", {},
+      el("p", { class: "muted small" }, t("No password in VI Translator: you type a short code on Microsoft's page, on this PC or your phone.")),
+      el("button", { class: "btn primary", onclick: async () => {
+        try { xbox = await invoke("xbox_sign_in"); } catch (e) { xbox = { ...xbox, error: String(e) }; }
+        drawXbox(true);
+      } }, s.error ? t("Get a new code") : t("Get a code")),
+      err);
+  }
+  const msg = el("p", { class: "small muted" });
+  return el("div", {},
+    el("p", {}, t("On any device, go to {uri} and type this code:", { uri: s.code.uri.replace(/^https:\/\/(www\.)?/, "") })),
+    el("div", { class: "ps5-pin xbox-code", dir: "ltr" }, s.code.code),
+    el("div", { class: "row" },
+      el("button", { class: "btn primary", onclick: () => invoke("xbox_open_link").catch((e) => { msg.textContent = String(e); }) }, t("Open the page")),
+      el("button", { class: "btn", onclick: async () => {
+        try { await navigator.clipboard.writeText(s.code.code); msg.textContent = t("Copied."); } catch (e) { msg.textContent = String(e); }
+      } }, t("Copy the code"))),
+    el("p", { class: "muted small" }, el("span", { class: "ps5-spin" }), t("Waiting for you to sign in…")),
+    el("button", { class: "link", onclick: async () => { await invoke("xbox_cancel_sign_in"); renderXboxNative(); } }, t("Cancel")),
+    msg, err);
+}
+
+async function xboxSearch() {
+  xboxUi.searching = true;
+  xboxUi.msg = "";
+  if (xbox) drawXbox(true);
+  try { xboxUi.consoles = await invoke("xbox_consoles"); } catch (e) { xboxUi.consoles = []; xboxUi.msg = I18N.tMsg(String(e)); }
+  xboxUi.searching = false;
+  if (!$("xbox-panel").hidden && xbox) drawXbox(true);
+}
+
+const xboxPower = (p) => (/^on$/i.test(p) ? t("On") : /standby/i.test(p) ? t("Asleep") : /^off$/i.test(p) ? t("Off") : "");
+const xboxKind = (k) => ({ XboxSeriesX: "Xbox Series X", XboxSeriesS: "Xbox Series S", XboxOne: "Xbox One", XboxOneS: "Xbox One S", XboxOneX: "Xbox One X" }[k] || "");
+
+function xboxConsoleStep(err) {
+  const list = xboxUi.consoles || [];
+  return el("div", {},
+    xboxUi.searching ? el("p", { class: "muted small" }, el("span", { class: "ps5-spin" }), t("Looking for your consoles…")) : null,
+    list.map((c) => el("div", { class: "ps5-host" },
+      el("div", { class: "grow" }, el("b", {}, c.name), el("div", { class: "muted small" }, [xboxKind(c.kind), xboxPower(c.power)].filter(Boolean).join(" · "))),
+      el("button", { class: "btn primary", onclick: async () => {
+        xboxUi.changing = false;
+        await invoke("xbox_choose", { console: { id: c.id, name: c.name, kind: c.kind } });
+        renderXboxNative();
+      } }, t("Choose")))),
+    !xboxUi.searching && !list.length && !xboxUi.msg ? el("div", { class: "callout" }, t("No console on this account yet. On the Xbox, turn on Settings › Devices & connections › Remote features, then search again.")) : null,
+    xboxUi.msg ? el("p", { class: "small ps5-err" }, xboxUi.msg) : null,
+    !xboxUi.searching ? el("button", { class: "link", onclick: xboxSearch }, t("Search again")) : null,
+    xboxUi.changing ? el("button", { class: "link", onclick: () => { xboxUi.changing = false; drawXbox(true); } }, t("Cancel")) : null,
+    err);
+}
+
+function xboxChosen(s, err) {
+  const name = s.console.name || "Xbox";
+  const quality = el("select", { id: "xbox-quality" }, el("option", { value: "1080" }, "1080p"), el("option", { value: "720" }, "720p"));
+  quality.value = String(s.resolution || 1080);
+  quality.addEventListener("change", () => invoke("xbox_set_resolution", { resolution: +quality.value }));
+  // the Xbox's sound on this PC: on or off, and its volume (heard at once)
+  const on = el("input", { type: "checkbox", id: "xbox-sound" });
+  on.checked = s.sound !== false;
+  const vol = el("input", { type: "range", id: "xbox-volume", min: "0", max: "100", step: "5", title: t("Volume"), "aria-label": t("Volume") });
+  vol.value = String(s.volume ?? 100);
+  const pct = el("span", { class: "muted small ps5-pct" }, `${vol.value}%`);
+  const sound = () => {
+    vol.disabled = !on.checked;
+    pct.textContent = `${vol.value}%`;
+    xbox = { ...xbox, sound: on.checked, volume: +vol.value };
+    invoke("xbox_set_sound", { on: on.checked, volume: +vol.value });
+  };
+  on.addEventListener("change", sound);
+  vol.addEventListener("input", sound);
+  vol.disabled = !on.checked;
+  const pads = el("input", { type: "checkbox", id: "xbox-pads" });
+  pads.checked = s.controllers !== false;
+  pads.addEventListener("change", () => { xbox = { ...xbox, controllers: pads.checked }; invoke("xbox_set_controllers", { on: pads.checked }); });
+  return el("div", {},
+    el("div", { class: "ps5-step done" },
+      el("div", { class: "ps5-head" }, el("span", { class: "ps5-badge" }, "✓"),
+        el("div", {}, el("b", {}, name), el("div", { class: "small ps5-ok" }, `✓ ${t("Chosen")}`, s.gamertag ? ` · ${s.gamertag}` : ""))),
+      el("div", { class: "ps5-body" },
+        el("p", { class: "muted small" }, t("While the Xbox is the picture source, the app plays from it with Remote Play. If it is asleep, it is woken.")),
+        el("div", { class: "row" },
+          el("button", { class: "btn", onclick: () => { Object.assign(xboxUi, { changing: true, consoles: null }); drawXbox(true); } }, t("Change console")),
+          el("button", { class: "btn danger", onclick: xboxSignOut }, t("Sign out"))),
+        err)),
+    el("div", { class: "ps5-step ps5-settings" },
+      el("div", { class: "field" },
+        el("label", { class: "check" }, on, " ", el("span", {}, t("Play the Xbox's sound on this PC"))),
+        el("div", { class: "row ps5-volume" }, el("span", { class: "muted small" }, t("Volume")), el("div", { class: "grow" }, vol), pct)),
+      el("div", { class: "field" }, el("label", { class: "check" }, pads, " ", el("span", {}, t("Controllers connected to this PC play on the Xbox")))),
+      el("div", { class: "field" }, el("label", { for: "xbox-quality" }, t("Stream quality")), quality,
+        el("p", { class: "muted small" }, t("1080p reads small text best; 720p for a slower home network.")))),
+    el("p", { class: "muted small ps5-foot" }, t("Use Play to play full screen.")),
+  );
+}
 
 // PS5 in the app, linked once as the phone app does it, in three steps each done before the next
 // opens: sign in to PSN (Sony's page in a window of the app; or in a browser, pasting back the address
@@ -412,7 +631,7 @@ async function renderPs5(v = cfg.window_title) {
   const on = !!ps5Value && v === ps5Value;
   $("ps5-panel").hidden = !on;
   // (the capture card hint means nothing while remote play in the app is the source)
-  $("obs-card-hint").hidden = on || (!!xboxTitle && v === xboxTitle);
+  $("obs-card-hint").hidden = on || (!!xboxTitle && v === xboxTitle) || (!!xboxValue && v === xboxValue);
   if (!on) return;
   try { ps5 = await invoke("ps5_status"); } catch { return; }
   drawPs5();
@@ -714,8 +933,9 @@ function ps5Linked(s) {
             try { await invoke("ps5_wake"); } catch (e) { note.textContent = String(e); }
           } }, t("Wake the PS5")),
           el("button", { class: "btn danger", onclick: async () => {
-            if (!confirm(t("Unlink {name}? To use it again, link it with a new PIN.", { name }))) return;
-            await invoke("ps5_forget");
+            // (window.confirm does nothing in the macOS webview: the page's own question)
+            if (!(await ask(t("Unlink {name}? To use it again, link it with a new PIN.", { name }), t("Unlink")))) return;
+            try { await invoke("ps5_forget"); } catch (e) { note.textContent = String(e); return; }
             Object.assign(ps5Ui, { searched: false, msg: "", msgErr: false });
             renderPs5();
           } }, t("Unlink"))),
@@ -823,9 +1043,12 @@ async function updateTvs() {
     : `<span class="tv-state" title="${AS.esc(t("The TV app isn't open, or the TV can't reach this PC"))}"><span class="dot"></span>${AS.esc(t("Offline"))}</span>`;
   const html = tvs.length
     ? `<div class="hint">${AS.esc(t("Connected TVs"))}</div>` + tvs.map((tv) => `<div class="tv-row"><span class="tv-name">📺 ${AS.esc(tv.name)}</span>
-        ${state(tv)}<button class="btn danger" data-remove-tv="${AS.esc(tv.id)}">${AS.esc(t("Remove"))}</button></div>`).join("")
+        ${state(tv)}<label class="switch" title="${AS.esc(t("Show the translations on this TV"))}"><input type="checkbox" data-tv-on="${AS.esc(tv.id)}" ${tv.on !== false ? "checked" : ""}/><span class="track"></span></label>
+        <button class="btn danger" data-remove-tv="${AS.esc(tv.id)}">${AS.esc(t("Remove"))}</button></div>`).join("")
     : "";
   if (box.innerHTML !== html) box.innerHTML = html;
+  knownTvs = tvs;
+  renderOutputs();
   // the header: how many of the connected TVs are online (hidden while none is connected)
   const pill = $("tv-pill"), on = tvs.filter((tv) => tv.online).length;
   pill.classList.toggle("hidden", !tvs.length);
@@ -833,6 +1056,51 @@ async function updateTvs() {
   $("tv-pill-text").textContent = `📺 ${on}/${tvs.length}`;
   pill.title = t("TVs showing the translation now: {n} of {m}", { n: on, m: tvs.length });
 }
+// ------------------------------------------------------------------------------------- outputs on/off
+
+/**
+ * Where the translations are shown, each switched on or off at once while translating, nothing
+ * restarted: this PC's overlay windows (`device_overlays`), each connected TV (kept with the TV, in
+ * the core) and the OBS page (`obs_overlays`). On the Play screen, and beside each in Show on. The
+ * header's Overlays switch stays over them all.
+ */
+let knownTvs = [];
+function renderOutputs() {
+  if (!cfg) return;
+  $("device_overlays").checked = cfg.device_overlays !== false;
+  $("obs_overlays").checked = cfg.obs_overlays !== false;
+  const row = (attrs, on, name, extra = "") => `<label class="switch out-row"><input type="checkbox" ${attrs} ${on ? "checked" : ""}/><span class="track"></span><span class="out-name">${name}</span>${extra}</label>`;
+  const dot = (tv) => `<span class="tv-state${tv.online ? " on" : ""}" title="${AS.esc(tv.online ? t("Online") : t("Offline"))}"><span class="dot"></span></span>`;
+  const html = row('data-output="device"', cfg.device_overlays !== false, AS.esc(t("Overlays on this PC")))
+    + knownTvs.map((tv) => row(`data-tv-on="${AS.esc(tv.id)}"`, tv.on !== false, `📺 ${AS.esc(tv.name)}`, dot(tv))).join("")
+    + row('data-output="obs"', cfg.obs_overlays !== false, "OBS");
+  const box = $("ps-outputs");
+  if (box.innerHTML !== html) box.innerHTML = html;
+  $("ps-outputs-note").textContent = cfg.overlays_enabled === false
+    ? t("Overlays are off for everything: turn on Overlays at the top.")
+    : t("Turn each one on or off at any time, even while translating.");
+  $("ps-outputs-note").classList.toggle("warn", cfg.overlays_enabled === false);
+}
+/** An output switched: saved at once (no waiting for the usual pause), so it goes off or on now. */
+async function setOutput(input) {
+  if (input.dataset.tvOn) {
+    const id = input.dataset.tvOn, on = input.checked;
+    const tv = knownTvs.find((x) => x.id === id);
+    if (tv) tv.on = on;
+    try { await invoke("set_tv_on", { id, on }); } catch (err) { log({ error: String(err) }); }
+    updateTvs();
+    return;
+  }
+  cfg[input.dataset.output === "obs" ? "obs_overlays" : "device_overlays"] = input.checked;
+  renderOutputs();
+  save(false);
+  clearTimeout(saveTimer);
+  try { await invoke("save_config", { config: cfg }); $("saved").textContent = t("Saved ✓"); } catch (e) { log({ error: String(e) }); }
+}
+for (const id of ["ps-outputs", "tab-show"]) {
+  $(id).addEventListener("change", (e) => { if (e.target.matches("[data-output], [data-tv-on]")) setOutput(e.target); });
+}
+
 $("tv-pill").addEventListener("click", () => { setMode("setup"); openTab("show"); });
 // The TV loads its page from the home-network sharing: turned on if it's off, and waited for.
 async function sharingReady() {
@@ -878,8 +1146,28 @@ $("tv-find").addEventListener("click", async () => {
   } catch (e) { box.textContent = String(e); }
   finally { if (run === tvLook) btn.disabled = false; }
 });
+// A TV that isn't found (another network, a mesh, a VPN): its address typed, then the code it shows.
+$("tv-type").addEventListener("click", () => {
+  const box = $("tv-found");
+  box.querySelector(".tv-looking, .tv-none")?.remove();
+  if (box.querySelector(".tv-typed")) { box.querySelector(".tv-addr").focus(); return; }
+  box.insertAdjacentHTML("beforeend", `<div class="tv-row tv-typed"><input class="tv-addr grow" dir="ltr" autocomplete="off" placeholder="192.168.1.30" title="${AS.esc(t("The TV's address"))}" />
+    <input class="tv-code" inputmode="numeric" maxlength="7" dir="ltr" autocomplete="off" placeholder="000 000" title="${AS.esc(t("The code shown on the TV"))}" />
+    <button class="btn tv-connect">${AS.esc(t("Connect"))}</button><div class="tv-msg hint"></div></div>`);
+  box.querySelector(".tv-addr").focus();
+});
 async function connectTv(row) {
   const msg = row.querySelector(".tv-msg"), b = row.querySelector(".tv-connect");
+  // (a typed address: checked here, as the PS5's is)
+  if (row.classList.contains("tv-typed")) {
+    const a = row.querySelector(".tv-addr").value.trim();
+    if (!/^\d{1,3}(\.\d{1,3}){3}(:\d{1,5})?$/.test(a)) {
+      msg.className = "tv-msg err";
+      msg.textContent = t("That isn't an address like 192.168.1.20.");
+      return;
+    }
+    row.dataset.address = a;
+  }
   b.disabled = true;
   msg.className = "tv-msg hint";
   msg.textContent = t("Connecting…");
@@ -929,7 +1217,7 @@ $("window_title").addEventListener("change", (e) => {
 
 // ------------------------------------------------------------------------------------- the game's part of a window
 
-const isWindowSource = (v) => !!v && !v.startsWith("device:") && !v.startsWith("obs:") && !v.startsWith("ps5:");
+const isWindowSource = (v) => !!v && !v.startsWith("device:") && !v.startsWith("obs:") && !v.startsWith("ps5:") && !v.startsWith("xbox:");
 // "Screen 1 — DELL U2720Q (2560 × 1440)"
 const screenLabel = (s) => `${t("Screen {n}", { n: s.number })}${s.name ? ` — ${s.name}` : ""} (${s.w} × ${s.h})`;
 // a source or overlay value as people read it (a screen's id means nothing to them)
@@ -1172,13 +1460,15 @@ const ENGINE_FIELDS = {
   claude: [
     ["claude_key", "Anthropic API key", "password"],
     ["claude_model", "Model", "select", null, [["claude-haiku-5-5", "Claude Haiku 5.5 — cheapest, fast"], ["claude-sonnet-5-5", "Claude Sonnet 5.5 — better"], ["claude-opus-5-5", "Claude Opus 5.5 — best, ~40× Haiku's price"]]],
-    ["dialect", "Arabic variety", "select", null, [["msa", "Modern Standard (الفصحى)"], ["egyptian", "Egyptian (مصري)"], ["gulf", "Gulf (خليجي)"], ["levantine", "Levantine (شامي)"]]],
+    ["dialect", "Arabic variety", "select", null, [["msa", "Modern Standard (الفصحى)"], ["egyptian", "Egyptian (مصري)"], ["gulf", "Gulf (خليجي)"], ["levantine", "Levantine (شامي)"], ["saudi", "Saudi (سعودي)"]]],
+    ["llm_notes", "Your notes for the model", "textarea", "Optional. Names, places, terms or a tone to keep the same, one per line. They are sent with every line the model translates (ready translations don't use them)."],
   ],
   openai: [
     ["openai_url", "Server address (a model on this computer: leave empty for OpenAI)", "text", "Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1. Free and offline; no key needed. On a 16 GB Mac: gemma4:12b-it-qat, about 0.5–1.5 s a line while you play. A smaller model is smoother, a bigger one translates better."],
     ["openai_key", "OpenAI API key", "password"],
     ["openai_model", "Model", "select", null, [["gpt-6-luna", "GPT-6 Luna — cheapest, fast"], ["gpt-6.1-terra", "GPT-6.1 Terra — better"], ["gpt-6.2-sol", "GPT-6.2 Sol — best, ~20× Luna's price"]]],
-    ["dialect", "Arabic variety", "select", null, [["msa", "Modern Standard (الفصحى)"], ["egyptian", "Egyptian (مصري)"], ["gulf", "Gulf (خليجي)"], ["levantine", "Levantine (شامي)"]]],
+    ["dialect", "Arabic variety", "select", null, [["msa", "Modern Standard (الفصحى)"], ["egyptian", "Egyptian (مصري)"], ["gulf", "Gulf (خليجي)"], ["levantine", "Levantine (شامي)"], ["saudi", "Saudi (سعودي)"]]],
+    ["llm_notes", "Your notes for the model", "textarea", "Optional. Names, places, terms or a tone to keep the same, one per line. They are sent with every line the model translates (ready translations don't use them)."],
   ],
 };
 
@@ -1205,6 +1495,31 @@ function renderLang() {
   $("lang-note").textContent = !l ? "" : l.local && hasOffline
     ? t("All translation services work with {name}, including the free offline one.", { name: l.name })
     : t("{name} has no free offline model: choose DeepL, Azure, Google, LibreTranslate or Claude.", { name: l.name });
+}
+
+/**
+ * VI Translator's ready translations first (on by default): turning them off asks first, as every line
+ * then waits for the translator.
+ */
+function renderShared() {
+  const box = $("shared_translations");
+  box.checked = cfg.shared_translations !== false;
+  if (box.dataset.wired) return;
+  box.dataset.wired = "1";
+  box.addEventListener("change", async () => {
+    if (!box.checked) {
+      // (with no translator, only the memory: lines the ready translations had aren't translated at all)
+      const none = cfg.engine === "local" && !hasOffline;
+      const text = t("Turn off VI Translator's ready translations? Every line will then wait for the translator chosen below, so translations will come much slower.")
+        + (none ? " " + t("With no translation service chosen, lines not in your own memory won't be translated at all.") : "");
+      if (!(await ask(text, t("Turn off")))) {
+        box.checked = true;
+        return;
+      }
+    }
+    cfg.shared_translations = box.checked;
+    save(false);
+  });
 }
 
 function renderEngines() {
@@ -1241,6 +1556,12 @@ function renderEngines() {
     } else if (type === "select") {
       input = document.createElement("select");
       for (const [v, txt] of options) input.add(new Option(t(txt), v));
+    } else if (type === "textarea") {
+      input = document.createElement("textarea");
+      input.rows = 4;
+      input.maxLength = 1500;
+      input.spellcheck = false;
+      input.dir = "auto";
     } else {
       input = document.createElement("input");
       input.type = type;
@@ -1397,7 +1718,7 @@ function renderAreas() {
       ${fxFields(a)}
       <div class="row field inline-label">
         <label>${a.match_size !== false ? t("Fine-tune") : t("Text size")}</label>
-        <input type="range" class="fs" min="0.5" max="2" step="0.05" value="${a.font_scale}" />
+        <input type="range" class="fs" ${rangeAttrs(a.font_scale, 0.5, 2, 0.05)} />
         <span class="val fsv">${Math.round(a.font_scale * 100)}%</span>
       </div>
       <details class="area-style"${styleOpen.has(a.id) ? " open" : ""}><summary>${t("Text style")}</summary><div class="form"></div></details>
@@ -1418,7 +1739,7 @@ function renderAreas() {
             .map(([v, txt]) => `<option value="${v}" ${a.out_halign === v ? "selected" : ""}>${t(txt)}</option>`).join("")}</select>
         </div>` : ""}`;
     c.addEventListener("mousedown", () => { if (selected !== a.id) { selected = a.id; highlightCards(); drawLayer(); } });
-    c.querySelector(".en").addEventListener("change", (e) => { a.enabled = e.target.checked; setShown("area", a.id, a.enabled); save(); });
+    c.querySelector(".en").addEventListener("change", (e) => { a.enabled = e.target.checked; setShown("area", a.id, a.enabled); renderPages(); save(); });
     c.querySelector(".nm").addEventListener("input", (e) => { a.name = e.target.value; save(); });
     c.querySelector(".pl").addEventListener("change", (e) => {
       if (e.target.value === "custom") toCustom(a); // start the custom region where the Arabic is now
@@ -1450,7 +1771,7 @@ function renderAreas() {
       save();
     });
     c.querySelector(".fs").addEventListener("input", (e) => {
-      a.font_scale = Number(e.target.value);
+      a.font_scale = rangeMoved(e.target, 0.5, 2, 0.05);
       c.querySelector(".fsv").textContent = `${Math.round(a.font_scale * 100)}%`;
       save();
     });
@@ -1573,7 +1894,7 @@ function renderStyleForm(form, a) {
       f.querySelector("input").addEventListener("change", (e) => setStyle(key, e.target.checked));
     } else if (type === "size") {
       // slider + exact number, kept in sync
-      f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" min="${min}" max="${max}" step="${step}" value="${AS.esc(s[key])}" />
+      f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" ${rangeAttrs(s[key], min, max, step)} />
         <input type="number" min="${min}" max="${max}" step="${step}" value="${AS.esc(s[key])}" style="width:72px" /><span class="val" style="min-width:18px">px</span></div>`;
       const [range, num] = f.querySelectorAll("input");
       // the text size, while the area matches the game's: the game's size is used (its Fine-tune
@@ -1584,7 +1905,7 @@ function renderStyleForm(form, a) {
         f.style.opacity = "0.55";
         f.insertAdjacentHTML("beforeend", `<div class="muted small" style="margin:4px 0 0">${t("Follows the game's text size. Change it with Fine-tune above, or untick “Match the game's text size”.")}</div>`);
       }
-      range.addEventListener("input", () => { num.value = range.value; setStyle(key, Number(range.value)); });
+      range.addEventListener("input", () => { const v = rangeMoved(range, min, max, step); num.value = v; setStyle(key, v); });
       num.addEventListener("change", () => {
         const v = Math.min(Math.max(Number(num.value) || s[key], min), max);
         num.value = range.value = v;
@@ -1595,8 +1916,8 @@ function renderStyleForm(form, a) {
       f.querySelector("input").addEventListener("input", (e) => { f.querySelector(".val").textContent = e.target.value; setStyle(key, e.target.value); });
     } else {
       const fmt = (v) => (step < 1 ? Number(v).toFixed(2) : String(v));
-      f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" min="${min}" max="${max}" step="${step}" value="${AS.esc(s[key])}" /><span class="val">${AS.esc(fmt(s[key]))}</span></div>`;
-      f.querySelector("input").addEventListener("input", (e) => { f.querySelector(".val").textContent = fmt(e.target.value); setStyle(key, Number(e.target.value)); });
+      f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" ${rangeAttrs(s[key], min, max, step)} /><span class="val">${AS.esc(fmt(rangeShown(s[key], min, max, step).value))}</span></div>`;
+      f.querySelector("input").addEventListener("input", (e) => { const v = rangeMoved(e.target, min, max, step); f.querySelector(".val").textContent = fmt(v); setStyle(key, v); });
     }
     form.appendChild(f);
   }
@@ -1617,6 +1938,31 @@ function renderStyleForm(form, a) {
 }
 
 // ------------------------------------------------------------------------------------- timing
+
+// Sliders whose number, dot and saved value agree. A value the slider's steps don't reach (a game's
+// timing, 80 ms on a 50 ms step) or outside its range would have its dot jump to the nearest step
+// while the number said otherwise: it is shown where it really is (within the range, as the app
+// uses it), on steps of its own until the slider is moved; a moved slider takes its own steps again.
+function rangeShown(v, min, max, step) {
+  const x = Math.min(Math.max(Number(v), min), max);
+  const k = (x - min) / step;
+  const onStep = Math.abs(k - Math.round(k)) < 1e-6;
+  return { value: Number.isFinite(x) ? x : min, step: onStep ? step : "any" };
+}
+/** The attributes of such a slider. */
+function rangeAttrs(v, min, max, step) {
+  const r = rangeShown(v, min, max, step);
+  return `min="${min}" max="${max}" step="${r.step}" value="${r.value}"`;
+}
+/** A moved slider's value, on its own steps (and back on them, if it was shown between two). */
+function rangeMoved(input, min, max, step) {
+  const raw = Number(input.value);
+  const v = Math.min(Math.max(min + Math.round((raw - min) / step) * step, min), max);
+  const fixed = Number(v.toFixed(6)); // (0.1 + 0.2: no float dust in the settings)
+  if (input.step !== String(step)) input.step = step;
+  if (Number(input.value) !== fixed) input.value = fixed;
+  return fixed;
+}
 
 // The preview's fps badge: shown or not, and which corner (Show on → Preview).
 const FPS_CORNERS = [["top-left", "Top left"], ["top-right", "Top right"], ["bottom-left", "Bottom left"], ["bottom-right", "Bottom right"]];
@@ -1697,7 +2043,7 @@ function renderTiming() {
     ["capture_fps", "Frames captured for reading text (per second)", 1, 60, 1, "Full-size frames used for reading text, game pages and saved frames. Also how often the pause menu checks whether its text changed. 12 is plenty; more costs CPU, especially at 4K. From OBS, about 12 is the most it can deliver."],
     ["preview_fps", "Live preview frame rate (per second)", 5, 60, 5, "Only the picture in this app (small frames, made only while it's visible). Doesn't change how text is read."],
     ["interval_ms", "How often areas are read (ms)", 16, 1000, 2, "Lower = faster reaction, more CPU."],
-    ["stable_ms", "Wait for text to settle before translating (ms)", 0, 1500, 50, "Avoids translating half-faded lines."],
+    ["stable_ms", "Wait for text to settle before translating (ms)", 0, 1500, 10, "Avoids translating half-faded lines."],
     ["clear_after_ms", "Treat the English as gone after (ms)", 50, 3000, 10, "Ignores short OCR blinks. The translation then stays as long as the English was on screen, and switches to the next line as soon as it is ready."],
   ];
   // The last three: the game profile's timing unless the player chose their own (Config::timing).
@@ -1707,10 +2053,10 @@ function renderTiming() {
   const inUse = (k) => (cfg.timing_custom === true || !(game[k] > 0) ? cfg[k] : game[k]);
   for (const [key, label, min, max, step, help] of fields) {
     const timed = TIMED.includes(key);
-    const v = timed ? inUse(key) : cfg[key];
+    const v = rangeShown(timed ? inUse(key) : cfg[key], min, max, step).value;
     const f = document.createElement("div");
     f.className = "field";
-    f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" min="${min}" max="${max}" step="${step}" value="${v}" /><span class="val">${v}</span></div>${help ? `<div class="muted small" style="margin:4px 0 0">${t(help)}</div>` : ""}`;
+    f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" ${rangeAttrs(v, min, max, step)} /><span class="val">${v}</span></div>${help ? `<div class="muted small" style="margin:4px 0 0">${t(help)}</div>` : ""}`;
     f.querySelector("input").addEventListener("input", (e) => {
       // moving one of the three: the player's own timing from now on, starting from what was in use
       if (timed && cfg.timing_custom !== true) {
@@ -1718,8 +2064,8 @@ function renderTiming() {
         cfg.timing_custom = true;
         if (gameHas) renderTimingReset(form);
       }
-      cfg[key] = Number(e.target.value);
-      f.querySelector(".val").textContent = e.target.value;
+      cfg[key] = rangeMoved(e.target, min, max, step);
+      f.querySelector(".val").textContent = cfg[key];
       save(false);
     });
     form.appendChild(f);
@@ -2951,6 +3297,7 @@ listen("lan-control", (e) => {
     syncProfile();
   }
   $("overlays_enabled").checked = cfg.overlays_enabled;
+  renderOutputs();
   $("live_translations").checked = cfg.live_translations !== false;
   $("log-paused").hidden = cfg.live_translations !== false;
   renderAreas();
@@ -3191,6 +3538,35 @@ async function drawLookPreviews(form) {
 /** A script's text: plain, or by interface language (English the fallback). */
 const scriptText = (v) => (typeof v === "string" ? v : v ? v[cfg.ui_lang] || v.en || Object.values(v)[0] || "" : "");
 
+/**
+ * What's translated (Game pages): the heading of each group, and the name and note of each switch the core
+ * lists for a game (`groups` of page_options: one thing each, none covering another).
+ */
+const CONTENT_GROUPS = {
+  phone: "Phone translations",
+  menus: "Pause menu and map",
+  notices: "Help, instructions and notices",
+  screens: "Other screens",
+};
+const CONTENT_TEXT = {
+  phone_text: ["WhatUp chats", "The phone's chats, translated on a second phone beside it."],
+  phone_bubble: ["Message bubble", "A new message's bubble at the bottom right, translated above it."],
+  pause_home: ["First page and Game page", "The menu's first page (Map, Game, Store, Help…), saving and loading, and their questions."],
+  pause_map: ["Map", "The map's buttons and the objective card at the top left."],
+  pause_brief: ["Brief", "The Brief tab: what was said, help texts and objectives so far."],
+  pause_jason_lucia: ["Jason & Lucia", "The Jason & Lucia tab."],
+  pause_progress: ["Progress and stats", "The Progress tab's cards and the stats pages."],
+  pause_help: ["Help pages", "The Help menu's pages: Basics, Inventory, Vehicles and the rest."],
+  pause_settings: ["Settings pages", "The settings: controls, display, audio and the rest."],
+  pause_tabs: ["Tab names and buttons", "The row of tabs at the top and the buttons at the bottom right of every page."],
+  help: ["Help box", "The help box at the top left."],
+  instructions: ["Instructions", "The instructions under the subtitles."],
+  game_notices: ["Game notices", "The game's notices, like “Controller disconnected”."],
+  wasted: ["Wasted and Busted", "The big “wasted” when you die and “busted” when you're arrested."],
+  mission_failed: ["Mission failed", "The “failed” page when a mission is lost: its reason and buttons."],
+  weapon_wheel: ["Weapon wheel", "The weapon and item wheel: its tabs, the selected item and its stats."],
+};
+
 /** The pages a game's script has and the switches it declares, asked once per game. */
 const pageScripts = {};
 async function pageScript(game) {
@@ -3210,26 +3586,69 @@ async function renderPages() {
     return;
   }
   o.more = o.more || {};
-  const isOn = (opt) => (opt.id in o.more ? o.more[opt.id] : opt.on);
-  // the switches the game's script declares (its pages come with layout updates)
-  const declared = script.options.map((opt) => `
+  // a switch as the profile has it: as set; else, one split from an older switch (`inherits`), as that one is
+  // set; else the script's default (as the core's `pagescript::option_on`)
+  const isOn = (opt) => {
+    if (opt.id in o.more) return o.more[opt.id];
+    if (opt.inherits && opt.inherits !== opt.id) {
+      if (opt.inherits in o.more) return o.more[opt.inherits];
+      const old = script.options.find((x) => x.id === opt.inherits);
+      if (old) return old.on;
+    }
+    return opt.on;
+  };
+  // What's translated: the dialogue always; then the game's switches (the core's list) under their groups'
+  // headings, each one thing (a read area, a switch of the game's pages, or a setting such as the phone's)
+  const switches = (script.groups || []).filter((g) => CONTENT_TEXT[g.id] && CONTENT_GROUPS[g.group]);
+  const covered = new Set(switches.flatMap((g) => g.pages));
+  const pageOn = (id) => { const opt = script.options.find((x) => x.id === id); return opt ? isOn(opt) : false; };
+  const areaOn = (id) => cfg.areas.some((a) => a.id === id && a.enabled);
+  // (the message bubble: as the phone in settings from before its own switch)
+  const settingOn = (id) => (id === "phone_bubble" ? (cfg.phone_bubble ?? cfg.phone_text !== false) : cfg[id] !== false);
+  const switchOn = (g) => (g.setting ? settingOn(g.setting) : g.areas.length ? g.areas.some(areaOn) : g.pages.some(pageOn));
+  const setSwitch = (g, on) => {
+    if (g.setting) cfg[g.setting] = on;
+    for (const a of cfg.areas) if (g.areas.includes(a.id)) { a.enabled = on; setShown("area", a.id, on); }
+    for (const id of g.pages) { o.more[id] = on; setShown("page", id, on); }
+  };
+  const headings = Object.keys(CONTENT_GROUPS).filter((id) => switches.some((g) => g.group === id));
+  const content = switches.length ? `
+    <div class="card">
+      <div style="font-weight:600">${t("What's translated")}</div>
+      <label class="check" style="margin-top:10px"><input type="checkbox" checked disabled data-keep/> ${t("Dialogue and subtitles")}</label>
+      <p class="muted small" style="margin:2px 0 0">${t("Always translated.")}</p>
+      ${headings.map((h) => `
+      <div style="font-weight:600;margin-top:16px">${t(CONTENT_GROUPS[h])}</div>
+      ${switches.filter((g) => g.group === h).map((g) => `
+      <label class="check" style="margin-top:8px"><input type="checkbox" data-switch="${AS.esc(g.id)}" data-keep ${switchOn(g) ? "checked" : ""}/> ${t(CONTENT_TEXT[g.id][0])}</label>
+      <p class="muted small" style="margin:2px 0 0">${t(CONTENT_TEXT[g.id][1])}</p>`).join("")}`).join("")}
+      <button class="btn" id="pf-dialogue-only" data-keep style="margin-top:12px">${t("Dialogue only")}</button>
+      <p class="muted small" style="margin:6px 0 0">${t("Turns off everything here except the dialogue and subtitles.")}</p>
+    </div>` : "";
+  // the switches the game's script declares (its pages come with layout updates), those above aside
+  const declared = script.options.filter((opt) => !covered.has(opt.id)).map((opt) => `
     <div class="card">
       <label class="check" style="font-weight:600"><input type="checkbox" data-more="${AS.esc(opt.id)}" ${isOn(opt) ? "checked" : ""}/> ${AS.esc(scriptText(opt.name) || opt.id)}</label>
       ${scriptText(opt.about) ? `<p class="muted small" style="margin:6px 0 0">${AS.esc(scriptText(opt.about))}</p>` : ""}
     </div>`).join("");
-  // (GTA VI's phone in the hand — its WhatUp chats translated on a second phone beside it: shown or not, the player's)
-  const phone = game === "gta6" ? `
-    <div class="card">
-      <label class="check" style="font-weight:600"><input type="checkbox" id="pf-phone" data-keep ${cfg.phone_text !== false ? "checked" : ""}/> ${t("Phone translations")}</label>
-      <p class="muted small" style="margin:6px 0 0">${t("The phone's WhatUp chats, translated on a second phone beside it.")}</p>
-    </div>` : "";
-  f.innerHTML = phone + declared + `
+  f.innerHTML = content + declared + `
     <div class="card">
       <div class="field"><label>${t("Title font")}</label><select id="pf-title">${fontOptions(o.title_font)}</select></div>
       <div class="field" style="margin-top:10px"><label>${t("Reason and button font")}</label><select id="pf-text">${fontOptions(o.text_font)}</select></div>
     </div>`;
   f.querySelectorAll("[data-more]").forEach((el) => el.addEventListener("change", () => { o.more[el.dataset.more] = el.checked; setShown("page", el.dataset.more, el.checked); save(); }));
-  if ($("pf-phone")) $("pf-phone").addEventListener("change", (e) => { cfg.phone_text = e.target.checked; save(); });
+  f.querySelectorAll("[data-switch]").forEach((el) => el.addEventListener("change", () => {
+    setSwitch(switches.find((g) => g.id === el.dataset.switch), el.checked);
+    renderAreas();
+    save();
+  }));
+  if ($("pf-dialogue-only")) $("pf-dialogue-only").addEventListener("click", () => {
+    for (const g of switches) setSwitch(g, false);
+    for (const opt of script.options) { o.more[opt.id] = false; setShown("page", opt.id, false); }
+    renderAreas();
+    renderPages();
+    save();
+  });
   for (const [id, key] of [["pf-title", "title_font"], ["pf-text", "text_font"]]) {
     const sel = $(id);
     paintFonts(sel);
@@ -3252,7 +3671,7 @@ function applyTheme() {
 function lockControls() {
   const on = locked();
   document.querySelectorAll("#tab-areas, #tab-pages").forEach((tab) =>
-    tab.querySelectorAll("input:not(.en):not([data-more]):not([data-keep]), select:not([data-more]), textarea, button:not([data-copy])").forEach((el) => { el.disabled = on || el.dataset.matched === "1"; }));
+    tab.querySelectorAll("input:not(.en):not([data-more]):not([data-keep]), select:not([data-more]), textarea, button:not([data-copy]):not([data-keep])").forEach((el) => { el.disabled = on || el.dataset.matched === "1"; }));
   $("add-area").disabled = on;
   // (its boxes can't be moved or resized, so the hint about doing that is gone too)
   $("drag-hint").hidden = on;
@@ -3285,12 +3704,14 @@ function lockControls() {
   showLive();
   $("live_translations").addEventListener("change", (e) => { cfg.live_translations = e.target.checked; showLive(); save(false); });
   // (save(): redraws the preview, which hides or shows the translations on it too)
-  $("overlays_enabled").addEventListener("change", (e) => { cfg.overlays_enabled = e.target.checked; save(); });
+  $("overlays_enabled").addEventListener("change", (e) => { cfg.overlays_enabled = e.target.checked; renderOutputs(); save(); });
+  renderOutputs();
   try {
     FONT_LIST = await invoke("list_fonts");
   } catch (e) {
     log({ error: t("Could not list fonts: {e}", { e }) });
   }
+  renderShared();
   renderEngines();
   // (Apple's translation: only on a Mac that has it)
   invoke("apple_status").then((st) => { appleStatus = st || "missing"; renderEngines(); }).catch(() => {});

@@ -24,6 +24,16 @@
 //! pages.option({ id: "heists", name: { en: "Heist board", ar: "لوحة السرقات" }, about: "…", on: true });
 //! ```
 //!
+//! A page made of parts the player switches one by one (the pause menu's tabs) lists their switches in
+//! `anyOf`: it is looked for while any of them is on (an app without `anyOf` goes by `option`), and its
+//! functions ask `vi.on("pause_map")` which parts to read. A switch that took the place of an older one (one
+//! switch split in several) says so with `inherits`: until the player sets it, it is as the older one is set.
+//!
+//! ```js
+//! pages.option({ id: "pause_map", name: "Map", on: true, inherits: "pause_menu" });
+//! pages.add({ id: "pause", option: "pause_menu", anyOf: ["pause_map", "pause_brief"], … });
+//! ```
+//!
 //! Pictures the script carries (inside the script, so they're signed with it) can be looked for:
 //!
 //! ```js
@@ -204,6 +214,9 @@ pub struct PageInfo {
     pub id: String,
     /// the profile's switch for it (one the script declares with `pages.option`), or "" (always on)
     pub option: String,
+    /// `anyOf`: the switches of its parts, the page looked for while any of them is on (then `option` is
+    /// only for apps without `anyOf`)
+    pub any_of: Vec<String>,
     /// While it's up (`hold` in the script): keep showing it this long after `same` stops seeing it
     /// (a title that blinks out while the scene fades); 0 = gone at once.
     pub hold_ms: u64,
@@ -230,6 +243,9 @@ pub struct OptionInfo {
     pub about: serde_json::Value,
     /// on unless the profile says otherwise
     pub on: bool,
+    /// an older switch this one comes from (one switch split in several): while the profile hasn't set
+    /// this one, it is as the older one is set (else `on`)
+    pub inherits: String,
 }
 
 pub struct Pages {
@@ -258,6 +274,8 @@ thread_local! {
     static NATIVE_US: Cell<u64> = const { Cell::new(0) };
     /// When the call in progress must end in all, helpers included (see CALL_TOTAL_MS).
     static CALL_END: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// The script's switches as the profile in use has them (`vi.on`; see `Pages::set_switches`).
+    static SWITCHES: RefCell<std::collections::HashMap<String, bool>> = RefCell::new(std::collections::HashMap::new());
 }
 
 /// Run one of the app's helpers: its time doesn't count against the script.
@@ -400,6 +418,7 @@ impl Pages {
                     crate::screens::menu_item_word(&read).map(|(e, a)| serde_json::json!([e, a]).to_string()).unwrap_or_else(|| "null".into())
                 })
             })?)?;
+            g.set("__switch_on", Function::new(ctx.clone(), |id: String| SWITCHES.with(|s| s.borrow().get(&id).copied().unwrap_or(true)))?)?;
             g.set("__fix_contractions", Function::new(ctx.clone(), |s: String| text_helper(&s, 4096, s.clone(), || ocr::fix_contractions(&s)))?)?;
             ctx.eval::<(), _>(PRELUDE).map_err(|e| js_error(&ctx, e))?;
             ctx.eval::<(), _>(script).map_err(|e| js_error(&ctx, e))?;
@@ -586,7 +605,43 @@ impl Pages {
     /// Is a switch on in the profile? The app's own switches as the profile has them; one the script
     /// declares as the profile set it, else the script's default.
     pub fn switch_on(&self, opts: &crate::config::ProfileOpts, option: &str) -> bool {
-        option.is_empty() || opts.more.get(option).copied().unwrap_or_else(|| self.options.iter().find(|o| o.id == option).is_none_or(|o| o.on))
+        option.is_empty() || option_on(&self.options, &opts.more, option)
+    }
+
+    /// Is the page looked for? With `anyOf`: while any of its parts' switches is on; else its `option`.
+    pub fn page_on(&self, opts: &crate::config::ProfileOpts, page: &PageInfo) -> bool {
+        if page.any_of.is_empty() {
+            self.switch_on(opts, &page.option)
+        } else {
+            page.any_of.iter().any(|id| self.switch_on(opts, id))
+        }
+    }
+
+    /// The profile's switches, for the script's `vi.on` in the calls that follow (on this thread).
+    pub fn set_switches(&self, opts: &crate::config::ProfileOpts) {
+        SWITCHES.with(|s| {
+            let mut s = s.borrow_mut();
+            s.clear();
+            for o in &self.options {
+                s.insert(o.id.clone(), option_on(&self.options, &opts.more, &o.id));
+            }
+        });
+    }
+}
+
+/// A switch as the profile has it (`more`): as the player set it; else, for one that `inherits` an older
+/// switch, as that one is set; else the script's default (on for one the script doesn't declare).
+pub fn option_on(options: &[OptionInfo], more: &std::collections::BTreeMap<String, bool>, id: &str) -> bool {
+    if let Some(&on) = more.get(id) {
+        return on;
+    }
+    match options.iter().find(|o| o.id == id) {
+        Some(o) if !o.inherits.is_empty() && o.inherits != o.id => more
+            .get(&o.inherits)
+            .copied()
+            .unwrap_or_else(|| options.iter().find(|x| x.id == o.inherits).map_or(o.on, |x| x.on)),
+        Some(o) => o.on,
+        None => true,
     }
 }
 
@@ -619,7 +674,8 @@ globalThis.pages = Object.freeze({
   option(o) {
     if (!o || typeof o.id !== "string" || !/^[a-z0-9_]{1,32}$/.test(o.id)) throw new Error("a switch needs an id (a-z, 0-9, _)");
     const text = (v) => (typeof v === "string" ? v : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).filter(([, t]) => typeof t === "string")) : "");
-    __options.set(o.id, { id: o.id, name: text(o.name) || o.id, about: text(o.about), on: o.on !== false });
+    const inherits = typeof o.inherits === "string" && /^[a-z0-9_]{1,32}$/.test(o.inherits) ? o.inherits : "";
+    __options.set(o.id, { id: o.id, name: text(o.name) || o.id, about: text(o.about), on: o.on !== false, inherits });
   },
 });
 function __frame() {
@@ -657,9 +713,11 @@ globalThis.vi = Object.freeze({
   tabWord: (read) => JSON.parse(__tab_word(String(read))),
   menuItemWord: (read) => JSON.parse(__menu_item_word(String(read))),
   fixContractions: (s) => __fix_contractions(String(s)),
+  // is the player's switch on ("pause_map")? (one the script doesn't declare: on)
+  on: (id) => __switch_on(String(id)),
 });
 globalThis.__list = () => JSON.stringify([...__pages.values()].map((p) => ({
-  id: p.id, option: p.option || "",
+  id: p.id, option: p.option || "", any_of: Array.isArray(p.anyOf) ? p.anyOf.filter((x) => typeof x === "string") : [],
   hold_ms: (p.hold && p.hold.ms) || 0, end_when_dark: !!(p.hold && p.hold.endWhenDark), reread_ms: (p.hold && p.hold.rereadMs) || 0,
   follow: (p.hold && p.hold.follow) || "", content: (p.hold && p.hold.content) || null, buttons: (p.hold && p.hold.buttons) || null,
 })));
@@ -1356,7 +1414,9 @@ mod built_in_tests {
         assert!(p.list.iter().any(|i| i.id == "gta6_wasted"));
         assert!(p.options.iter().any(|o| o.id == "wasted" && o.on));
         assert!(p.list.iter().any(|i| i.id == "gta6_pause"));
-        assert!(p.options.iter().any(|o| o.id == "pause_menu" && o.on));
+        // (the pause menu: a switch for each of its parts, each from the old "pause_menu")
+        assert!(p.options.iter().filter(|o| o.id.starts_with("pause_")).all(|o| o.on && o.inherits == "pause_menu"));
+        assert_eq!(p.options.iter().filter(|o| o.inherits == "pause_menu").count(), 8);
     }
 
     #[test]
@@ -1393,6 +1453,37 @@ mod tests {
             }
         }
         FrameData { w, h, rgba, seq: 1 }
+    }
+
+    #[test]
+    fn a_switch_split_in_parts() {
+        let p = Pages::load(r#"
+            pages.option({ id: "tab_a", name: "A", inherits: "menu" });
+            pages.option({ id: "tab_b", name: "B", inherits: "menu" });
+            pages.option({ id: "tab_c", name: "C", on: false, inherits: "menu" });
+            pages.add({ id: "m", option: "menu", anyOf: ["tab_a", "tab_b"], present() { return vi.on("tab_a") ? 1 : null; } });"#)
+        .expect("loads");
+        let page = p.info("m").unwrap().clone();
+        assert_eq!(page.any_of, ["tab_a", "tab_b"]);
+        assert_eq!(p.options[0].inherits, "menu");
+        let mut o = crate::config::ProfileOpts::default();
+        // the older switch never set: each part its own default
+        assert!(p.switch_on(&o, "tab_a") && !p.switch_on(&o, "tab_c") && p.page_on(&o, &page));
+        // the older switch set: each part as it, until set itself
+        o.more.insert("menu".into(), false);
+        assert!(!p.switch_on(&o, "tab_a") && !p.switch_on(&o, "tab_b") && !p.page_on(&o, &page));
+        o.more.insert("menu".into(), true);
+        assert!(p.switch_on(&o, "tab_c"));
+        o.more.insert("menu".into(), false);
+        o.more.insert("tab_b".into(), true);
+        assert!(!p.switch_on(&o, "tab_a") && p.switch_on(&o, "tab_b") && p.page_on(&o, &page), "any part on: looked for");
+        // the script asks with vi.on
+        let f = caption_frame();
+        p.set_switches(&o);
+        assert!(p.call("m", "present", &f, None, &serde_json::Value::Null).is_null(), "tab_a off");
+        o.more.insert("tab_a".into(), true);
+        p.set_switches(&o);
+        assert_eq!(p.call("m", "present", &f, None, &serde_json::Value::Null), serde_json::json!(1), "tab_a on");
     }
 
     #[test]
@@ -1674,11 +1765,80 @@ pub fn options_for(game: &str, data_dir: &Path) -> Vec<OptionInfo> {
     list
 }
 
-/// The game pages a game's script has, and the switches it declares (for Game pages):
-/// {"pages": [{"id", "option"}], "options": [{"id", "name", "about", "on"}]}.
+/// The game pages a game's script has, the switches it declares, and the game's What's-translated
+/// switches (`config::content_switches`, with only the page switches this script declares) for Game pages:
+/// {"pages": [{"id", "option", "any_of"}], "options": [{"id", "name", "about", "on", "inherits"}],
+///  "groups": [{"id", "group", "areas", "pages", "setting"}]} (`groups`: each switch, one thing each).
 pub fn page_options(game: &str, data_dir: &Path) -> serde_json::Value {
     match Pages::for_game(game, data_dir) {
-        Some(p) => serde_json::json!({ "pages": p.list.iter().map(|i| serde_json::json!({ "id": i.id, "option": i.option })).collect::<Vec<_>>(), "options": p.options }),
-        None => serde_json::json!({ "pages": [], "options": [] }),
+        Some(p) => {
+            let groups: Vec<crate::config::ContentSwitch> = crate::config::content_switches(game)
+                .into_iter()
+                .map(|mut g| {
+                    g.pages.retain(|id| p.options.iter().any(|o| o.id == *id));
+                    g
+                })
+                .filter(|g| !g.setting.is_empty() || !g.areas.is_empty() || !g.pages.is_empty())
+                .collect();
+            serde_json::json!({ "pages": p.list.iter().map(|i| serde_json::json!({ "id": i.id, "option": i.option, "any_of": i.any_of })).collect::<Vec<_>>(), "options": p.options, "groups": groups })
+        }
+        None => serde_json::json!({ "pages": [], "options": [], "groups": [] }),
+    }
+}
+
+#[cfg(test)]
+mod content_tests {
+    #[test]
+    fn gta6_whats_translated_switches_cover_what_the_game_has() {
+        let dir = std::env::temp_dir().join(format!("vit-content-{}", std::process::id()));
+        let v = super::page_options("gta6", &dir);
+        let groups = v["groups"].as_array().unwrap();
+        // every switch kept: each page one the built-in script declares
+        assert_eq!(groups.len(), crate::config::content_switches("gta6").len());
+        let ids: Vec<&str> = groups.iter().map(|g| g["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, [
+            "phone_text", "phone_bubble",
+            "pause_home", "pause_map", "pause_brief", "pause_jason_lucia", "pause_progress", "pause_help", "pause_settings", "pause_tabs",
+            "help", "instructions", "game_notices",
+            "wasted", "mission_failed", "weapon_wheel",
+        ]);
+        // each page switch on by default (today's behaviour), and every switch the script declares is one of them
+        // (none left over as a card of its own, none covering another)
+        let options = v["options"].as_array().unwrap();
+        let page_ids: Vec<&serde_json::Value> = groups.iter().flat_map(|g| g["pages"].as_array().unwrap()).collect();
+        for opt in options {
+            assert!(page_ids.contains(&&opt["id"]), "{} has a checkbox", opt["id"]);
+            assert_eq!(opt["on"], true, "{}", opt["id"]);
+        }
+        // the pause menu looked for while any of its parts is on
+        let pause = v["pages"].as_array().unwrap().iter().find(|p| p["id"] == "gta6_pause").unwrap();
+        assert_eq!(pause["any_of"].as_array().unwrap().len(), 8);
+        // another game has none
+        assert!(super::page_options("rdr2", &dir)["groups"].as_array().unwrap().is_empty());
+    }
+
+    /// A profile from before the switches were split keeps what it had: the pause menu's parts as "pause_menu"
+    /// was set, "mission_failed" as "wasted" (one switch for Wasted, Busted and Failed then).
+    #[test]
+    fn gta6_split_switches_start_as_the_old_ones_were() {
+        let dir = std::env::temp_dir().join(format!("vit-split-{}", std::process::id()));
+        let p = super::Pages::for_game("gta6", &dir).expect("built-in script");
+        let parts = ["pause_home", "pause_map", "pause_brief", "pause_jason_lucia", "pause_progress", "pause_help", "pause_settings", "pause_tabs"];
+        let pause = p.info("gta6_pause").unwrap().clone();
+        let failed = p.info("gta6_failed").unwrap().clone();
+        // a new profile: everything on
+        let mut o = crate::config::ProfileOpts::default();
+        assert!(parts.iter().all(|id| p.switch_on(&o, id)) && p.page_on(&o, &pause) && p.page_on(&o, &failed));
+        // the old switches off: their parts off, the pages not looked for
+        o.more.insert("pause_menu".into(), false);
+        o.more.insert("wasted".into(), false);
+        assert!(parts.iter().all(|id| !p.switch_on(&o, id)) && !p.page_on(&o, &pause));
+        assert!(!p.switch_on(&o, "mission_failed") && !p.page_on(&o, &failed));
+        // one part turned on again: the menu looked for, the others still off
+        o.more.insert("pause_map".into(), true);
+        assert!(p.page_on(&o, &pause) && !p.switch_on(&o, "pause_brief"));
+        // Mission failed on its own, Wasted and Busted still off
+        o.more.insert("mission_failed".into(), true);
+        assert!(p.page_on(&o, &failed) && !p.switch_on(&o, "wasted"));
     }
 }

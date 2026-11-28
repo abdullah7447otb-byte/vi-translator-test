@@ -26,6 +26,7 @@ mod updater;
 mod vcam;
 // Xbox remote play in a window of the app (Microsoft's web player)
 mod xbox;
+mod xbox_native;
 // PS5 remote play in the app (chiaki-ng)
 mod ps5;
 // how hard the app works (Performance mode)
@@ -372,9 +373,15 @@ async fn find_tvs(webview: tauri::Webview, state: tauri::State<'_, AppState>) ->
 async fn connect_tv(webview: tauri::Webview, state: tauri::State<'_, AppState>, address: String, code: String) -> Result<String, String> {
     main_only(&webview)?;
     let (c, shared) = (state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(), state.shared.clone());
+    // (an address typed alone: the TV app's port, as on the phones)
+    let address = match address.trim().parse::<std::net::Ipv4Addr>() {
+        Ok(ip) => format!("{ip}:{}", tv::TV_PORT),
+        Err(_) => address.trim().to_string(),
+    };
     // the TV loads its page from the home-network sharing, which has to be on (the window turns it on first)
     let running = shared.lan_running.load(std::sync::atomic::Ordering::Relaxed);
-    let ip = lan::lan_ip();
+    // (this PC's address on the TV's network, when it's on several)
+    let ip = lan::lan_ip_toward(&address);
     let (true, true, Some(ip)) = (c.lan_page, running, ip) else { return Err(tv::PairError::NotSharing.code().into()) };
     let pc = format!("{ip}:{}", c.lan_port);
     tauri::async_runtime::spawn_blocking(move || tv::pair(&shared.tvs, &address, &code, &pc, &tv::pc_name()))
@@ -388,6 +395,13 @@ async fn connect_tv(webview: tauri::Webview, state: tauri::State<'_, AppState>, 
 fn list_tvs(webview: tauri::Webview, state: tauri::State<AppState>) -> Result<Vec<tv::TvInfo>, String> {
     main_only(&webview)?;
     Ok(state.shared.tvs.list())
+}
+
+/// Switch a connected TV's translations on or off (it stays connected; blank while off).
+#[tauri::command]
+fn set_tv_on(webview: tauri::Webview, state: tauri::State<AppState>, id: String, on: bool) -> Result<(), String> {
+    main_only(&webview)?;
+    if state.shared.tvs.set_on(&id, on) { Ok(()) } else { Err("no_tv".into()) }
 }
 
 /// Disconnect a TV: its key stops working, and the TV shows a new code.
@@ -561,6 +575,84 @@ fn ps5_login_pin(webview: tauri::Webview, pin: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Xbox with the app's own player: signed in? the code to type? the chosen console, the settings.
+#[tauri::command]
+fn xbox_status(webview: tauri::Webview) -> Result<serde_json::Value, String> {
+    main_only(&webview)?;
+    Ok(xbox_native::status())
+}
+
+/// A code to type at microsoft.com/link; the sign-in is waited for in the background ("xbox" event).
+#[tauri::command]
+async fn xbox_sign_in(webview: tauri::Webview) -> Result<serde_json::Value, String> {
+    main_only(&webview)?;
+    xbox_native::sign_in().await
+}
+
+#[tauri::command]
+fn xbox_cancel_sign_in(webview: tauri::Webview) -> Result<(), String> {
+    main_only(&webview)?;
+    xbox_native::cancel_sign_in();
+    Ok(())
+}
+
+/// Microsoft's page the code is typed on, in the browser.
+#[tauri::command]
+fn xbox_open_link(webview: tauri::Webview) -> Result<(), String> {
+    main_only(&webview)?;
+    xbox_native::open_link()
+}
+
+#[tauri::command]
+fn xbox_sign_out(webview: tauri::Webview) -> Result<(), String> {
+    main_only(&webview)?;
+    xbox_native::sign_out();
+    Ok(())
+}
+
+/// The consoles on the signed-in account.
+#[tauri::command]
+async fn xbox_consoles(webview: tauri::Webview) -> Result<Vec<xbox_native::Listed>, String> {
+    main_only(&webview)?;
+    xbox_native::consoles().await
+}
+
+#[tauri::command]
+fn xbox_choose(webview: tauri::Webview, console: xbox_native::Console) -> Result<(), String> {
+    main_only(&webview)?;
+    xbox_native::choose(console);
+    Ok(())
+}
+
+#[tauri::command]
+fn xbox_forget_console(webview: tauri::Webview) -> Result<(), String> {
+    main_only(&webview)?;
+    xbox_native::forget_console();
+    Ok(())
+}
+
+#[tauri::command]
+fn xbox_set_resolution(webview: tauri::Webview, resolution: u32) -> Result<(), String> {
+    main_only(&webview)?;
+    xbox_native::set_resolution(resolution);
+    Ok(())
+}
+
+/// The Xbox's sound on this computer: on or off, and its volume (0–100).
+#[tauri::command]
+fn xbox_set_sound(webview: tauri::Webview, on: bool, volume: u32) -> Result<(), String> {
+    main_only(&webview)?;
+    xbox_native::set_sound(on, volume);
+    Ok(())
+}
+
+#[tauri::command]
+fn xbox_set_controllers(webview: tauri::Webview, on: bool) -> Result<(), String> {
+    main_only(&webview)?;
+    xbox_native::set_controllers(on);
+    Ok(())
+}
+
 /// Opens Xbox remote play in its window of the app (or brings it to the front). (async: on Windows a
 /// window made from a synchronous command stays blank)
 #[tauri::command]
@@ -663,7 +755,7 @@ async fn list_sources(webview: tauri::Webview, state: tauri::State<'_, AppState>
     .map_err(|e| e.to_string())?;
     // (the Xbox player: its own entry, whether its window is open or not)
     let xbox = xbox::available().then_some(xbox::TITLE);
-    Ok(serde_json::json!({ "windows": windows, "devices": devices, "obs": obs, "screens": capture::list_screens(), "xbox": xbox, "ps5": ps5::PREFIX }))
+    Ok(serde_json::json!({ "windows": windows, "devices": devices, "obs": obs, "screens": capture::list_screens(), "xbox": xbox, "xbox_native": xbox_native::PREFIX, "ps5": ps5::PREFIX }))
 }
 
 /// A still of a whole window (all of it, whatever part of it is the source), to choose the part
@@ -2282,7 +2374,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(hotkey::plugin())
         .manage(AppState { cfg: cfg.clone(), shared: shared.clone(), saver: saver.clone(), memory: memory.clone(), update: update.clone() })
-        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, recent_lines, correct_line, health_status, set_check_mode, area_debug, check_report, export_srt, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, test_llm_server, apple_status, open_translation_settings, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_decode, ps5_set_hevc, ps5_set_read_only, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin])
+        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, recent_lines, correct_line, health_status, set_check_mode, area_debug, check_report, export_srt, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, test_llm_server, apple_status, open_translation_settings, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_decode, ps5_set_hevc, ps5_set_read_only, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin, set_tv_on, xbox_cancel_sign_in, xbox_choose, xbox_consoles, xbox_forget_console, xbox_open_link, xbox_set_controllers, xbox_set_resolution, xbox_set_sound, xbox_sign_in, xbox_sign_out, xbox_status])
         .setup(move |app| {
             if let Some(w) = app.get_webview_window("main") {
                 let test = if updater::TEST_BUILD { " (test build · updates off)" } else { "" };
@@ -2318,6 +2410,7 @@ fn main() {
                     });
                 }
             }
+            xbox_native::init(app.handle().clone(), &data_dir());
             // Xbox in the app as the source (or `--xbox`): its player opens with the app
             if xbox::available() && (cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).window_title == xbox::TITLE || args.iter().any(|a| a == "--xbox")) {
                 if let Err(e) = xbox::open(app.handle(), &data_dir()) {

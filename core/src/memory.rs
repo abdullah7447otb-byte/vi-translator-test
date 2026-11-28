@@ -58,6 +58,9 @@ pub struct Memory {
     /// translations downloaded in the background, by language (the one in use is applied; the others
     /// wait for a switch back): kept through reload, clear and language switches
     packs: HashMap<String, Vec<Entry>>,
+    /// the downloaded translations are used (VI Translator's ready translations, `Config::shared_translations`):
+    /// off, they're kept in `packs` but not in the map, and only the player's own lines are found
+    use_packs: bool,
     /// the near match found for recent texts (None: none close enough), until the memory changes
     near_cache: std::cell::RefCell<HashMap<String, Option<String>>>,
 }
@@ -286,7 +289,7 @@ impl Memory {
                 }
             }
         }
-        let mut m = Self { dir, lang: lang.to_string(), path, map: HashMap::new(), index: HashMap::new(), hits: 0, misses: 0, hit_ms: 0.0, miss_ms: 0.0, packs: HashMap::new(), near_cache: Default::default() };
+        let mut m = Self { dir, lang: lang.to_string(), path, map: HashMap::new(), index: HashMap::new(), hits: 0, misses: 0, hit_ms: 0.0, miss_ms: 0.0, packs: HashMap::new(), use_packs: true, near_cache: Default::default() };
         for (k, e) in map {
             m.insert(k, e);
         }
@@ -491,20 +494,39 @@ impl Memory {
     /// Forget the live translations (the lines log stays).
     pub fn clear(&mut self) {
         let _ = std::fs::remove_file(&self.path);
-        let packs = std::mem::take(&mut self.packs);
+        let (packs, use_packs) = (std::mem::take(&mut self.packs), self.use_packs);
         *self = Self::load(self.dir.clone(), &self.lang);
+        self.use_packs = use_packs;
         self.take_packs(packs);
     }
 
     /// Switch to another target language (its own memory, and what was downloaded for it).
     pub fn set_lang(&mut self, lang: &str) {
         if self.lang != lang {
-            let (h, m, hm, mm) = (self.hits, self.misses, self.hit_ms, self.miss_ms);
-            let packs = std::mem::take(&mut self.packs);
-            *self = Self::load(self.dir.clone(), lang);
-            (self.hits, self.misses, self.hit_ms, self.miss_ms) = (h, m, hm, mm);
-            self.take_packs(packs);
+            self.reload(lang);
         }
+    }
+
+    /// Use the downloaded translations (VI Translator's ready translations) or not. Off, only the
+    /// player's own lines (translated for them by the translator, and the maintainer's reviewed file)
+    /// are found, and every other line goes to the translator; the downloads are kept, and come back
+    /// when it's on again (taking the place of the lines translated meanwhile, as when they arrive).
+    pub fn use_shared(&mut self, on: bool) {
+        if self.use_packs != on {
+            self.use_packs = on;
+            let lang = self.lang.clone();
+            self.reload(&lang);
+        }
+    }
+
+    /// Read the memory file for `lang` again, with the downloads kept (and used, when they are).
+    fn reload(&mut self, lang: &str) {
+        let (h, m, hm, mm) = (self.hits, self.misses, self.hit_ms, self.miss_ms);
+        let (packs, use_packs) = (std::mem::take(&mut self.packs), self.use_packs);
+        *self = Self::load(self.dir.clone(), lang);
+        (self.hits, self.misses, self.hit_ms, self.miss_ms) = (h, m, hm, mm);
+        self.use_packs = use_packs;
+        self.take_packs(packs);
     }
 
     /// The target language this memory is for.
@@ -526,7 +548,8 @@ impl Memory {
     /// same English, here and in the memory file (which then keeps only what the pack doesn't have).
     pub fn set_shared(&mut self, lang: &str, entries: Vec<Entry>) {
         // (downloaded for another language: the player switched meanwhile; kept for a switch back)
-        if lang != self.lang {
+        // (or not used now: kept for when they are)
+        if lang != self.lang || !self.use_packs {
             self.packs.insert(lang.to_string(), entries);
             return;
         }
@@ -667,6 +690,36 @@ mod tests {
         assert!(m3.get("take cover", &[], &[]).is_none());
         m3.set_lang("ar");
         assert_eq!(m3.get("take cover", &[], &[]).unwrap().1, "reviewed");
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn ready_translations_off_leaves_the_pack_out_and_keeps_the_players_own_lines() {
+        let path = std::env::temp_dir().join(format!("vi-translator-noshared-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let reviewed = |en: &str, ar: &str| Entry { en: key_of(en), ar: ar.into(), source: "reviewed".into() };
+        let mut m = Memory::load(path.clone(), "ar");
+        m.put("Follow me.", &vec![("اتبعني.".into(), None)], "claude");
+        m.set_shared("ar", vec![reviewed("Take cover!", "احتمِ بساتر!")]);
+        assert_eq!(m.get("take cover", &[], &[]).unwrap().1, "reviewed");
+        // off: the pack's line isn't found (it goes to the translator), the player's own line still is
+        m.use_shared(false);
+        assert!(m.get("take cover", &[], &[]).is_none() && !m.knows("Take cover!"));
+        assert_eq!(m.get("follow me", &[], &[]).unwrap().1, "claude", "the player's own memory is kept");
+        // the translator's line is remembered, and stays through a language switch and back, and a clear's reload
+        m.put("Take cover!", &vec![("اختبئ!".into(), None)], "claude");
+        assert_eq!(m.get("take cover", &[], &[]).unwrap().1, "claude");
+        m.set_lang("hi");
+        m.set_lang("ar");
+        assert_eq!(m.get("take cover", &[], &[]).unwrap().1, "claude", "still off after a language switch");
+        // a pack downloaded while off is kept, not used
+        m.set_shared("ar", vec![reviewed("Take cover!", "احتمِ بساتر!"), reviewed("Get in.", "اركب.")]);
+        assert!(m.get("get in", &[], &[]).is_none());
+        // on again: the newest pack is back, and takes the place of the translator's line for the same English
+        m.use_shared(true);
+        assert_eq!(m.get("take cover", &[], &[]).unwrap().1, "reviewed");
+        assert_eq!(m.get("get in", &[], &[]).unwrap().1, "reviewed");
+        assert_eq!(m.get("follow me", &[], &[]).unwrap().1, "claude");
         let _ = std::fs::remove_dir_all(&path);
     }
 

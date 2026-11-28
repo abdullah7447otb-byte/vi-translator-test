@@ -34,6 +34,10 @@ pub struct PairedTv {
     pub id: String,
     pub name: String,
     pub token: String,
+    /// switched off in the app: the TV stays connected but shows nothing until switched on again
+    /// (missing in an older tvs.json: on)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub off: bool,
 }
 
 /// A connected TV, for the window (never its key).
@@ -44,6 +48,8 @@ pub struct TvInfo {
     /// showing the overlays now: its page asked for them in the last few seconds (it asks about
     /// once a second while the TV app is open)
     pub online: bool,
+    /// shows the translations (the app's switch for this TV); off, it stays connected and blank
+    pub on: bool,
 }
 
 /// A TV that asked for the overlays this recently is online.
@@ -142,7 +148,31 @@ impl Tvs {
     pub fn list(&self) -> Vec<TvInfo> {
         let seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let online = |id: &str| seen.iter().any(|(s, at)| s == id && at.elapsed() < ONLINE_FOR);
-        self.list.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().map(|t| TvInfo { id: t.id.clone(), name: t.name.clone(), online: online(&t.id) }).collect()
+        self.list.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().map(|t| TvInfo { id: t.id.clone(), name: t.name.clone(), online: online(&t.id), on: !t.off }).collect()
+    }
+
+    /// Switch a connected TV's translations on or off (kept in tvs.json). False when there's no such TV.
+    pub fn set_on(&self, id: &str, on: bool) -> bool {
+        let mut l = self.list.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(t) = l.iter_mut().find(|t| t.id == id) else { return false };
+        if t.off == !on {
+            return true;
+        }
+        t.off = !on;
+        self.save(&l);
+        true
+    }
+
+    /// Is this the key of this device's own viewer (`local_key`)?
+    pub fn is_local(&self, token: &str) -> bool {
+        let local = self.local.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        !local.is_empty() && same(local.as_bytes(), token.as_bytes())
+    }
+
+    /// Does the page with this key show the translations now? Off only for a connected TV switched
+    /// off in the app (this device's own viewer follows its own setting, not this).
+    pub fn showing(&self, token: &str) -> bool {
+        !self.list.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|t| t.off && same(t.token.as_bytes(), token.as_bytes()))
     }
 
     /// The connected TV with this key asked for its page or the overlays now (for `TvInfo::online`).
@@ -153,6 +183,7 @@ impl Tvs {
         seen.push((id, Instant::now()));
     }
 
+    /// (the same TV connected again replaces its old key, and shows the translations again)
     pub(crate) fn add(&self, tv: PairedTv) {
         let mut l = self.list.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         l.retain(|t| t.id != tv.id);
@@ -217,33 +248,85 @@ fn hello(c: &reqwest::blocking::Client, ip: Ipv4Addr) -> Option<(String, Hello)>
     (h.app == "vi-translator-tv" && !h.id.is_empty()).then_some((address, h))
 }
 
-/// The TVs waiting to be connected on this PC's network (its /24): every address at once, a
+/// Addresses asked at most in one search (a /22's hosts, and a little more).
+const MAX_SCAN: usize = 1024;
+/// Addresses asked at once, at most (each a TCP connection: the iPhone allows an app 256 files).
+const MAX_AT_ONCE: usize = 128;
+
+/// The other addresses on `me`'s network worth asking, nearest first: its /24 (its whole /24 when
+/// the network is smaller, as a home router's always is), then, on a wider network, the rest of
+/// it up to a /22 around `me` (1022 hosts). Never the network's own address or its broadcast one.
+pub(crate) fn hosts_around(me: Ipv4Addr, prefix: u8) -> (Vec<Ipv4Addr>, Vec<Ipv4Addr>) {
+    let ip = u32::from(me);
+    let (net, broadcast) = (ip & crate::net::mask(prefix), ip | !crate::net::mask(prefix));
+    let ok = |a: u32| a != ip && a != net && a != broadcast;
+    let base24 = ip & crate::net::mask(24);
+    if prefix >= 24 {
+        let near = (1..=254u32).map(|i| base24 | i).filter(|a| *a != ip).map(Ipv4Addr::from).collect();
+        return (near, Vec::new());
+    }
+    let near = (0..=255u32).map(|i| base24 | i).filter(|a| ok(*a)).map(Ipv4Addr::from).collect();
+    let block = ip & crate::net::mask(prefix.max(22));
+    let mut wider: Vec<u32> = (0..(1u32 << (32 - u32::from(prefix.max(22))))).map(|i| block | i).filter(|a| a & crate::net::mask(24) != base24 && ok(*a)).collect();
+    wider.sort_by_key(|a| a.abs_diff(ip));
+    (near, wider.into_iter().map(Ipv4Addr::from).collect())
+}
+
+/// The addresses to ask on all of `mine` (best first, see `net::order_lan`): every network's /24
+/// first, then the wider networks' other hosts, once each, at most `MAX_SCAN`.
+pub(crate) fn scan_list(mine: &[crate::net::LanAddr]) -> Vec<Ipv4Addr> {
+    let around: Vec<_> = mine.iter().map(|a| hosts_around(a.ip, a.prefix)).collect();
+    let own: Vec<Ipv4Addr> = mine.iter().map(|a| a.ip).collect();
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for ip in around.iter().flat_map(|(near, _)| near).chain(around.iter().flat_map(|(_, wider)| wider)) {
+        if out.len() >= MAX_SCAN {
+            break;
+        }
+        if !own.contains(ip) && seen.insert(*ip) {
+            out.push(*ip);
+        }
+    }
+    out
+}
+
+/// The TVs waiting to be connected on this device's home networks (each Wi-Fi/Ethernet network
+/// it's on, not only the one reaching the internet: see `scan_list`): every address at once, a
 /// couple of seconds in all.
 pub fn find(tvs: &Tvs) -> Vec<FoundTv> {
-    let Some(mine) = crate::net::lan_ip().and_then(|ip| ip.parse::<Ipv4Addr>().ok()) else { return Vec::new() };
+    let mut mine = crate::net::lan_addrs();
+    if mine.is_empty() {
+        // (the addresses couldn't be listed: the one reaching the internet, as a /24)
+        let Some(ip) = crate::net::lan_ip().and_then(|ip| ip.parse::<Ipv4Addr>().ok()) else { return Vec::new() };
+        mine.push(crate::net::LanAddr { name: String::new(), ip, prefix: 24 });
+    }
     let Some(c) = client(Duration::from_millis(1500)) else { return Vec::new() };
-    let [a, b, n, me] = mine.octets();
+    let hosts = scan_list(&mine);
+    // 8 addresses one after the other per thread, as many threads as that takes (at most MAX_AT_ONCE)
+    let per = hosts.len().div_ceil(MAX_AT_ONCE).max(8);
     let found = Mutex::new(Vec::new());
-    let others: Vec<u8> = (1..=254u8).filter(|i| *i != me).collect();
     std::thread::scope(|s| {
-        for chunk in others.chunks(8) {
+        for chunk in hosts.chunks(per) {
             let (c, found) = (&c, &found);
             s.spawn(move || {
-                for i in chunk {
-                    if let Some((address, h)) = hello(c, Ipv4Addr::new(a, b, n, *i)) {
-                        found.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((address, h));
+                for ip in chunk {
+                    if let Some((address, h)) = hello(c, *ip) {
+                        found.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((*ip, address, h));
                     }
                 }
             });
         }
     });
     let connected: Vec<String> = tvs.list().into_iter().map(|t| t.id).collect();
-    let mut out: Vec<FoundTv> = found
-        .into_inner()
-        .unwrap()
-        .into_iter()
-        .map(|(address, h)| FoundTv { connected: connected.contains(&h.id), address, id: h.id, name: h.name })
-        .collect();
+    let mut found = found.into_inner().unwrap();
+    found.sort_by_key(|(ip, _, _)| hosts.iter().position(|h| h == ip));
+    let mut out: Vec<FoundTv> = Vec::new();
+    for (_, address, h) in found {
+        // (a TV on two of the networks: once, at its address on the best one)
+        if !out.iter().any(|f| f.id == h.id) {
+            out.push(FoundTv { connected: connected.contains(&h.id), address, id: h.id, name: h.name });
+        }
+    }
     for (id, name) in tvs.offered() {
         if !out.iter().any(|f| f.id == id) {
             out.push(FoundTv { connected: connected.contains(&id), address: format!("{OFFERED}{id}"), id, name });
@@ -306,7 +389,7 @@ pub fn pair(tvs: &Tvs, address: &str, code: &str, pc: &str, pc_name: &str) -> Re
         200 => {
             let p: Paired = r.json().map_err(|_| PairError::NoAnswer)?;
             let name = if p.name.trim().is_empty() { "TV".to_string() } else { p.name.chars().take(60).collect() };
-            tvs.add(PairedTv { id: p.id.chars().take(64).collect(), name: name.clone(), token });
+            tvs.add(PairedTv { id: p.id.chars().take(64).collect(), name: name.clone(), token, off: false });
             Ok(name)
         }
         403 => Err(PairError::WrongCode),
@@ -372,7 +455,7 @@ impl Tvs {
             return (403, "{}".into());
         }
         wrong.retain(|(id, _)| *id != o.id);
-        self.add(PairedTv { id: o.id.clone(), name: name.clone(), token: p.token.clone() });
+        self.add(PairedTv { id: o.id.clone(), name: name.clone(), token: p.token.clone(), off: false });
         self.offered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|x| x.id != o.id);
         p.result = Some(Ok(name));
         (200, serde_json::json!({ "pc_name": p.pc_name, "token": p.token }).to_string())
@@ -420,6 +503,66 @@ pub fn pc_name() -> String {
 mod tests {
     use super::*;
 
+    fn ip(s: &str) -> Ipv4Addr {
+        s.parse().unwrap()
+    }
+
+    fn lan(name: &str, a: &str, prefix: u8) -> crate::net::LanAddr {
+        crate::net::LanAddr { name: name.into(), ip: ip(a), prefix }
+    }
+
+    #[test]
+    fn a_home_network_is_its_24() {
+        let (near, wider) = hosts_around(ip("192.168.1.30"), 24);
+        assert_eq!(near.len(), 253);
+        assert!(wider.is_empty());
+        assert_eq!((near[0], near[252]), (ip("192.168.1.1"), ip("192.168.1.254")));
+        assert!(!near.contains(&ip("192.168.1.30")));
+        // a smaller network (a phone's hotspot, /28): its whole /24 still, as before
+        let (near, wider) = hosts_around(ip("172.20.10.4"), 28);
+        assert_eq!((near.len(), wider.len()), (253, 0));
+    }
+
+    #[test]
+    fn a_wider_network_is_asked_up_to_a_22() {
+        // a /23: both /24s, but not the network's own address or its broadcast one
+        let (near, wider) = hosts_around(ip("192.168.0.20"), 23);
+        assert_eq!((near.len(), wider.len()), (254, 255));
+        assert!(near.contains(&ip("192.168.0.255")) && !near.contains(&ip("192.168.0.0")) && !near.contains(&ip("192.168.0.20")));
+        assert!(wider.contains(&ip("192.168.1.0")) && !wider.contains(&ip("192.168.1.255")));
+        assert!(wider.iter().all(|a| a.octets()[2] == 1));
+        // a /22: 1022 hosts in all, the nearest first
+        let (near, wider) = hosts_around(ip("10.0.5.9"), 22);
+        assert_eq!(near.len() + wider.len(), 1021);
+        assert_eq!(wider[0], ip("10.0.4.255"), "next to 10.0.5.x");
+        assert!(wider.iter().all(|a| (4..=7).contains(&a.octets()[2])));
+        // a /16: the /22 around the address, nothing further
+        let (near, wider) = hosts_around(ip("10.1.200.7"), 16);
+        assert_eq!(near.len() + wider.len(), 1023);
+        assert!(near.iter().chain(&wider).all(|a| (200..=203).contains(&a.octets()[2]) && a.octets()[1] == 1));
+        // the /22 at the start of a /8: not its network address
+        let (near, wider) = hosts_around(ip("10.0.0.5"), 8);
+        assert!(!near.contains(&ip("10.0.0.0")) && near.contains(&ip("10.0.0.255")) && wider.contains(&ip("10.0.3.255")));
+    }
+
+    #[test]
+    fn every_home_network_is_asked_within_bounds() {
+        // Wi-Fi and a second network: both /24s, the best one first
+        let both = scan_list(&[lan("wlan0", "192.168.1.30", 24), lan("eth0", "192.168.50.2", 24)]);
+        assert_eq!(both.len(), 506);
+        assert_eq!((both[0], both[253]), (ip("192.168.1.1"), ip("192.168.50.1")));
+        assert!(!both.contains(&ip("192.168.1.30")) && !both.contains(&ip("192.168.50.2")));
+        // two addresses on one network: asked once, neither of them
+        let one = scan_list(&[lan("wlan0", "192.168.1.30", 24), lan("wlan0", "192.168.1.31", 24)]);
+        assert_eq!(one.len(), 252);
+        // two wide networks: every /24 before the rest, and never more than MAX_SCAN
+        let wide = scan_list(&[lan("eth0", "10.0.5.9", 16), lan("wlan0", "172.16.8.3", 20)]);
+        assert_eq!(wide.len(), MAX_SCAN);
+        assert_eq!((wide[0], wide[255]), (ip("10.0.5.0"), ip("172.16.8.0")), "the second /24 right after the first");
+        assert!(wide.contains(&ip("172.16.8.255")));
+        assert!(scan_list(&[]).is_empty());
+    }
+
     #[test]
     fn keys_are_kept_and_removed() {
         let dir = std::env::temp_dir().join(format!("vit-tvs-{}", uuid::Uuid::new_v4().simple()));
@@ -428,15 +571,23 @@ mod tests {
         let tvs = Tvs::default();
         tvs.load(path.clone());
         assert!(!tvs.allowed("") && !tvs.allowed("x"));
-        tvs.add(PairedTv { id: "tv1".into(), name: "Living room".into(), token: "k1".into() });
-        tvs.add(PairedTv { id: "tv1".into(), name: "Living room".into(), token: "k2".into() }); // connected again
+        tvs.add(PairedTv { id: "tv1".into(), name: "Living room".into(), token: "k1".into(), off: false });
+        tvs.add(PairedTv { id: "tv1".into(), name: "Living room".into(), token: "k2".into(), off: false }); // connected again
         assert!(!tvs.allowed("k1") && tvs.allowed("k2"));
         let again = Tvs::default();
         again.load(path.clone());
         assert!(again.allowed("k2"), "kept in the file");
         assert_eq!(again.list().len(), 1);
         assert!(again.remove_token("k2") && !again.allowed("k2"));
-        tvs.add(PairedTv { id: "tv2".into(), name: "Bedroom".into(), token: "k3".into() });
+        // switched off: connected still, its page blank; on again, and kept in the file
+        assert!(tvs.list()[0].on && tvs.showing("k2"));
+        assert!(tvs.set_on("tv1", false) && !tvs.list()[0].on && !tvs.showing("k2") && tvs.allowed("k2"));
+        let again = Tvs::default();
+        again.load(path.clone());
+        assert!(!again.list()[0].on && !again.showing("k2"));
+        assert!(!tvs.set_on("nope", true) && tvs.showing("anything-else"));
+        assert!(tvs.set_on("tv1", true) && tvs.showing("k2"));
+        tvs.add(PairedTv { id: "tv2".into(), name: "Bedroom".into(), token: "k3".into(), off: false });
         assert!(tvs.remove_id("tv2") && !tvs.allowed("k3"));
         let _ = std::fs::remove_dir_all(dir);
     }

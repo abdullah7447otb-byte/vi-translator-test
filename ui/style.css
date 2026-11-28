@@ -282,9 +282,11 @@ html.fullscreen .fs-btn .fs-off { display: block; }
 /* full screen: only the picture (with its translations), on black, filling the screen */
 html.fullscreen body[data-mode="play"] .viewport { position: fixed; inset: 0; z-index: 100; aspect-ratio: auto;
   border: 0; border-radius: 0; box-shadow: none; background: #000; }
-html.fullscreen .fs-btn { opacity: 0; }
-html.fullscreen .viewport:hover .fs-btn { opacity: .75; }
+html.fullscreen .fs-btn { opacity: .75; }
 html.fullscreen .fs-btn:hover { opacity: 1; }
+/* full screen, the mouse still for a moment: no pointer, no buttons (they come back when it moves) */
+html.fullscreen.fs-idle .fs-btn { opacity: 0; pointer-events: none; }
+html.fullscreen.fs-idle, html.fullscreen.fs-idle * { cursor: none !important; }
 .layer { position: absolute; inset: 0; }
 .empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; color: #a193b5; gap: 6px; padding: 16px; }
 .empty-title { color: #f1ebf8; font-size: 18px; font-weight: 600; }
@@ -360,6 +362,10 @@ body[data-mode="play"] .log-head { padding: 12px 22px; }
 .glance .s:empty { display: none; }
 .glance .link { float: none; flex: none; font-weight: 600; font-size: 12.5px; padding: 2px 0; }
 .glance .ok { color: var(--ok); } .glance .warn { color: var(--warn); }
+/* Play: the outputs, each with its own switch */
+.out-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.out-row { font-weight: 600; font-size: 13.5px; min-width: 0; }
+.out-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* ------------------------------------------------------------------ controls */
 
@@ -372,6 +378,12 @@ select, input[type="text"], input[type="password"], input[type="number"] {
   height: var(--ctl-h); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm);
   padding: 0 11px; width: 100%; min-width: 0; font-size: 13.5px; transition: border-color .15s, box-shadow .15s; }
 input[readonly] { color: var(--muted); }
+/* the player's notes for the language models: several lines, same look as the text fields */
+.field textarea { background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm); color: inherit;
+  padding: 8px 11px; width: 100%; min-width: 0; font: inherit; font-size: 13.5px; line-height: 1.5; resize: vertical;
+  transition: border-color .15s, box-shadow .15s; }
+.field textarea:hover { border-color: var(--panel-3); }
+.field textarea:focus { outline: none; border-color: var(--accent-ui); box-shadow: 0 0 0 3px var(--accent-soft); }
 select:hover, input[type="text"]:hover, input[type="password"]:hover, input[type="number"]:hover { border-color: var(--panel-3); }
 select:focus, input[type="text"]:focus, input[type="password"]:focus, input[type="number"]:focus { outline: none; border-color: var(--accent-ui);
   box-shadow: 0 0 0 3px var(--accent-soft); }
@@ -424,6 +436,8 @@ input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; margin:
 .tv-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .tv-code { width: 9.5em; height: var(--ctl-h); letter-spacing: .25em; text-align: center; font-variant-numeric: tabular-nums; }
 .tv-msg { flex-basis: 100%; }
+.tv-addr { flex: 1 1 9em; min-width: 0; height: var(--ctl-h); }
+#tv-type { margin-top: 8px; }
 .tv-msg:empty { display: none; }
 .tv-msg.err { color: var(--err); }/* OBS canvas size under the Browser Source address */
 .canvas-size { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-top: 10px; font-size: 13px; }
@@ -554,6 +568,14 @@ dialog.part .part-msg { font-size: 13px; color: var(--muted); min-height: 18px; 
   text-shadow: 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000, 0 0 3px #000; }
 /* PS5 in the app: the linking steps (as the phone app's) and the linked PS5 */
 #ps5-panel { margin-top: 10px; }
+/* Xbox: the player (the app's own or Microsoft's web player) as two joined buttons, and the sign-in code */
+#xbox-panel { margin-top: 10px; }
+#xbox-panel > .field:first-child { margin-top: 0; }
+.segs { display: flex; margin-top: 6px; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.seg { flex: 1; padding: 8px 10px; border: 0; background: var(--panel); color: var(--text); font: inherit; cursor: pointer; }
+.seg + .seg { border-inline-start: 1px solid var(--line); }
+.seg.on { background: var(--accent-ui); color: #fff; font-weight: 600; }
+.xbox-code { padding: 10px 0; border-radius: var(--radius-sm); background: var(--panel-2); user-select: all; }
 .ps5-step { margin-top: 10px; padding: 12px 14px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--line); }
 .ps5-step.open { border: 1.5px solid var(--accent-ui); }
 .ps5-step.off { opacity: .6; }
@@ -600,3 +622,7 @@ dialog.part .part-msg { font-size: 13px; color: var(--muted); min-height: 18px; 
 .field label.check { display: flex; align-items: center; gap: 8px; margin-bottom: 0; font-size: 13.5px; font-weight: 500; color: var(--text); }
 /* a checkbox under a note: the same gap as between the note and what is above it */
 .tab > .callout + .check, .tab > .callout + label.check { margin-top: 12px; }
+
+/* Xbox: what to set on the console once */
+.xbox-once ul { margin: 6px 0 0; padding-inline-start: 18px; }
+.xbox-once li { margin-top: 3px; }

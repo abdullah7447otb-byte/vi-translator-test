@@ -1008,6 +1008,8 @@ impl Reader {
         let (interval_ms, stable_ms, clear_after_ms) = c.timing();
         // (no more often than the performance mode allows now)
         let interval_ms = interval_ms.max(crate::perf::READ_FLOOR_MS.load(std::sync::atomic::Ordering::Relaxed));
+        // (VI Translator's ready translations used or not: the memory takes them in or leaves them out)
+        ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).use_shared(c.shared_translations);
         if c.target_lang != last_lang {
             // another language: everything shown and cached is in the old one
             last_lang = c.target_lang.clone();
@@ -1059,7 +1061,9 @@ impl Reader {
             // No picture: once that has lasted as long as an English line may blink out, what was up
             // goes, as if the game took it away (else a page and the last line stay on the OBS page).
             let since = *no_frame_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= Duration::from_millis(clear_after_ms) {
+            // (a stream from a console drops frames now and then: a gap shorter than the floor isn't the
+            // game taking its text away)
+            if since.elapsed() >= Duration::from_millis(clear_after_ms.max(DROPOUT_FLOOR_MS)) {
                 if screen.is_some() {
                     hide_screen(&*ctx.sink, &ctx.live, &latest, &mut screen);
                 }
@@ -1101,14 +1105,18 @@ impl Reader {
                 // the script's pages whose switch is on in the profile
                 let script_pages: Vec<String> = pages
                     .as_ref()
-                    .map(|p| p.list.iter().filter(|i| p.switch_on(&c.profile_opts, &i.option)).map(|i| i.id.clone()).collect())
+                    .map(|p| p.list.iter().filter(|i| p.page_on(&c.profile_opts, i)).map(|i| i.id.clone()).collect())
                     .unwrap_or_default();
                 let screens_on = !script_pages.is_empty();
+                // (the parts of a page the player switches one by one: what its script reads, `vi.on`)
+                if let Some(p) = &pages {
+                    p.set_switches(&c.profile_opts);
+                }
                 let mut found: Option<screens::ScreenLayout> = None;
                 // A page on screen whose switch was just turned off (Game pages) goes now, not when the game
                 // closes it.
                 if let Some(old) = &screen {
-                    let on = pages.as_ref().and_then(|p| p.info(&old.id).map(|i| p.switch_on(&c.profile_opts, &i.option)));
+                    let on = pages.as_ref().and_then(|p| p.info(&old.id).map(|i| p.page_on(&c.profile_opts, i)));
                     // (a page its script no longer has goes too)
                     if on != Some(true) {
                         hide_screen(&*ctx.sink, &ctx.live, &latest, &mut screen);
@@ -1801,7 +1809,7 @@ impl Reader {
                     None => {
                         // GTA VI's message bubble at the bottom right (see chat.rs): its translation in a
                         // bubble like it, above it. Read again only when its box changes.
-                        let chat = if c.phone_text() { crate::chat::find_bubble(&f.rgba, f.w, f.h) } else { None };
+                        let chat = if c.phone_bubble() { crate::chat::find_bubble(&f.rgba, f.w, f.h) } else { None };
                         let bubble = chat.and_then(|r| {
                             let frac_r = screens::Rect { x: r.0 as f64 / f.w as f64, y: r.1 as f64 / f.h as f64, w: r.2 as f64 / f.w as f64, h: r.3 as f64 / f.h as f64 };
                             let sig = screens::region_sig(f, &frac_r);
@@ -1929,7 +1937,7 @@ impl Reader {
                 // (when the English counts as gone: lines that stack up come and go quickly; an
                 // instruction stays up and is read over every kind of ground, sunlit gravel missing it
                 // for a moment now and then: gone after 350 ms at the least, not blinking)
-                let clear_ms = if stacks { clear_after_ms } else { clear_after_ms.max(350) };
+                let clear_ms = clear_ms_for(stacks, clear_after_ms);
                 // (read here, from the frame: grown; the host reads the area as it is)
                 let own_read = matches!((&frame, &ocr_now), (Some(_), Some(_)));
                 let grown;
@@ -2145,7 +2153,7 @@ impl Reader {
                         // (in an area with reviewed translations only — the instructions — only a line with a
                         // reviewed one, as read or with its button icons: a line the memory knew from the translator
                         // left an empty black box up, nothing ever coming to fill it)
-                        let reviewed_only = fx.reviewed_only(&area.id);
+                        let reviewed_only = c.reviewed_only(&area.id);
                         let iconed = if reviewed_only { crop.as_ref().map(|cr| ocr::text_with_icons(cr, &words).0).unwrap_or_default() } else { String::new() };
                         let at_hand = || {
                             let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2248,7 +2256,7 @@ impl Reader {
                     // what's up stays until its English counts as gone)
                     // (and as read with its button icons: "Hold L2 to interact with Andrew" read plain is not the
                     // reviewed "Hold ⟦1⟧ to interact with Andrew"; no instruction with a button was translated)
-                    let reviewed_only = c.fx(&area.id).reviewed_only(&area.id);
+                    let reviewed_only = c.reviewed_only(&area.id);
                     let allowed = !reviewed_only || {
                         let iconed = crop.as_ref().map(|cr| ocr::text_with_icons(cr, &words).0).unwrap_or_default();
                         let m = ctx.memory.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3116,8 +3124,29 @@ fn hide_screen(sink: &dyn Sink, shared: &Live, latest: &Mutex<HashMap<String, u6
     crate::screens::steady_reset();
 }
 
+/// Shortest time a line may be missed before it counts as gone (ms). A subtitle drops out of a reading
+/// now and then (bright ground behind it, the text fading, a frame the stream dropped); ended after
+/// 100 ms, it came back as a new line that had to settle again, and a short subtitle could be gone
+/// before its translation, which the memory had, was shown.
+pub(crate) const DROPOUT_FLOOR_MS: u64 = 250;
+
+/// When an area's English counts as gone: lines that stack up after the dropout floor at least; an
+/// instruction stays up and is read over every kind of ground: 350 ms at least.
+pub(crate) fn clear_ms_for(stacks: bool, clear_after_ms: u64) -> u64 {
+    if stacks { clear_after_ms.max(DROPOUT_FLOOR_MS) } else { clear_after_ms.max(350) }
+}
+
 #[cfg(test)]
 mod english_color_tests {
+    #[test]
+    fn a_short_dropout_never_ends_a_line() {
+        // the old default, 100 ms: a subtitle missed for a moment stays up
+        assert_eq!(super::clear_ms_for(true, 100), super::DROPOUT_FLOOR_MS);
+        assert_eq!(super::clear_ms_for(true, 300), 300);
+        assert_eq!(super::clear_ms_for(false, 100), 350);
+        assert_eq!(super::clear_ms_for(false, 900), 900);
+    }
+
     use super::*;
 
     #[test]
