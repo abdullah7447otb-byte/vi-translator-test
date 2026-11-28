@@ -153,7 +153,7 @@ I18N.add("ar", {
   "Text color": "لون النص",
   "Color highlighted words like the game does": "تلوين الكلمات المميزة كما تفعل اللعبة",
   "Box color": "لون المربع",
-  "Box opacity": "شفافية المربع",
+  "Box opacity": "تعتيم المربع (1 = غير شفاف)",
   "Box padding": "الهامش الداخلي للمربع",
   "Box corner roundness": "استدارة زوايا المربع",
   "Text outline color": "لون إطار النص",
