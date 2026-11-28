@@ -1483,10 +1483,14 @@ impl Reader {
                         *ctx.live.screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = serde_json::to_value(&layout).ok();
                         ctx.sink.emit("screen", serde_json::to_value(Some(&layout)).unwrap_or_default());
                         ctx.live.screen_active.store(true, std::sync::atomic::Ordering::Relaxed);
+                        let beside = pages.as_ref().and_then(|p| p.info(&layout.id)).is_some_and(|i| i.beside);
+                        ctx.live.screen_beside.store(beside, std::sync::atomic::Ordering::Relaxed);
                         screen = Some(layout);
                     }
                 }
-                if screen.is_some() {
+                // (a card beside the game: the areas are read as ever, below)
+                let beside = ctx.live.screen_beside.load(std::sync::atomic::Ordering::Relaxed);
+                if screen.is_some() && !beside {
                     // The pause menu is checked on every new frame (its checks are tiny), so its Arabic
                     // goes the moment the English does: pace by the capture rate, not the read interval.
                     let pause = screen.is_some();
@@ -1933,7 +1937,9 @@ impl Reader {
             });
             for area_cfg in c.areas.iter().filter(|a| a.enabled) {
                 // (an area whose lines stack up is read up to STACK_H above it too: see bottom_stack)
-                let stacks = c.fx(&area_cfg.id).stacks(&area_cfg.id);
+                // (not an area of the game's own box: its text sits at the top of the area, and read from the
+                // bottom line up it was never read at all — "Locked vehicles will need to be hotwired…")
+                let stacks = c.fx(&area_cfg.id).stacks(&area_cfg.id) && !area_cfg.needs_box;
                 // (when the English counts as gone: lines that stack up come and go quickly; an
                 // instruction stays up and is read over every kind of ground, sunlit gravel missing it
                 // for a moment now and then: gone after 350 ms at the least, not blinking)
@@ -3117,6 +3123,7 @@ fn hide_screen(sink: &dyn Sink, shared: &Live, latest: &Mutex<HashMap<String, u6
     // its reason may still be with the translator: translate_loop drops it when it comes
     latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(SCREEN_REASON);
     shared.screen_active.store(false, std::sync::atomic::Ordering::Relaxed);
+    shared.screen_beside.store(false, std::sync::atomic::Ordering::Relaxed);
     *shared.screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     shared.screen_private.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
     *shared.screen_reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = serde_json::json!([]);

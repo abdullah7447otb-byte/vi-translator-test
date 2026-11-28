@@ -231,6 +231,9 @@ pub struct PageInfo {
     pub follow: String,
     pub content: Option<crate::screens::Rect>,
     pub buttons: Option<crate::screens::Rect>,
+    /// `beside: true`: a small card shown beside the game (a scanned car's details), not a page over it —
+    /// the read areas (subtitles…) go on while it's up.
+    pub beside: bool,
 }
 
 /// A switch a script declares for its pages (shown in Game pages).
@@ -720,6 +723,7 @@ globalThis.__list = () => JSON.stringify([...__pages.values()].map((p) => ({
   id: p.id, option: p.option || "", any_of: Array.isArray(p.anyOf) ? p.anyOf.filter((x) => typeof x === "string") : [],
   hold_ms: (p.hold && p.hold.ms) || 0, end_when_dark: !!(p.hold && p.hold.endWhenDark), reread_ms: (p.hold && p.hold.rereadMs) || 0,
   follow: (p.hold && p.hold.follow) || "", content: (p.hold && p.hold.content) || null, buttons: (p.hold && p.hold.buttons) || null,
+  beside: !!p.beside,
 })));
 globalThis.__option_list = () => JSON.stringify([...__options.values()]);
 globalThis.__has_recognizer = () => !!__recognizer;

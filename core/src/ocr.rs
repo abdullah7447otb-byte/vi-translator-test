@@ -203,8 +203,7 @@ impl Ocr {
     pub fn recognize_with(&self, crop: &Crop, mode: Prep) -> Result<Vec<Word>> {
         let (bgra, w, h, back) = Self::preprocess(crop, mode, self.engine.max_dim());
         Ok(without_repeated_lines(
-            self.engine
-                .read(&bgra, w, h)?
+            words_placed_by_ink(&bgra, w, h, self.engine.read(&bgra, w, h)?)
                 .into_iter()
                 .map(|r| Word {
                     line: r.line,
@@ -214,6 +213,154 @@ impl Ocr {
                 .collect(),
         ))
     }
+}
+
+/// Each word of a line where it is in the picture, when the engine gave its words no places of their own.
+/// Apple's Vision can answer every word of a line with the whole line's box (its `boundingBoxForRange` on
+/// some lines): then "JASON & LUCIA  MAP  BRIEF  PROGRESS", four tabs far apart, are four words in one
+/// place, and a page can't tell its tabs apart. Such a line's words get the runs of ink across the line's
+/// box (the prepared image: dark letters on light), the smallest gaps joined until there are as many runs
+/// as words; a line whose ink can't be cut that way keeps what the engine gave.
+pub fn words_placed_by_ink(bgra: &[u8], w: u32, h: u32, mut words: Vec<RawWord>) -> Vec<RawWord> {
+    let mut lines: std::collections::BTreeMap<u32, Vec<usize>> = std::collections::BTreeMap::new();
+    for (i, rw) in words.iter().enumerate() {
+        lines.entry(rw.line).or_default().push(i);
+    }
+    for idx in lines.values() {
+        if idx.len() < 2 {
+            continue;
+        }
+        // (one place for them all: every word's box overlapping the next one's by more than half)
+        let same_place = idx.windows(2).all(|p| {
+            let (a, b) = (&words[p[0]], &words[p[1]]);
+            let o = (a.x + a.w).min(b.x + b.w) - a.x.max(b.x);
+            o > a.w.min(b.w) * 0.5
+        });
+        if !same_place {
+            continue;
+        }
+        let x0 = idx.iter().map(|&i| words[i].x).fold(f64::MAX, f64::min).max(0.0) as u32;
+        let x1 = (idx.iter().map(|&i| words[i].x + words[i].w).fold(0.0, f64::max) as u32).min(w);
+        let y0 = idx.iter().map(|&i| words[i].y).fold(f64::MAX, f64::min).max(0.0) as u32;
+        let y1 = (idx.iter().map(|&i| words[i].y + words[i].h).fold(0.0, f64::max) as u32).min(h);
+        if x1 <= x0 + 2 || y1 <= y0 + 2 {
+            continue;
+        }
+        let dark = |x: u32, y: u32| bgra.get(((y * w + x) * 4) as usize).is_some_and(|&v| v < 128);
+        // (a rule across the line, the tab row's underline, is no letter: a row with one unbroken stretch of
+        // ink longer than three of the line's heights is left out — no letter, nor a word, is that long a stroke)
+        let longest = |y: u32| {
+            let (mut best, mut run) = (0u32, 0u32);
+            for x in x0..x1 {
+                run = if dark(x, y) { run + 1 } else { 0 };
+                best = best.max(run);
+            }
+            best
+        };
+        let rule_len = (y1 - y0) * 3;
+        let text_rows: Vec<u32> = (y0..y1).filter(|&y| longest(y) <= rule_len).collect();
+        // the columns with ink (a pixel darker than the middle grey)
+        let inked: Vec<bool> = (x0..x1).map(|x| text_rows.iter().any(|&y| dark(x, y))).collect();
+        let mut runs: Vec<(u32, u32)> = Vec::new();
+        for (i, &ink) in inked.iter().enumerate() {
+            let x = x0 + i as u32;
+            match (ink, runs.last_mut()) {
+                (true, Some(r)) if r.1 == x => r.1 = x + 1,
+                (true, _) => runs.push((x, x + 1)),
+                _ => {}
+            }
+        }
+        // letters into words: gaps under a quarter of the line's height joined
+        let lh = (y1 - y0) as f64;
+        let mut clusters: Vec<(u32, u32)> = Vec::new();
+        for r in runs {
+            match clusters.last_mut() {
+                Some(c) if ((r.0 - c.1) as f64) < lh * 0.25 => c.1 = r.1,
+                _ => clusters.push(r),
+            }
+        }
+        let mut by_x = idx.clone();
+        by_x.sort_by(|a, b| words[*a].x.total_cmp(&words[*b].x).then(a.cmp(b)));
+        let chars: Vec<f64> = by_x.iter().map(|&i| words[i].text.chars().count().max(1) as f64).collect();
+        if let Some(places) = align_words(&chars, &clusters) {
+            for (&i, p) in by_x.iter().zip(places) {
+                words[i].x = p.0;
+                words[i].w = p.1;
+                // (and the rows its ink is on: the engine's box can be the whole line's, padding and all)
+                let (a, b) = ((p.0.max(0.0) as u32).min(w), ((p.0 + p.1).ceil() as u32).min(w));
+                let rows: Vec<u32> = text_rows.iter().copied().filter(|&y| (a..b).any(|x| dark(x, y))).collect();
+                if let (Some(&top), Some(&bottom)) = (rows.first(), rows.last()) {
+                    if bottom > top {
+                        words[i].y = top as f64;
+                        words[i].h = (bottom + 1 - top) as f64;
+                    }
+                }
+            }
+        }
+    }
+    words
+}
+
+/// Words (their letter counts, left to right) onto runs of ink (left to right): each run is one word, a
+/// few words side by side (split by their letters), or ink no word was read from (an icon), left out. The
+/// match whose widths best fit the letters (one letter's width from all the ink and all the letters); None
+/// when even the best fits badly. Each word's x and width.
+fn align_words(chars: &[f64], runs: &[(u32, u32)]) -> Option<Vec<(f64, f64)>> {
+    let (n, m) = (chars.len(), runs.len());
+    if n == 0 || m == 0 {
+        return None;
+    }
+    let ink: f64 = runs.iter().map(|r| (r.1 - r.0) as f64).sum();
+    let letter = ink / chars.iter().sum::<f64>().max(1.0);
+    const SKIP: f64 = 0.9;
+    const MAX_GROUP: usize = 3;
+    let fit = |words: &[f64], r: (u32, u32)| {
+        let want = (words.iter().sum::<f64>() + (words.len() - 1) as f64) * letter;
+        (((r.1 - r.0) as f64).max(1.0) / want.max(1.0)).ln().abs()
+    };
+    // cost[i][j]: the first i words on the first j runs; from: how
+    let mut cost = vec![vec![f64::INFINITY; m + 1]; n + 1];
+    let mut from = vec![vec![(0usize, 0usize); m + 1]; n + 1];
+    cost[0][0] = 0.0;
+    for j in 1..=m {
+        cost[0][j] = cost[0][j - 1] + SKIP;
+        from[0][j] = (0, j - 1);
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let mut best = (cost[i][j - 1] + SKIP, (i, j - 1));
+            for k in 1..=MAX_GROUP.min(i) {
+                let c = cost[i - k][j - 1] + fit(&chars[i - k..i], runs[j - 1]);
+                if c < best.0 {
+                    best = (c, (i - k, j - 1));
+                }
+            }
+            cost[i][j] = best.0;
+            from[i][j] = best.1;
+        }
+    }
+    if cost[n][m] / n as f64 > 0.6 {
+        return None;
+    }
+    let mut out = vec![(0.0, 0.0); n];
+    let (mut i, mut j) = (n, m);
+    while i > 0 {
+        let (pi, pj) = from[i][j];
+        if pi < i {
+            // words pi..i on run pj, shared out by their letters
+            let r = runs[pj];
+            let span = (r.1 - r.0) as f64;
+            let total = chars[pi..i].iter().sum::<f64>() + (i - pi - 1) as f64;
+            let mut x = r.0 as f64;
+            for q in pi..i {
+                let ww = span * chars[q] / total;
+                out[q] = (x, ww);
+                x += ww + span / total;
+            }
+        }
+        (i, j) = (pi, pj);
+    }
+    Some(out)
 }
 
 /// A line the OCR gave twice (Apple's Vision in its 2026 models returns some lines twice: once on their
@@ -2301,5 +2448,70 @@ mod verb_icon_tests {
         assert_eq!(text_with_icons(&crop, &words).0, "Use it now.");
         let words = vec![wd("Use", 10, 40), wd("C4", 300, 24), wd("here.", 340, 50)];
         assert_eq!(text_with_icons(&crop, &words).0, "Use C4 here.");
+    }
+}
+
+#[cfg(test)]
+mod ink_place_tests {
+    use super::*;
+
+    fn blank(w: u32, h: u32) -> Vec<u8> {
+        vec![255u8; (w * h * 4) as usize]
+    }
+    fn block(img: &mut [u8], w: u32, x0: u32, x1: u32, y0: u32, y1: u32) {
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = ((y * w + x) * 4) as usize;
+                img[i..i + 3].copy_from_slice(&[0, 0, 0]);
+            }
+        }
+    }
+
+    #[test]
+    fn words_with_places_of_their_own_are_left_as_they_are() {
+        let (w, h) = (200u32, 20u32);
+        let mut img = blank(w, h);
+        block(&mut img, w, 10, 20, 5, 15);
+        block(&mut img, w, 60, 66, 5, 15);
+        let own = vec![RawWord { line: 0, text: "AB".into(), x: 10.0, y: 4.0, w: 10.0, h: 12.0 }, RawWord { line: 0, text: "C".into(), x: 60.0, y: 4.0, w: 6.0, h: 12.0 }];
+        let kept = words_placed_by_ink(&img, w, h, own);
+        assert_eq!((kept[0].x, kept[0].w, kept[1].x, kept[1].w), (10.0, 10.0, 60.0, 6.0));
+    }
+
+    #[test]
+    fn the_hub_tabs_read_as_one_line_with_icons_get_their_own_places() {
+        // L1 [icon] · JASON & LUCIA · MAP · BRIEF · PROGRESS · R1 (read "RJ"); letters 7 px with 2 px between,
+        // spaces 7 px, tabs 40 px apart; the line 20 px high; Vision's box for every word: the whole line
+        let (w, h) = (900u32, 30u32);
+        let mut img = blank(w, h);
+        let mut x = 20u32;
+        let mut spans: Vec<(u32, u32)> = Vec::new();
+        block(&mut img, w, x, x + 18, 5, 25); // L1, not read
+        x += 18 + 40;
+        for (letters, after) in [(5, 7), (1, 7), (5, 40), (3, 40), (5, 40), (8, 40), (2, 0)] {
+            let x0 = x;
+            for _ in 0..letters {
+                block(&mut img, w, x, x + 7, 5, 25);
+                x += 9;
+            }
+            spans.push((x0, x - 2));
+            x += after;
+        }
+        let line = |t: &str| RawWord { line: 0, text: t.into(), x: 15.0, y: 4.0, w: (x + 5 - 15) as f64, h: 22.0 };
+        let names = ["JASON", "&", "LUCIA", "MAP", "BRIEF", "PROGRESS", "RJ"];
+        let got = words_placed_by_ink(&img, w, h, names.iter().map(|t| line(t)).collect());
+        for ((wd, name), (x0, x1)) in got.iter().zip(names).zip(spans) {
+            assert!((wd.x - x0 as f64).abs() <= 1.0 && (wd.x + wd.w - x1 as f64).abs() <= 1.0, "{name}: {} .. {} not {x0} .. {x1}", wd.x, wd.x + wd.w);
+        }
+    }
+
+    #[test]
+    fn ink_that_cant_hold_the_words_keeps_what_the_engine_gave() {
+        let (w, h) = (200u32, 20u32);
+        let mut img = blank(w, h);
+        block(&mut img, w, 10, 190, 5, 15); // one long bar of ink
+        let line = |t: &str| RawWord { line: 0, text: t.into(), x: 8.0, y: 4.0, w: 184.0, h: 12.0 };
+        let got = words_placed_by_ink(&img, w, h, vec![line("a"), line("b"), line("c"), line("d")]);
+        assert!(got.iter().all(|w| w.x == 8.0));
     }
 }

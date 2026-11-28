@@ -62,6 +62,8 @@ impl MenuCache {
 pub struct Live {
     /// A game page (a menu, a "mission failed" page …) is on screen; the full-window overlay shows it.
     pub screen_active: AtomicBool,
+    /// …and it is a card beside the game (`PageInfo::beside`): the read areas' overlays stay up with it.
+    pub screen_beside: AtomicBool,
     /// The profile screen currently shown (layout JSON) and its translated reason line, for windows
     /// that open after the screen appeared.
     pub screen: Mutex<Option<serde_json::Value>>,

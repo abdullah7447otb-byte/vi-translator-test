@@ -148,10 +148,12 @@ pub fn position_loop(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared
         // Every overlay window we want: one per enabled area, plus the full-window "screen" overlay
         // used by game profiles (a menu, a "mission failed" page …). Each gets a target rect when it should show.
         let screen_on = shared.screen_active.load(Ordering::Relaxed);
+        // (a card beside the game, not a page over it: the areas and the phone stay up with it)
+        let beside = shared.screen_beside.load(Ordering::Relaxed);
         let mut wanted: Vec<(String, String, String, Option<(i32, i32, i32, i32)>)> = Vec::new(); // label, id, placement, rect
         for a in c.areas.iter().filter(|a| a.enabled) {
             // While a profile screen is up, the area overlays step aside.
-            let rect = match (visible && !screen_on, client) {
+            let rect = match (visible && (!screen_on || beside), client) {
                 // (over the game's text, or riding above its stacked lines: the box goes where the game's
                 // text is, so the window covers the whole picture)
                 (true, Some((_, _, cw, ch))) if c.cover_look() || c.fx(&a.id).rides(&a.id) => Some((0, 0, cw, ch)),
@@ -167,7 +169,7 @@ pub fn position_loop(app: AppHandle, cfg: Arc<Mutex<Config>>, shared: Arc<Shared
         wanted.push((SCREEN_LABEL.into(), "__screen".into(), "screen".into(), screen_rect));
         // GTA VI's phone held up: its translations beside it, over the whole picture
         let phone_on = shared.phone_active.load(Ordering::Relaxed);
-        let phone_rect = match (visible && phone_on && !screen_on, client) {
+        let phone_rect = match (visible && phone_on && (!screen_on || beside), client) {
             (true, Some((_, _, cw, ch))) => Some((0, 0, cw, ch)),
             _ => None,
         };
