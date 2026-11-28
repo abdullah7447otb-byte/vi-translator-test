@@ -2018,24 +2018,12 @@ async function renderNames() {
 }
 $("names-built-in").addEventListener("toggle", renderNames);
 $("names-search").addEventListener("input", renderNames);
-// The character played: the instructions' Arabic speaks to Lucia in the feminine (core/src/gender.rs).
-function renderCharacter() {
-  const c = $("character");
-  if (c && cfg) c.value = cfg.character === "lucia" ? "lucia" : "jason";
+// How the phone's chats are shown (Translator tab).
+function renderPhoneDisplay() {
   const p = $("phone-display");
   if (p && cfg) p.value = ["panel", "inplace", "both"].includes(cfg.phone_display) ? cfg.phone_display : "panel";
 }
 $("phone-display")?.addEventListener("change", (e) => { cfg.phone_display = e.target.value; save(false); });
-$("character")?.addEventListener("change", (e) => { cfg.character = e.target.value; save(false); });
-// (the game switched character: Ctrl/⌘+Shift+L, Jason ↔ Lucia)
-addEventListener("keydown", (e) => {
-  if (!cfg || !((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === "KeyL")) return;
-  e.preventDefault();
-  cfg.character = cfg.character === "lucia" ? "jason" : "lucia";
-  renderCharacter();
-  save(false);
-  log({ info: t("Playing as {name}", { name: t(cfg.character === "lucia" ? "Lucia" : "Jason") }) });
-});
 
 function renderTiming() {
   const form = $("timing-form");
@@ -3812,7 +3800,7 @@ function lockControls() {
   renderAreas();
   renderTiming();
   renderGlossary();
-  renderCharacter();
+  renderPhoneDisplay();
   renderPreviewForm();
   renderMemory();
   renderDebug();

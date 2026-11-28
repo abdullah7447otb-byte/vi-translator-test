@@ -382,9 +382,6 @@ pub struct Config {
     /// The player's own glossary for the free offline translator into Arabic: "English = Arabic"
     /// lines (core/src/glossary.rs), before the built-in ones.
     pub glossary: String,
-    /// The character played in GTA VI ("jason" or "lucia"): the instructions speak to Lucia in the feminine
-    /// (core/src/gender.rs).
-    pub character: String,
     /// The Mac: the translation memory and corrections kept in /Users/Shared, the same for every user of
     /// this Mac (takes effect when the app starts again).
     pub shared_memory: bool,
@@ -984,7 +981,6 @@ impl Default for Config {
             ort_threads: 0,
             bare_mac_noticed: false,
             glossary: String::new(),
-            character: "jason".into(),
             shared_memory: false,
             phone_display: "panel".into(),
             check_mode: false,
@@ -1256,9 +1252,6 @@ impl Config {
     pub fn normalize(&mut self) {
         if !matches!(self.phone_display.as_str(), "panel" | "inplace" | "both") {
             self.phone_display = "panel".into();
-        }
-        if !matches!(self.character.as_str(), "jason" | "lucia") {
-            self.character = "jason".into();
         }
         // Timing the player never chose is the app's current default (shown so on the Timing page too)
         let d = self.default_timing();
@@ -1934,7 +1927,7 @@ mod v16_migration_tests {
         assert!(back.areas.iter().any(|a| a.id == "notes") && back.areas.iter().any(|a| a.id == "prompts"));
         assert!(back.builtins.iter().find(|p| p.id == "gta6").is_some_and(|p| p.areas.iter().any(|a| a.id == "prompts")));
         assert_eq!(back.glossary, "Wasted = خلصت عليك");
-        assert_eq!((back.character.as_str(), back.phone_display.as_str(), back.shared_memory), ("jason", "panel", false));
+        assert_eq!((back.phone_display.as_str(), back.shared_memory), ("panel", false));
         // once: a player who turns the prompts area off keeps it off
         for a in back.areas.iter_mut().filter(|a| a.id == "prompts") {
             a.enabled = false;
@@ -1943,6 +1936,9 @@ mod v16_migration_tests {
         assert_eq!(back.areas.iter().filter(|a| a.id == "prompts").count(), 1);
         // a settings file without the 1.6 fields reads with their defaults
         let old: Config = serde_json::from_str(r#"{"engine":"apple"}"#).expect("read");
-        assert_eq!((old.character.as_str(), old.phone_display.as_str()), ("jason", "panel"));
+        assert_eq!(old.phone_display.as_str(), "panel");
+        // (and one from before the character setting went: its "character" is read and left)
+        let gone: Config = serde_json::from_str(r#"{"engine":"apple","character":"lucia"}"#).expect("read");
+        assert_eq!(gone.engine, "apple");
     }
 }

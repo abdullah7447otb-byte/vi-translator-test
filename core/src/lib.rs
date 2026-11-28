@@ -17,7 +17,6 @@ pub mod lan_page;
 pub mod langs;
 pub mod live;
 pub mod english;
-pub mod gender;
 pub mod log;
 pub mod watchdog;
 pub mod memory;
