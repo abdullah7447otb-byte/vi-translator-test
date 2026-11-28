@@ -3469,7 +3469,7 @@ function renderProfile() {
     <p class="muted small">${isBuiltin(p)
       ? t("Built-in profiles get updates for the game automatically. A copy keeps your changes and stays yours.")
       : t("Your changes to read areas, text style and game pages are saved in this profile.")}</p>
-    ${isBuiltin(p) ? `
+    ${p ? `
     <h3>${t("How translations look")}</h3>
     <div class="looks">
       <label class="look-opt"><span class="check" style="color:var(--text)"><input type="radio" name="pf-look" value="above" ${cover ? "" : "checked"}/> ${t("Above the game's text")}</span>
@@ -3477,8 +3477,8 @@ function renderProfile() {
       <label class="look-opt"><span class="check" style="color:var(--text)"><input type="radio" name="pf-look" value="cover" ${cover ? "checked" : ""}/> ${t("Over the game's text, on a black box that hides it")}</span>
         <div class="look-stage" data-look="cover"></div></label>
     </div>` : ""}`;
-  // (built-in profiles only: a profile of your own places each area's translation itself. Kept like
-  // a game page's switch: in the profile, a built-in one too)
+  // (a copy too: its owner asked for the translation over the English, and the radio was only on the
+  // built-in profile. Kept like a game page's switch: in the profile)
   f.querySelectorAll('input[name="pf-look"]').forEach((el) => el.addEventListener("change", () => {
     const on = el.value === "cover" && el.checked;
     cfg.profile_opts.more = cfg.profile_opts.more || {};
