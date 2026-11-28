@@ -42,11 +42,12 @@ fn names_kept(cfg: &Config, line: &str, mut segs: Segments) -> Segments {
                 continue;
             }
             let lower = text.to_lowercase();
-            if let Some(i) = lower.find(&en.to_lowercase()) {
-                if text.is_char_boundary(i) && text.is_char_boundary(i + en.len()) {
-                    text.replace_range(i..i + en.len(), &ar);
-                    found = true;
-                }
+            if let Some(i) = lower.find(&en.to_lowercase())
+                && text.is_char_boundary(i)
+                && text.is_char_boundary(i + en.len())
+            {
+                text.replace_range(i..i + en.len(), &ar);
+                found = true;
             }
         }
         if !found {
@@ -476,10 +477,12 @@ impl Translator {
         let offline_ar = (cfg.engine == "local" || cfg.engine == "apple") && cfg.target_lang == "ar";
         // (a whole line the glossary has — a map legend's, a phone app's button, the player's own — is the same
         // Arabic whatever the translator: "Request" on BuckMe is «طلب», never a new word each time)
-        if cfg.target_lang == "ar" && icons.is_empty() && phrases.is_empty() {
-            if let Some(ar) = crate::glossary::whole_line(&cfg.glossary, line) {
-                return Ok(vec![(ar, None)]);
-            }
+        if cfg.target_lang == "ar"
+            && icons.is_empty()
+            && phrases.is_empty()
+            && let Some(ar) = crate::glossary::whole_line(&cfg.glossary, line)
+        {
+            return Ok(vec![(ar, None)]);
         }
         let (protected, glossed) = if offline_ar { crate::glossary::protect(&cfg.glossary, &protected, terms.len()) } else { (protected, Vec::new()) };
         let mut segs = self.translate_inner(cfg, &protected, phrases, icons, status)?;

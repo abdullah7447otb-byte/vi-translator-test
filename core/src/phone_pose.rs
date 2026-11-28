@@ -287,7 +287,6 @@ fn locate_picture(rgba: &[u8], fw: u32, pic: (u32, u32, u32, u32)) -> Option<Pos
 
 /// The best phone from earpieces (with their camera) and home bars: the shape's rules, then its edges.
 fn pair(grid: &Grid, upper: &[Slot], lower: &[Slot]) -> Option<Pose> {
-    let grid = grid;
     let mut best = 0.0;
     let mut pose = None;
     for top in upper {

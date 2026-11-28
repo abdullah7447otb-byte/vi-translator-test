@@ -9,6 +9,13 @@ window.AS = (() => {
   const rtl = () => RTL.has(lang);
   const dir = () => (rtl() ? "rtl" : "ltr");
   const fonts = () => `${SCRIPT_FONTS[lang] ? SCRIPT_FONTS[lang] + ", " : ""}"Segoe UI", Tahoma, sans-serif`;
+  // A page font by its name, as CSS: "… Condensed" is the font's own narrow width (Noto Sans Arabic's width
+  // axis: the narrow capitals of GTA VI's headings and tabs, an Arabic word as narrow as the English one).
+  const famOf = (name) => {
+    const n = String(name || "");
+    const narrow = /\sCondensed$/.test(n);
+    return { fontFamily: `"${narrow ? n.replace(/\sCondensed$/, "") : n}", ${fonts()}`, fontStretch: narrow ? "75%" : "" };
+  };
   const esc = (s) =>
     String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -1257,7 +1264,7 @@ window.AS = (() => {
           justifyContent: "center",
           background: lb.bg,
           color: lb.fg,
-          fontFamily: `"${opts.text_font}", ${fonts()}`,
+          ...famOf(opts.text_font),
           fontWeight: "500",
           fontSize: `${h * 0.55}px`,
           lineHeight: "1",
@@ -1308,7 +1315,7 @@ window.AS = (() => {
             whiteSpace: wrap ? "normal" : "nowrap",
             background: m.bg || "transparent",
             color: m.fg || "#ffffff",
-            fontFamily: `"${font}", ${fonts()}`,
+            ...famOf(font),
             fontWeight: String(m.weight || 500),
             fontSize: `${fs}px`,
             lineHeight: "1.35",
@@ -1341,7 +1348,7 @@ window.AS = (() => {
           whiteSpace: m.item ? "nowrap" : "normal",
           background: m.bg,
           color: m.fg,
-          fontFamily: `"${opts.text_font}", ${fonts()}`,
+          ...famOf(opts.text_font),
           fontWeight: "500",
           fontSize: `${lh * 1.2}px`,
           lineHeight: "1.35",
@@ -1368,7 +1375,7 @@ window.AS = (() => {
         whiteSpace: "normal",
         color: "#ffffff",
         textAlign: rtl() ? "right" : "left",
-        fontFamily: `"${opts.text_font}", ${fonts()}`,
+        ...famOf(opts.text_font),
       }, "");
       const head = document.createElement("div");
       Object.assign(head.style, { display: "flex", alignItems: "center", gap: `${xh * 0.5}px`, marginBottom: `${xh * 0.25}px` });
@@ -1422,7 +1429,7 @@ window.AS = (() => {
         left: `${(L.title.x + L.title.w / 2) * W}px`,
         top: `${L.title.y * H - th * 0.1}px`,
         transform: "translate(-50%, -100%)",
-        fontFamily: `"${opts.title_font}", ${fonts()}`,
+        ...famOf(opts.title_font),
         fontWeight: "700",
         fontSize: `${tfs}px`,
         color: L.title_color,
@@ -1447,7 +1454,7 @@ window.AS = (() => {
           whiteSpace: "normal",
           textAlign: "center",
           lineHeight: "1.4",
-          fontFamily: `"${opts.text_font}", ${fonts()}`,
+          ...famOf(opts.text_font),
           fontWeight: "500",
           fontSize: `${rfs}px`,
           color: "#ffffff",
@@ -1476,7 +1483,7 @@ window.AS = (() => {
           display: "flex",
           alignItems: "center",
           gap: `${capH * 0.45}px`,
-          fontFamily: `"${opts.text_font}", ${fonts()}`,
+          ...famOf(opts.text_font),
           fontWeight: "700",
           fontSize: `${bfs}px`,
           color: b.fg || "#ffffff",
@@ -1516,7 +1523,7 @@ window.AS = (() => {
           gap: `${Math.max(2, (b.icon_rect.x - (b.text_rect.x + b.text_rect.w)) * W)}px`,
           // (no picture: keep the icon's room, so the label sits where it would beside it)
           paddingRight: b.icon ? "0" : `${b.icon_rect.w * W + Math.max(2, (b.icon_rect.x - (b.text_rect.x + b.text_rect.w)) * W)}px`,
-          fontFamily: `"${opts.text_font}", ${fonts()}`,
+          ...famOf(opts.text_font),
           fontWeight: "700",
           fontSize: `${bfs}px`,
           color: b.fg || "#ffffff",
@@ -1553,7 +1560,7 @@ window.AS = (() => {
         display: "flex",
         alignItems: "center",
         gap: `${row.h * H * 0.9}px`,
-        fontFamily: `"${opts.text_font}", ${fonts()}`,
+        ...famOf(opts.text_font),
         fontWeight: "500",
         fontSize: `${bfs}px`,
         color: "#ffffff",

@@ -21,6 +21,7 @@ pub struct Net {
 }
 
 /// The ports `networksetup -listallhardwareports` names: (port, device), "Wi-Fi" and the Ethernet ones.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub fn ports(listing: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut port: Option<String> = None;
@@ -35,6 +36,7 @@ pub fn ports(listing: &str) -> Vec<(String, String)> {
 }
 
 /// One interface's block of `ifconfig -a`: whether it is active, and its media line ("1000baseT <full-duplex>").
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub fn iface<'a>(ifconfig: &'a str, dev: &str) -> Option<(bool, &'a str)> {
     let start = ifconfig.lines().position(|l| l.starts_with(&format!("{dev}:")))?;
     let mut active = false;
@@ -51,6 +53,7 @@ pub fn iface<'a>(ifconfig: &'a str, dev: &str) -> Option<(bool, &'a str)> {
 }
 
 /// A media line's speed (Mb/s) and duplex: "autoselect (1000baseT <full-duplex,flow-control>)" → (1000, true).
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub fn speed(media: &str) -> Option<(u32, bool)> {
     let i = media.find("base")?;
     // ("10Gbase-T": in Gb/s)
@@ -67,16 +70,19 @@ pub fn speed(media: &str) -> Option<(u32, bool)> {
 }
 
 /// The readings put together.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub fn read(ports_listing: &str, ifconfig: &str) -> Net {
     let mut n = Net::default();
     for (port, dev) in ports(ports_listing) {
         let Some((active, media)) = iface(ifconfig, &dev) else { continue };
         if port == "Wi-Fi" || port == "AirPort" {
             n.wifi_on |= active;
-        } else if active && (port.contains("Ethernet") || port.contains("LAN") || port.contains("Thunderbolt")) && n.ethernet.is_none() {
-            if let Some((mbps, full)) = speed(media) {
-                n.ethernet = Some((dev, mbps, full));
-            }
+        } else if active
+            && (port.contains("Ethernet") || port.contains("LAN") || port.contains("Thunderbolt"))
+            && n.ethernet.is_none()
+            && let Some((mbps, full)) = speed(media)
+        {
+            n.ethernet = Some((dev, mbps, full));
         }
     }
     n.awdl_active = iface(ifconfig, "awdl0").is_some_and(|(a, _)| a);
@@ -100,10 +106,10 @@ static LAST: Mutex<Option<(Instant, Net)>> = Mutex::new(None);
 /// The Mac's network now (at most 20 s old). Other systems: nothing found.
 pub fn now() -> Net {
     let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((at, n)) = last.as_ref() {
-        if at.elapsed() < Duration::from_secs(20) {
-            return n.clone();
-        }
+    if let Some((at, n)) = last.as_ref()
+        && at.elapsed() < Duration::from_secs(20)
+    {
+        return n.clone();
     }
     let n = take();
     *last = Some((Instant::now(), n.clone()));

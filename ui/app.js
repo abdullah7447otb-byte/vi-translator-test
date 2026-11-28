@@ -1848,6 +1848,7 @@ const BUNDLED_FONTS = [
   { name: "Cairo", note: "clean, many weights" },
   { name: "Tajawal", note: "clean text" },
   { name: "Noto Sans Arabic Medium", note: "like GTA VI's subtitles" },
+  { name: "Noto Sans Arabic Condensed", note: "narrow, like GTA VI's menu headings and tabs" },
 ];
 
 /** A font name as a CSS font-family value (a quoted string): for `el.style.fontFamily` only. */

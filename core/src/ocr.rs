@@ -289,11 +289,11 @@ pub fn words_placed_by_ink(bgra: &[u8], w: u32, h: u32, mut words: Vec<RawWord>)
                 // (and the rows its ink is on: the engine's box can be the whole line's, padding and all)
                 let (a, b) = ((p.0.max(0.0) as u32).min(w), ((p.0 + p.1).ceil() as u32).min(w));
                 let rows: Vec<u32> = text_rows.iter().copied().filter(|&y| (a..b).any(|x| dark(x, y))).collect();
-                if let (Some(&top), Some(&bottom)) = (rows.first(), rows.last()) {
-                    if bottom > top {
-                        words[i].y = top as f64;
-                        words[i].h = (bottom + 1 - top) as f64;
-                    }
+                if let (Some(&top), Some(&bottom)) = (rows.first(), rows.last())
+                    && bottom > top
+                {
+                    words[i].y = top as f64;
+                    words[i].h = (bottom + 1 - top) as f64;
                 }
             }
         }

@@ -780,4 +780,5 @@ I18N.add("ar", {
   "0 = see-through": "0 = شفاف",
   "1 = solid": "1 = غير شفاف",
   "Not for an area in the game's own box: its text sits at the top of the area, and read from the bottom line up it would never be read.": "ما ينفع لمنطقة لها مربع في اللعبة: نصها في أعلى المنطقة، ولو انقرأت من السطر السفلي لفوق ما راح تنقرأ أبدًا.",
+  "narrow, like GTA VI's menu headings and tabs": "ضيّق، مثل عناوين وتبويبات قوائم GTA VI",
 });
