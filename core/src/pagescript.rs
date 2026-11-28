@@ -449,7 +449,10 @@ impl Pages {
     }
     fn arm_for(&self, limit_ms: u64) {
         NATIVE_US.with(|n| n.set(0));
-        CALL_END.with(|e| e.set(Some(Instant::now() + Duration::from_millis(CALL_TOTAL_MS.max(limit_ms)))));
+        // (the page bench's reader is far slower than Vision: it may allow more, VI_PAGES_TOTAL_MS)
+        static TOTAL: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let total = *TOTAL.get_or_init(|| std::env::var("VI_PAGES_TOTAL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(CALL_TOTAL_MS));
+        CALL_END.with(|e| e.set(Some(Instant::now() + Duration::from_millis(total.max(limit_ms)))));
         self.deadline.store(self.started.elapsed().as_micros() as u64 + limit_ms * 1000, Ordering::Relaxed);
     }
     fn disarm(&self) {
@@ -480,6 +483,11 @@ impl Pages {
                 out
             })
         });
+        if std::env::var_os("VI_TRANSLATOR_DEBUG").is_some() {
+            let script_us = (self.started.elapsed().as_micros() as u64).saturating_sub(NATIVE_US.with(|n| n.get()));
+            let armed_at = self.deadline.load(Ordering::Relaxed).saturating_sub(CALL_LIMIT_MS * 1000);
+            crate::vlog!("[pages] {id}.{func}: {} ms of script, {} ms in the app's helpers", script_us.saturating_sub(armed_at) / 1000, NATIVE_US.with(|n| n.get()) / 1000);
+        }
         self.disarm();
         CURRENT.with(|c| *c.borrow_mut() = None);
         match out {
@@ -1431,6 +1439,22 @@ mod built_in_tests {
         // additions that throw leave the base script as it was
         let q = Pages::load_with(built_in("gta6").expect("carried"), Some("throw new Error('broken');")).expect("loads anyway");
         assert!(q.probe("typeof objectiveCard === 'function' && !objectiveCard.toString().includes('COLORS')"));
+    }
+    #[test]
+    fn the_menus_words_are_the_ones_written_like_what_was_read() {
+        crate::screens::use_words_for("gta6", "ar");
+        let p = Pages::load_with(built_in("gta6").expect("carried"), extension("gta6")).expect("loads");
+        let is = |en: &str, ar: &str| p.probe(&format!("ownWord({}) === {}", serde_json::json!(en), serde_json::json!(ar)));
+        // the settings' values, not the items wheel's worn / not worn
+        assert!(is("On", "تشغيل") && is("Off", "إيقاف"), "On / Off in the settings");
+        // (the wheel still asks in capitals, exactly)
+        assert!(p.probe("ownWord('ON', true) === 'مرتدى' && ownWord('OFF', true) === 'منزوع'"), "the wheel's own");
+        // no slash or question mark the English didn't have
+        assert!(is("Game", "اللعبة") && is("GAME", "اللعبة") && is("Save Game", "حفظ اللعبة"), "no stray marks");
+        // a heading with one letter misread
+        assert!(is("CAME", "اللعبة"), "CAME is GAME");
+        // the hub's selected tab, the tab row splitter and the settled bar are in place
+        assert!(p.probe("readHub.toString().includes('byNeighbours') && readTabs.toString().includes('place(') && readHome.toString().includes('settle')"));
     }
 }
 
