@@ -210,6 +210,12 @@ fn main_only(w: &tauri::Webview) -> Result<(), String> {
     if w.label() == "main" { Ok(()) } else { Err("not allowed in this window".into()) }
 }
 
+/// The built-in names dictionary (places, people, brands) and whole lines, English and Arabic.
+#[tauri::command]
+fn glossary_built_in() -> Vec<(String, String)> {
+    vi_translator_core::glossary::built_in_list()
+}
+
 /// Translation memory: on/off, size, hits/misses and the time saved.
 #[tauri::command]
 fn memory_status(state: tauri::State<AppState>) -> memory::Stats {
@@ -2374,7 +2380,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(hotkey::plugin())
         .manage(AppState { cfg: cfg.clone(), shared: shared.clone(), saver: saver.clone(), memory: memory.clone(), update: update.clone() })
-        .invoke_handler(tauri::generate_handler![app_version, dev_build, dev_report, has_offline, memory_line, recent_lines, correct_line, health_status, set_check_mode, area_debug, check_report, export_srt, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, test_llm_server, apple_status, open_translation_settings, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_decode, ps5_set_hevc, ps5_set_read_only, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin, set_tv_on, xbox_cancel_sign_in, xbox_choose, xbox_consoles, xbox_forget_console, xbox_open_link, xbox_set_controllers, xbox_set_resolution, xbox_set_sound, xbox_sign_in, xbox_sign_out, xbox_status])
+        .invoke_handler(tauri::generate_handler![app_version, glossary_built_in, dev_build, dev_report, has_offline, memory_line, recent_lines, correct_line, health_status, set_check_mode, area_debug, check_report, export_srt, memory_probe, get_phone, update_status, install_update, lan_info, open_lan_page, find_tvs, connect_tv, list_tvs, remove_tv, list_langs, list_sources, window_still, find_picture, vcam_status, sound_inputs, sound_status, set_snap_hotkey, back_to_game, get_config, save_config, page_options, list_windows, list_screens, list_fonts, get_screen, frame_saver_status, open_frames_folder, open_log_folder, open_screen_recording_settings, save_preview, open_previews_folder, take_snapshot, save_snapshot_render, open_snapshots_folder, perf_status, test_llm_server, apple_status, open_translation_settings, memory_status, memory_clear, open_xbox, ps5_status, ps5_sign_in, ps5_browser_sign_in, ps5_login_url, ps5_sign_in_address, ps5_set_account, ps5_wake, ps5_set_sound, ps5_set_smooth, ps5_set_decode, ps5_set_hevc, ps5_set_read_only, ps5_set_resolution, ps5_sign_out, ps5_find, ps5_link, ps5_forget, ps5_login_pin, set_tv_on, xbox_cancel_sign_in, xbox_choose, xbox_consoles, xbox_forget_console, xbox_open_link, xbox_set_controllers, xbox_set_resolution, xbox_set_sound, xbox_sign_in, xbox_sign_out, xbox_status])
         .setup(move |app| {
             if let Some(w) = app.get_webview_window("main") {
                 let test = if updater::TEST_BUILD { " (test build · updates off)" } else { "" };

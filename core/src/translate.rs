@@ -521,7 +521,8 @@ impl Translator {
             _ => "",
         };
         // (the player's glossary changes the offline model's answer: a new one is a new key)
-        let glossary = if cfg.engine == "local" || cfg.engine == "apple" { cfg.glossary.as_str() } else { "" };
+        // (and the language models' names: the glossary's spelling is in their prompt, for Arabic)
+        let glossary = if cfg.engine == "local" || cfg.engine == "apple" || cfg.target_lang == "ar" { cfg.glossary.as_str() } else { "" };
         // (the player's notes for the language models change their answer too)
         let notes = if is_llm(&cfg.engine) { cfg.llm_notes.trim() } else { "" };
         let key = format!("{}\u{1}{}\u{1}{}\u{1}{notes}\u{1}{}\u{1}{:?}\u{1}{icon_sig}\u{1}{around}\u{1}{glossary}", cfg.engine, cfg.target_lang, cfg.dialect, line, phrases);
@@ -809,6 +810,15 @@ impl Translator {
         };
         let name = lang.name;
         let cast = if cfg.game() == "gta6" { GTA6_CAST } else { "" };
+        // The names this line says, in the spelling the player sees everywhere (crate::glossary::names_in): the
+        // map, the phone and the subtitles write "Port Gellhorn" one way, not a new way each time.
+        let names = if lang.code == "ar" { crate::glossary::names_in(&cfg.glossary, line) } else { Vec::new() };
+        let names = if names.is_empty() {
+            String::new()
+        } else {
+            let list: Vec<String> = names.iter().map(|(en, ar)| format!("{en} = {ar}")).collect();
+            format!("\n             - Write these names exactly so (no other spelling): {}.", list.join("; "))
+        };
         let system = format!(
             "You translate English video-game text (subtitles and on-screen instructions) into {name} for players reading live.\n\
              Target language: {target}.\n\
@@ -824,7 +834,7 @@ impl Translator {
                belongs in the {name} sentence, e.g. in Arabic \"Press <b1/> to jump\" -> \"اضغط <b1/> للقفز\". Keep every\n\
                icon tag exactly once.\n\
              - Use the context to get right who speaks to whom: in {name} that decides the grammatical gender\n\
-               and number of \"you\", of verbs and of adjectives.{cast}{notes}",
+               and number of \"you\", of verbs and of adjectives.{cast}{names}{notes}",
             notes = player_notes(cfg)
         );
         // Tag the highlighted phrases: "Go to the <c1>bank</c1>."

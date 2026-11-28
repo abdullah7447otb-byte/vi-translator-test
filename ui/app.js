@@ -1990,7 +1990,34 @@ function renderGlossary() {
   const g = $("glossary");
   if (document.activeElement !== g) g.value = cfg.glossary || "";
 }
-$("glossary").addEventListener("input", (e) => { cfg.glossary = e.target.value; save(false); });
+$("glossary").addEventListener("input", (e) => { cfg.glossary = e.target.value; save(false); renderNames(); });
+// The built-in names (Translator tab): searchable, each with "use my own spelling", which adds its line to the
+// player's own (theirs win), ready to edit.
+let builtInNames = null;
+async function renderNames() {
+  const list = $("names-list");
+  if (!list || !$("names-built-in").open) return;
+  if (!builtInNames) {
+    try { builtInNames = await invoke("glossary_built_in"); } catch { builtInNames = []; }
+  }
+  const q = ($("names-search").value || "").trim().toLowerCase();
+  const mine = new Set((cfg.glossary || "").split("\n").map((l) => l.split("=")[0].trim().toLowerCase()).filter(Boolean));
+  const rows = builtInNames.filter(([en, ar]) => !q || en.toLowerCase().includes(q) || ar.includes(q)).slice(0, 200);
+  list.innerHTML = rows.map(([en, ar], i) => `<div class="name-row${mine.has(en.toLowerCase()) ? " mine" : ""}">
+      <span class="en" dir="ltr">${AS.esc(en)}</span><span class="ar" dir="rtl">${AS.esc(ar)}</span>
+      <button class="btn small" data-i="${i}">${mine.has(en.toLowerCase()) ? t("Yours") : t("My own spelling")}</button></div>`).join("");
+  list.querySelectorAll("button[data-i]").forEach((b) => b.addEventListener("click", () => {
+    const [en, ar] = rows[Number(b.dataset.i)];
+    if (mine.has(en.toLowerCase())) return;
+    cfg.glossary = `${(cfg.glossary || "").replace(/\s+$/, "")}${cfg.glossary ? "\n" : ""}${en} = ${ar}`;
+    $("glossary").value = cfg.glossary;
+    save(false);
+    renderNames();
+    $("glossary").focus();
+  }));
+}
+$("names-built-in").addEventListener("toggle", renderNames);
+$("names-search").addEventListener("input", renderNames);
 // The character played: the instructions' Arabic speaks to Lucia in the feminine (core/src/gender.rs).
 function renderCharacter() {
   const c = $("character");
@@ -2412,6 +2439,66 @@ function renderDebug() {
   updateSaver();
 }
 
+// Stream mode (the header's switch): what costs frames or clutters the stream off, the translation over the
+// game's text; what it changed kept in cfg.stream_saved and put back when it goes off. Changing one of these
+// settings by hand while it's on is fine: off puts back what was there before it came on.
+function streamDelay(v) {
+  try {
+    if (v === undefined) return localStorage.getItem("picture-delay") || "smooth";
+    localStorage.setItem("picture-delay", v);
+  } catch {}
+  return v;
+}
+function setStreamMode(on) {
+  if (on === (cfg.stream_mode === true)) return;
+  const key = cfg.window_title || "";
+  cfg.profile_opts.more = cfg.profile_opts.more || {};
+  const changed = [];
+  if (on) {
+    cfg.stream_saved = {
+      picture: cfg.picture?.[key] ? clone(cfg.picture[key]) : null,
+      fps_badge: cfg.fps_badge === true,
+      perf_mode: cfg.perf_mode || "auto",
+      cover: cfg.profile_opts.more[AS.COVER] === true,
+      delay: streamDelay(),
+      check: checkMode,
+    };
+    cfg.picture = { ...(cfg.picture || {}), [key]: { preset: "stream" } };
+    changed.push(t("Picture effects off"));
+    if (cfg.fps_badge === true) changed.push(t("fps badge off"));
+    cfg.fps_badge = false;
+    // (auto: lighter only while the Mac can't keep up, so the stream doesn't stutter)
+    cfg.perf_mode = "auto";
+    if (cfg.profile_opts.more[AS.COVER] !== true) changed.push(t("Translation over the game's text"));
+    cfg.profile_opts.more[AS.COVER] = true;
+    setShown("page", AS.COVER, true);
+    // (two frames may wait: network jitter doesn't show on the stream)
+    streamDelay("smooth");
+    if (checkMode) setCheckMode(false);
+  } else {
+    const s = cfg.stream_saved || {};
+    const pic = { ...(cfg.picture || {}) };
+    if (s.picture) pic[key] = s.picture;
+    else delete pic[key];
+    cfg.picture = pic;
+    cfg.fps_badge = s.fps_badge === true;
+    cfg.perf_mode = s.perf_mode || "auto";
+    cfg.profile_opts.more[AS.COVER] = s.cover === true;
+    setShown("page", AS.COVER, s.cover === true);
+    if (s.delay) streamDelay(s.delay);
+    cfg.stream_saved = null;
+    changed.push(t("Your settings are back"));
+  }
+  cfg.stream_mode = on;
+  $("stream_mode").checked = on;
+  applyFpsBadge();
+  pictureImg();
+  if ($("pic-panel")) renderPicture();
+  renderAreas();
+  save();
+  log({ info: on ? t("Stream mode on: {what}", { what: changed.join("، ") || t("already set") }) : t("Stream mode off: {what}", { what: changed.join("، ") }) });
+}
+
 // The check mode (not saved: off when the app starts) and the health panel.
 let checkMode = false;
 function setCheckMode(on) {
@@ -2645,6 +2732,8 @@ const PICTURE_PRESETS = {
   default: { bright: 0, contrast: 1, gamma: 1, shadows: 0, sat: 1, sharp: 0, deband: 0.4, local: 0, auto_night: true },
   dark: { bright: 0.02, contrast: 1, gamma: 1.25, shadows: 0.6, sat: 1.05, sharp: 0.3, deband: 0.7, local: 0.4, auto_night: false },
   vivid: { bright: 0, contrast: 1.12, gamma: 1, shadows: 0.1, sat: 1.3, sharp: 0.35, deband: 0.4, local: 0, auto_night: true },
+  // (stream mode: the picture as it comes, no pass that costs frames — sharpening, debanding, night lift)
+  stream: { bright: 0, contrast: 1, gamma: 1, shadows: 0, sat: 1, sharp: 0, deband: 0, local: 0, auto_night: false },
 };
 const PICTURE_UNIFORMS = ["pSize", "pBright", "pContrast", "pGamma", "pShadows", "pSat", "pSharp", "pDeband", "pLocal", "pFrame"];
 // (after a shader's own `vec3 rgbAt(ivec2 p)` and `float yAt(ivec2 p)` (the luma alone, levels stretched): contrast-adaptive sharpening as AMD's FidelityFX CAS
@@ -2807,7 +2896,7 @@ function renderPicture() {
     save(false);
     pictureImg();
   };
-  const presets = [["default", t("Default")], ["dark", t("Dark scenes")], ["vivid", t("Vivid")], ["custom", t("Custom")]];
+  const presets = [["default", t("Default")], ["dark", t("Dark scenes")], ["vivid", t("Vivid")], ["stream", t("Stream (no effects)")], ["custom", t("Custom")]];
   const sliders = [["bright", t("Brightness"), -0.3, 0.3, 0.01], ["contrast", t("Contrast"), 0.5, 1.5, 0.01], ["gamma", t("Gamma"), 0.6, 1.8, 0.01],
     ["shadows", t("Shadow lift"), 0, 1.5, 0.05], ["sat", t("Saturation"), 0, 2, 0.01], ["sharp", t("Sharpness"), 0, 1, 0.05],
     ["deband", t("Smooth banding"), 0, 1, 0.05], ["local", t("Detail in the dark"), 0, 1, 0.05]];
@@ -3706,6 +3795,8 @@ function lockControls() {
   // (save(): redraws the preview, which hides or shows the translations on it too)
   $("overlays_enabled").addEventListener("change", (e) => { cfg.overlays_enabled = e.target.checked; renderOutputs(); save(); });
   renderOutputs();
+  $("stream_mode").checked = cfg.stream_mode === true;
+  $("stream_mode").addEventListener("change", (e) => setStreamMode(e.target.checked));
   try {
     FONT_LIST = await invoke("list_fonts");
   } catch (e) {

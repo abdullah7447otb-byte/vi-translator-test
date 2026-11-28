@@ -49,6 +49,11 @@ fn player(setting: &str) -> Vec<(String, String)> {
     parsed
 }
 
+/// The built-in names and lines (for the Translator tab's list: what the player can see and override).
+pub fn built_in_list() -> Vec<(String, String)> {
+    built_in().to_vec()
+}
+
 fn built_in() -> &'static [(String, String)] {
     static B: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
     B.get_or_init(|| parse_tsv(BUILT_IN))
@@ -106,6 +111,41 @@ pub fn protect(setting: &str, line: &str, taken: usize) -> (String, Vec<String>)
         }
     }
     (out, arabic)
+}
+
+/// The names (places, people, brands) the glossary has that this line says, each once, longest first, with
+/// their Arabic: for the language models, told to write each exactly so — the same name the same way in the
+/// subtitles, on the map and on the phone. Matched as `protect` matches (whole words; a name written with a
+/// capital only where the line writes it so).
+pub fn names_in(setting: &str, line: &str) -> Vec<(String, String)> {
+    let mut list = entries(setting);
+    list.sort_by_key(|(en, _)| std::cmp::Reverse(en.len()));
+    let lower = line.to_lowercase();
+    // (a shorter name inside a longer one already found is not said on its own: "Leonida" in "Leonida Keys")
+    let mut taken: Vec<(usize, usize)> = Vec::new();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (en, ar) in list {
+        if en.split_whitespace().count() == 0 || !en.chars().next().is_some_and(char::is_uppercase) {
+            continue;
+        }
+        let find = en.to_lowercase();
+        let mut at = 0;
+        while let Some(i) = lower[at..].find(&find).map(|i| i + at) {
+            let end = i + find.len();
+            let edge = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '\'');
+            let named = line.is_char_boundary(i) && line[i..].chars().next().is_some_and(char::is_uppercase);
+            let inside = taken.iter().any(|&(a, b)| i >= a && end <= b);
+            if edge(lower[..i].chars().next_back()) && edge(lower[end..].chars().next()) && named && !inside {
+                taken.push((i, end));
+                if !out.iter().any(|(e, _)| e.eq_ignore_ascii_case(&en)) {
+                    out.push((en.clone(), ar.clone()));
+                }
+                break;
+            }
+            at = end;
+        }
+    }
+    out
 }
 
 /// The model's Arabic tidied, against the line's English: brackets the English hasn't (the model puts
@@ -221,5 +261,34 @@ mod tests {
         assert_eq!(tidy("Where are you?", "أين أنت?"), "أين أنت؟");
         assert_eq!(tidy("Press X, then Y?", "اضغط X, ثم Y?"), "اضغط X, ثم Y?");
         assert_eq!(tidy("You owe me, Jason.", "أنت مدين لي, جيسون."), "أنت مدين لي، جيسون.");
+    }
+}
+
+#[cfg(test)]
+mod names_tests {
+    use super::*;
+
+    #[test]
+    fn a_line_names_its_places_once_each_the_longest_first() {
+        let got = names_in("", "Drive to the Leonida Keys, then back to Vice City.");
+        assert_eq!(got, vec![("Leonida Keys".to_string(), "جزر ليونيدا".to_string()), ("Vice City".to_string(), "فايس سيتي".to_string())]);
+    }
+
+    #[test]
+    fn a_word_that_is_only_a_name_with_its_capital_is_left_alone() {
+        assert!(names_in("", "meet me downtown").is_empty());
+        assert_eq!(names_in("", "Meet me in Downtown")[0].1, "داون تاون");
+    }
+
+    #[test]
+    fn the_players_own_spelling_wins() {
+        let got = names_in("Vice City = فايس ستي", "Welcome to Vice City");
+        assert_eq!(got, vec![("Vice City".to_string(), "فايس ستي".to_string())]);
+    }
+
+    #[test]
+    fn the_maps_capitals_are_names_too() {
+        let got = names_in("", "KELLY COUNTY");
+        assert_eq!(got[0].1, "مقاطعة كيلي");
     }
 }

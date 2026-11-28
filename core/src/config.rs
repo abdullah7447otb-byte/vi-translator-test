@@ -374,6 +374,11 @@ pub struct Config {
     /// "custom", "bright", "contrast", "gamma", "shadows", "sat", "sharp"}. Only how the app shows the
     /// picture (ui/app.js PICTURE_GLSL): never the frames the text is read from.
     pub picture: serde_json::Value,
+    /// Stream mode (the header's switch): one click sets the app up for streaming (the picture's effects
+    /// that cost frames off, the fps badge off, the translation over the game's text) and keeps what it
+    /// changed in `stream_saved`, put back when it goes off (ui/app.js setStreamMode).
+    pub stream_mode: bool,
+    pub stream_saved: Option<serde_json::Value>,
     /// The player's own glossary for the free offline translator into Arabic: "English = Arabic"
     /// lines (core/src/glossary.rs), before the built-in ones.
     pub glossary: String,
@@ -974,6 +979,8 @@ impl Default for Config {
             preview_fps: DEFAULT_TIMING.preview_fps,
             picture_4k: false,
             perf_mode: "auto".into(),
+            stream_mode: false,
+            stream_saved: None,
             ort_threads: 0,
             bare_mac_noticed: false,
             glossary: String::new(),

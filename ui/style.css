@@ -626,3 +626,11 @@ dialog.part .part-msg { font-size: 13px; color: var(--muted); min-height: 18px; 
 /* Xbox: what to set on the console once */
 .xbox-once ul { margin: 6px 0 0; padding-inline-start: 18px; }
 .xbox-once li { margin-top: 3px; }
+
+/* The built-in names (Translator tab) */
+.names-built-in summary { cursor: pointer; margin: 6px 0; color: var(--text); }
+.names-list { max-height: 260px; overflow: auto; display: grid; gap: 4px; }
+.name-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; padding: 4px 6px; border-radius: 6px; }
+.name-row:nth-child(odd) { background: rgba(255, 255, 255, 0.03); }
+.name-row.mine .ar { opacity: 0.5; text-decoration: line-through; }
+.name-row .btn.small { padding: 2px 8px; font-size: 12px; }

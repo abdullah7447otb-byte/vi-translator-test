@@ -77,6 +77,10 @@ window.I18N = (() => {
       el.dataset.enTitle ??= el.title;
       el.title = t(el.dataset.enTitle);
     });
+    root.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+      el.dataset.enPlaceholder ??= el.placeholder;
+      el.placeholder = t(el.dataset.enPlaceholder);
+    });
   }
 
   /**

@@ -39,6 +39,10 @@
             <span data-i18n>Live translations</span>
             <input type="checkbox" id="live_translations" /><span class="track"></span>
           </label>
+          <label class="switch" data-i18n-title title="One click for streaming: the picture effects that cost frames off, the fps badge off, the translation on a black box over the game's text. Off puts your settings back.">
+            <span data-i18n>Stream mode</span>
+            <input type="checkbox" id="stream_mode" /><span class="track"></span>
+          </label>
           <label class="switch" data-i18n-title title="Show the live picture in this window">
             <span data-i18n>Preview</span>
             <input type="checkbox" id="preview-on" /><span class="track"></span>
@@ -318,9 +322,13 @@
           <p class="muted small" data-i18n>How a chat on the game's phone is shown in Arabic: a steady panel beside the phone with the contact's picture and name, or on the phone itself, following it.</p>
           <div class="field"><select id="phone-display"><option value="panel" data-i18n>Steady panel (easiest to read)</option><option value="inplace" data-i18n>On the phone</option><option value="both" data-i18n>Both</option></select></div>
 
-          <h3 data-i18n>Glossary (offline translator, Arabic)</h3>
-          <p class="muted small" data-i18n>Your own words for the free offline translator, one a line as English = Arabic (Wasted = خلصت عليك). They come before the built-in ones.</p>
+          <h3 data-i18n>Names dictionary and glossary</h3>
+          <p class="muted small" data-i18n>One spelling for every place, person and brand, in the subtitles, on the map and on the phone, with every translator. Your own lines, one a line as English = Arabic (Vice City = فايس سيتي), come before the built-in ones.</p>
           <div class="field"><textarea id="glossary" rows="5" dir="auto" style="width:100%"></textarea></div>
+          <details id="names-built-in" class="names-built-in"><summary data-i18n>The built-in names</summary>
+            <div class="field"><input type="search" id="names-search" data-i18n-placeholder placeholder="Search a name" /></div>
+            <div id="names-list" class="names-list"></div>
+          </details>
 
           <h3 data-i18n>Translation memory</h3>
           <p class="muted small" data-i18n>Remembers every translated line and reuses it instantly the next time it appears — no translator call, and no waiting for the line to settle.</p>
