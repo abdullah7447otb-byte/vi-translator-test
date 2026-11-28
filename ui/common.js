@@ -2046,6 +2046,30 @@ window.AS = (() => {
   // the middle. It doesn't follow the phone's sway: it moves only when the phone jumps (more than 15 % of the
   // picture), and stays 3 s after the phone is put away, so the last message can be read.
   const PANEL = { side: null, top: null, at: 0, P: null, key: "" };
+  // The panel's rows in a steady order: each piece where it was first put, a new one right after the piece
+  // just above it on the phone (or before the one below it). Sorted by their place on the phone every
+  // reading, a chat's bubbles swapped and jumped whenever a reading put a box a few pixels off or split a
+  // message in two. A new chat (another title) starts again; at most 80 kept.
+  const ORDER = { chat: null, keys: [] };
+  const pieceKey = (p) => (p.name || "") + "|" + String(p.en || p.ar || "").trim().toLowerCase().replace(/\s+/g, " ");
+  function stableOrder(Q, body, title) {
+    const chat = title ? String(title.en || title.ar || "") : "";
+    if (ORDER.chat !== chat) [ORDER.chat, ORDER.keys] = [chat, []];
+    const byY = body.slice().sort((a, b) => (a.rect ? a.rect[1] : 0) - (b.rect ? b.rect[1] : 0));
+    const keys = byY.map(pieceKey);
+    keys.forEach((k, i) => {
+      if (ORDER.keys.includes(k)) return;
+      // after the nearest piece above it that is already placed; else before the nearest below
+      let at = -1;
+      for (let j = i - 1; j >= 0 && at < 0; j--) if (ORDER.keys.includes(keys[j])) at = ORDER.keys.indexOf(keys[j]) + 1;
+      if (at < 0) for (let j = i + 1; j < keys.length && at < 0; j++) if (ORDER.keys.includes(keys[j])) at = ORDER.keys.indexOf(keys[j]);
+      if (at < 0) at = ORDER.keys.length;
+      ORDER.keys.splice(at, 0, k);
+    });
+    if (ORDER.keys.length > 80) ORDER.keys.splice(0, ORDER.keys.length - 80);
+    const rank = new Map(ORDER.keys.map((k, i) => [k, i]));
+    return byY.map((p, i) => [p, rank.has(keys[i]) ? rank.get(keys[i]) : 1e9 + i]).sort((a, b) => a[1] - b[1]).map(([p]) => p);
+  }
   function renderPhonePanel(root, P) {
     const W = root.clientWidth, H = root.clientHeight;
     if (!W || !H) return;
@@ -2080,16 +2104,49 @@ window.AS = (() => {
       const en = title.en && title.en !== title.ar ? `<div style="font-size:.7em;opacity:.65;direction:ltr;text-align:start">${esc(title.en)}</div>` : "";
       d.insertAdjacentHTML("beforeend", `<div style="display:flex;align-items:center;gap:${(0.6 * fs).toFixed(1)}px;padding-bottom:${(0.4 * fs).toFixed(1)}px;border-bottom:1px solid rgba(255,255,255,.12)">${pic}<div><div style="font-weight:700;unicode-bidi:plaintext">${esc(title.ar || title.en || "")}</div>${en}</div></div>`);
     }
-    const msgs = Q.pieces.filter((p) => !p.title && p.ar && (!p.role || ["incoming", "outgoing", "message", "note", "heading"].includes(p.role))).sort((a, b) => (a.rect ? a.rect[1] : 0) - (b.rect ? b.rect[1] : 0));
-    for (const m of msgs) {
-      const mine = m.role === "outgoing";
-      const note = m.role === "note" || m.role === "heading";
+    // What the phone shows: a chat (messages either side), a list (contacts or chats: a picture, a name, a
+    // line), or an app's own screen (Settings, BuckMe, WAiNK…: its rows, top to bottom). Before, every
+    // screen was drawn as a chat: a list came out as text without its pictures, and an app's centred rows as
+    // the chat's small faint notes.
+    const body = Q.pieces.filter((p) => !p.title && (p.ar || p.avatar));
+    const chatty = body.some((p) => p.role === "incoming" || p.role === "outgoing");
+    const listy = !chatty && (Q.list || body.filter((p) => p.avatar || p.role === "contact" || p.role === "preview").length >= 2);
+    const kind = chatty ? "chat" : listy ? "list" : "app";
+    const ordered = stableOrder(Q, body, title);
+    const pic = (src, size, round) => src
+      ? `<img src="${src}" style="width:${size}px;height:${size}px;border-radius:${round ? "50%" : "22%"};object-fit:cover;flex:none">`
+      : "";
+    for (const m of ordered) {
+      const text = m.pending ? `<span style="opacity:.55">${esc(m.ar)}</span>` : m.photo ? "📷 " + esc(m.ar) : withEmoji(m.ar, m.emoji);
       const b = document.createElement("div");
-      Object.assign(b.style, note ? { alignSelf: "center", fontSize: ".75em", opacity: ".7" } : {
-        alignSelf: mine ? "flex-end" : "flex-start", maxWidth: "85%", padding: `${0.35 * fs}px ${0.6 * fs}px`, borderRadius: `${0.7 * fs}px`,
-        background: mine ? (m.bg || "#2f7cf6") : "#2b2e3a", color: mine ? "#fff" : "#eef0f4", unicodeBidi: "plaintext", whiteSpace: "pre-wrap",
-      });
-      b.innerHTML = m.photo ? "📷 " + esc(m.ar) : withEmoji(m.ar, m.emoji);
+      if (kind === "list") {
+        // a row: the picture, the name (as on the phone) over its line in Arabic
+        const av = 2 * fs;
+        Object.assign(b.style, { display: "flex", alignItems: "center", gap: `${0.55 * fs}px`, padding: `${0.25 * fs}px 0`, borderBottom: "1px solid rgba(255,255,255,.07)" });
+        // (the name on the panel's own side, an English name isolated inside it)
+        const name = m.name ? `<div style="font-weight:700;font-size:.92em"><bdi>${esc(m.name)}</bdi></div>` : "";
+        const line = m.ar ? `<div style="opacity:.9;unicode-bidi:plaintext;white-space:pre-wrap">${text}</div>` : "";
+        b.innerHTML = `${pic(m.avatar, av, true) || `<div style="width:${av}px;height:${av}px;border-radius:50%;background:#3a3d4a;flex:none"></div>`}<div style="min-width:0;flex:1">${name}${line}</div>${pic(m.badge, fs, false)}`;
+      } else if (kind === "app") {
+        // an app's row, at full size: its heading bold, its buttons and cards as cards
+        const head = m.role === "heading" || m.role === "header" || m.label;
+        const card = m.boxed || m.edge || (!m.label && m.bg && m.bg !== Q.screen_bg);
+        Object.assign(b.style, {
+          padding: card ? `${0.35 * fs}px ${0.6 * fs}px` : `${0.1 * fs}px 0`, borderRadius: `${0.5 * fs}px`,
+          background: card ? "#2b2e3a" : "transparent", border: m.edge ? `1px solid ${m.edge}` : "none",
+          fontWeight: head ? "700" : "500", unicodeBidi: "plaintext", whiteSpace: "pre-wrap",
+          display: "flex", alignItems: "center", gap: `${0.5 * fs}px`,
+        });
+        b.innerHTML = `${pic(m.avatar, 1.6 * fs, true)}<div style="flex:1">${text}</div>${pic(m.badge, fs, false)}`;
+      } else {
+        const mine = m.role === "outgoing";
+        const note = m.role === "note" || m.role === "heading";
+        Object.assign(b.style, note ? { alignSelf: "center", fontSize: ".75em", opacity: ".7" } : {
+          alignSelf: mine ? "flex-end" : "flex-start", maxWidth: "85%", padding: `${0.35 * fs}px ${0.6 * fs}px`, borderRadius: `${0.7 * fs}px`,
+          background: mine ? (m.bg || "#2f7cf6") : "#2b2e3a", color: mine ? "#fff" : "#eef0f4", unicodeBidi: "plaintext", whiteSpace: "pre-wrap",
+        });
+        b.innerHTML = text;
+      }
       d.appendChild(b);
     }
     root.appendChild(d);

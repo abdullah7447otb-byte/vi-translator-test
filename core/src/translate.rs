@@ -444,7 +444,9 @@ impl Translator {
         // "[n]" (put back in Arabic below), and its Arabic tidied (crate::glossary)
         // (the glossary's whole lines, the names kept, the clean-up: for the offline translator and Apple's alike)
         let offline_ar = (cfg.engine == "local" || cfg.engine == "apple") && cfg.target_lang == "ar";
-        if offline_ar && icons.is_empty() && phrases.is_empty() {
+        // (a whole line the glossary has — a map legend's, a phone app's button, the player's own — is the same
+        // Arabic whatever the translator: "Request" on BuckMe is «طلب», never a new word each time)
+        if cfg.target_lang == "ar" && icons.is_empty() && phrases.is_empty() {
             if let Some(ar) = crate::glossary::whole_line(&cfg.glossary, line) {
                 return Ok(vec![(ar, None)]);
             }
@@ -1673,6 +1675,23 @@ mod openai_tests {
         cfg.profile = "gta6".into();
         let (system, _, _) = tr.llm_prompt(&cfg, "Hi.", &[], &[]);
         assert!(system.contains("Jason (Jason Duval), a man") && system.contains("Lucia (Lucia Caminos), a woman"), "{system}");
+    }
+
+    #[test]
+    fn names_are_spelled_one_way_and_whole_lines_are_the_glossarys_with_every_translator() {
+        let mut tr = Translator::new(std::env::temp_dir().join("vit-names-test"));
+        let mut cfg = Config::default();
+        cfg.target_lang = "ar".into();
+        cfg.engine = "claude".into();
+        // the line's names, in the prompt, the spelling the player sees everywhere
+        let (system, _, _) = tr.llm_prompt(&cfg, "Meet me in Port Gellhorn with Cal Hampton.", &[], &[]);
+        assert!(system.contains("Port Gellhorn = بورت غيلهورن") && system.contains("Cal Hampton = كال هامبتون"), "{system}");
+        // (a line without names: no list)
+        let (system, _, _) = tr.llm_prompt(&cfg, "Hi.", &[], &[]);
+        assert!(!system.contains("Write these names"));
+        // a phone app's button: the glossary's line, no translator called (none is set up here)
+        let got = tr.translate(&cfg, "Set Destination", &[], &[], &|_| {}).expect("from the glossary");
+        assert_eq!(got.iter().map(|s| s.0.as_str()).collect::<String>(), "تحديد الوجهة");
     }
 
     #[test]

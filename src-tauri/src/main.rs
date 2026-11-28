@@ -1341,6 +1341,12 @@ fn check_report(webview: tauri::Webview, state: tauri::State<AppState>) -> Resul
         log.iter().rev().take(20).rev().map(|l| serde_json::json!({ "area": l["area"], "en": l["en"], "ar": l["text"] })).collect()
     };
     write("lines.json", &serde_json::Value::Array(lines)).map_err(|e| e.to_string())?;
+    // (what the app drew over the game this moment: a page's layout and the phone's pieces, as the overlays got
+    // them — so a report can be drawn again exactly; their pictures are the game's own pieces, small)
+    let page = state.shared.live.screen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    write("page.json", &page.unwrap_or(serde_json::Value::Null)).map_err(|e| e.to_string())?;
+    let phone = state.shared.live.phone.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    write("phone.json", &phone.unwrap_or(serde_json::Value::Null)).map_err(|e| e.to_string())?;
     // (the game's picture now, as the app reads it, and the same with each reading area drawn on it in the
     // colour of what it did: check_picture.rs)
     if let Some(f) = state.shared.latest() {
