@@ -59,7 +59,10 @@
 ### أخطاء انحلّت وأنا أشتغل
 - أول قائمة تفتحها بعد تشغيل البرنامج كانت أحيانًا ما تترجم، لأن قائمة الكلمات تنبني وقتها وتاخذ وقت أطول من المسموح.
 - قائمة الأسماء الجاهزة كانت تطلع خطأ إذا ما وصلها رد من البرنامج.
-- «10Gbase-T» ما كانت تنقرأ في فحص الشبكة.
+- «10Gbase-T» ما كانت تنقرأ في فحص الشبكة، ولا كيابل 2.5 و5 جيجا («2500Base-T»).
+- **خيارات الزاوية اليمين تحت** («HEAD OUT △» و«● LUCIA L2»، اثنين أو ثلاثة أو أربعة فوق بعض) ما كانت تترجم أبد، لأن ما فيه منطقة قراءة تغطي هالزاوية. الحين كل خيار ينقرأ ويترجم على سطره، ويغطي الإنجليزي، والزر يبقى زي ما هو. الخيار الرمادي (اللي ما ينفع الحين) يطلع رمادي بعد. وما يتكرر مع أزرار الجوال.
+- تنعيم الحركة: إذا وقف نفسه (بطيء أو فشل) صار يبقى واقف إلى آخر البث بدل ما يرجع يشتغل كل فريم، ونموذجه يتحمّل بعيد عن خيط الفيديو فما يعلّق الصورة أول ما يشتغل. وانحل خطأ ذاكرة كان ممكن يطيّح البرنامج على ماك ما يدعم الحجم.
+- فحص الشبكة ما عاد يعلّق صفحة الحالة إذا أوامر النظام تأخرت.
 
 ---
 
@@ -89,6 +92,9 @@
 - **Fixed on the way:**
   - The first menu after start could exceed the script's time limit.
   - The names list failed on an empty answer.
-  - 10 Gb/s links were not parsed.
+  - 10 Gb/s, 2.5 Gb/s and 5 Gb/s links were not parsed.
+  - The actions stacked at the bottom right ("HEAD OUT △", "● LUCIA L2", two to four of them) were never translated: no read area covered that corner. Each is now read and covered on its own line (a new beside page, off while the phone is up).
+  - Motion smoothing: turned off by itself now stays off; its model loads off the decode thread; an init returning nil no longer over-releases.
+  - The network check no longer holds its lock while the system commands run (3 s limit each).
 
 Windows gets the shared changes from this release but no Windows-specific work.

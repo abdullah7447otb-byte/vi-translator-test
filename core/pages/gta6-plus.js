@@ -452,3 +452,127 @@
     return labels;
   };
 })();
+
+// ------------------------------------------------------------------ the actions, bottom right
+// GTA VI's actions in the bottom-right corner, one under another, each with its button on its right
+// ("HEAD OUT 👥 △", "● LUCIA (L2)"): two, three, four of them at times. No read area covered that corner (the
+// subtitles' is centred, the prompts' ends above it), so they were never translated. Each line is its own
+// action: read, translated and covered on its own line, the button left as it is.
+(function () {
+  const ACTIONS = {
+    ar: {
+      "HEAD OUT": "انطلق", "LEAVE": "غادر", "EXIT": "اخرج", "ENTER": "ادخل", "TALK": "تحدّث", "GREET": "سلّم",
+      "SIT": "اجلس", "SIT DOWN": "اجلس", "STAND UP": "قف", "GET UP": "انهض", "SEARCH": "فتّش", "INSPECT": "افحص",
+      "LOOK": "انظر", "PICK UP": "التقط", "TAKE": "خذ", "GIVE": "أعطِ", "USE": "استخدم", "INTERACT": "تفاعل",
+      "OPEN": "افتح", "CLOSE": "أغلق", "KNOCK": "اطرق الباب", "FOLLOW": "اتبع", "WAIT": "انتظر", "ANSWER": "رُد",
+      "IGNORE": "تجاهل", "CALL": "اتصل", "SKIP": "تخطَّ", "CONTINUE": "تابع", "ACCEPT": "اقبل", "DECLINE": "ارفض",
+      "CANCEL": "إلغاء", "BACK": "رجوع", "BUY": "اشترِ", "SELL": "بِع", "PAY": "ادفع", "SHOP": "تسوّق",
+      "BROWSE": "تصفّح", "ROB": "اسرق", "HOLD UP": "سطو مسلّح", "START": "ابدأ", "START MISSION": "ابدأ المهمة",
+      "GET IN": "اركب", "GET OUT": "انزل", "DRIVE": "قُد", "PARK": "اركن", "REPAIR": "أصلِح", "REFUEL": "عبّئ الوقود",
+      "HIDE": "اختبئ", "CLIMB": "تسلّق", "JUMP": "اقفز", "HUG": "عانق", "KISS": "قبّل", "DANCE": "ارقص",
+      "DRINK": "اشرب", "EAT": "كُل", "SLEEP": "نَم", "REST": "استرح", "SAVE": "احفظ", "SAVE GAME": "احفظ اللعبة",
+      "CHANGE OUTFIT": "غيّر الملابس", "WARDROBE": "خزانة الملابس", "SWITCH": "بدّل", "HELP": "ساعد",
+      "PET": "دلّل", "PLAY": "العب", "WATCH": "شاهد", "TAKE PHOTO": "التقط صورة", "SHOW": "أرِ", "DROP": "اترك",
+      "THROW": "ارمِ", "RELOAD": "أعد التعبئة", "AIM": "صوّب", "SHOOT": "أطلق النار", "CARRY": "احمل",
+      "LIFT": "ارفع", "PUSH": "ادفع", "PULL": "اسحب", "STEAL": "اسرق", "LOCKPICK": "افتح القفل", "HACK": "اخترق",
+      "COLLECT": "اجمع", "DELIVER": "سلّم", "STORE": "خزّن", "LOOT": "انهب", "WAVE": "لوّح", "WHISTLE": "صفّر",
+      "JASON": "جيسون", "LUCIA": "لوسيا",
+    },
+  };
+  const key = (en) => en.toUpperCase().replace(/0/g, "O").replace(/[^A-Z &'’-]/g, "").replace(/\s+/g, " ").trim();
+  const actionWord = (en) => {
+    const t = ACTIONS[vi.lang()] || {};
+    const k = key(en);
+    if (t[k]) return t[k];
+    // (the language's own word list, then the names dictionary)
+    let w = "";
+    try { w = ownWord(en, true) || ""; } catch (e) { w = ""; }
+    if (!w && typeof vi.name === "function") w = vi.name(en) || "";
+    return w;
+  };
+  // the corner (the buttons' column ends ~0.985 of the width; four actions reach ~0.78 of the height)
+  const zone = (f) => pxRect(f, { x: 0.76, y: 0.74, w: 0.235, h: 0.25 });
+  // the buttons on the corner's right edge: shapes about a letter and a half tall, one per action (white, or
+  // grey ~105 for an action that can't be taken now, its words grey too)
+  function buttons(f) {
+    const z = zone(f);
+    const col = { x: z.x + Math.round(z.w * 0.72), y: z.y, w: z.w - Math.round(z.w * 0.72), h: z.h };
+    const unit = f.h * 0.024; // a button's height at 1080p is ~26 px
+    const rows = f.profile(col, { axis: "rows", step: 1, bright: [80, 255], spread: [0, 45] });
+    const out = [];
+    let start = -1;
+    for (let i = 0; i <= rows.length; i++) {
+      const on = i < rows.length && rows[i] >= 2;
+      if (on && start < 0) start = i;
+      if (!on && start >= 0) {
+        const h = i - start;
+        if (h >= unit * 0.7 && h <= unit * 2) out.push({ y0: col.y + start, y1: col.y + i });
+        start = -1;
+      }
+    }
+    return out;
+  }
+  const sig = (bs) => bs.map((b) => Math.round((b.y0 + b.y1) / 2));
+  const sameSig = (a, b) => a.length === b.length && a.every((y, i) => Math.abs(y - b[i]) <= 5);
+
+  pages.add({
+    id: "gta6_actions",
+    option: "game_notices",
+    beside: true,
+    // (a translation found later shows on the next read; a line's own read keeps the boxes where they were)
+    hold: { ms: 250, rereadMs: 700 },
+    present(f) {
+      const bs = buttons(f);
+      if (!bs.length || bs.length > 6) return null;
+      // (what was read there and wasn't actions: not read again while it looks the same)
+      if (this.not && sameSig(this.not, sig(bs))) return null;
+      return { bs };
+    },
+    read(f, k) {
+      if (!k) return null;
+      const z = zone(f);
+      const segs = segments(f, z, { scale: 2 }, 1.6);
+      const menu = [];
+      const unit = f.h * 0.024;
+      for (const b of k.bs) {
+        // the action's words: on the button's row, left of it, in capitals
+        const mid = (b.y0 + b.y1) / 2;
+        const row = segs.filter((s) => s.y0 <= mid + unit * 0.5 && s.y1 >= mid - unit * 0.5 && s.x1 < z.x + z.w * 0.9);
+        const ws = row.flatMap((s) => s.words).filter((w) => /\p{L}{2}/u.test(w.text) && !/^[LR][1-3]$/.test(w.text)).sort((a, b) => a.x - b.x);
+        if (!ws.length) continue;
+        const en = ws.map((w) => w.text).join(" ").replace(/\s+/g, " ").trim();
+        // (a menu's own buttons row, "SELECT ✕  BACK ○": two of its button names or more on the line; the menu's
+        // page has it)
+        if (typeof splitButtons === "function" && splitButtons({ words: ws }).filter((p) => known(p.text, BUTTON_NAMES)).length >= 2) continue;
+        // (the game's actions are in capitals: a sign or a plate in the scene is mixed or has none)
+        if (/\p{Ll}/u.test(en) || !/^[\p{Lu}\d &'’.!?-]+$/u.test(en) || en.length > 28) continue;
+        const x0 = Math.min(...ws.map((w) => w.x)), x1 = Math.max(...ws.map((w) => w.x + w.w));
+        const y0 = Math.min(...ws.map((w) => w.y)), y1 = Math.max(...ws.map((w) => w.y + w.h));
+        const h = y1 - y0, pad = Math.round(h * 0.3);
+        // (the Arabic may be longer: room to the left, the right edge where the English ends, by its icon)
+        const left = Math.max(z.x, x0 - Math.round(h * 2.5));
+        const box = { x: left, y: y0 - pad, w: x1 + pad - left, h: h + 2 * pad };
+        const bg = f.median({ x: x0 - pad, y: y0 - pad, w: x1 - x0 + 2 * pad, h: h + 2 * pad }, { step_x: 2, step_y: 2, exclude: [x0 - 1, y0 - 1, x1 + 1, y1 + 1] });
+        const fg = f.pixels({ x: x0, y: y0, w: x1 - x0, h }, { step: 1, bright: [80, 255], spread: [0, 40], median: true });
+        const ar = actionWord(en);
+        menu.push({
+          en, ar: ar || "", fixed: !!ar, icons: [], lines: 1,
+          rect: f.box(box.x, box.y, box.w, box.h), bg: hex(bg || { r: 0, g: 0, b: 0 }), fg: hex((fg && fg.median) || { r: 255, g: 255, b: 255 }),
+          line_h: h / f.h, size: 1.15, font: "title", weight: 700, align: "right", wrap: "no",
+          item: false, right: true, missed: 0,
+        });
+      }
+      if (!menu.length) {
+        this.not = sig(k.bs);
+        return null;
+      }
+      this.not = null;
+      this.sig = sig(k.bs);
+      return { id: "gta6_actions", title: { x: 0, y: 0, w: 0, h: 0 }, menu, buttons: [], buttons_row: null };
+    },
+    // still up: the same buttons in the same places (one more, one less: read again)
+    same(f) {
+      return !!this.sig && sameSig(this.sig, sig(buttons(f)));
+    },
+  });
+})();

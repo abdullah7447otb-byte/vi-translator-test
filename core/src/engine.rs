@@ -1122,11 +1122,21 @@ impl Reader {
                         hide_screen(&*ctx.sink, &ctx.live, &latest, &mut screen);
                     }
                 }
+                // The phone up: a card beside the game isn't (the phone's own buttons at the bottom right, "SELECT
+                // ✕ / BACK ○", are the phone panel's; the corner's actions page read them a second time).
+                let phone_up = ctx.live.phone_active.load(std::sync::atomic::Ordering::Relaxed);
+                let is_beside = |id: &str| pages.as_ref().and_then(|p| p.info(id)).is_some_and(|i| i.beside);
+                if phone_up && screen.as_ref().is_some_and(|s| is_beside(&s.id)) {
+                    hide_screen(&*ctx.sink, &ctx.live, &latest, &mut screen);
+                }
                 if screens_on {
                     match &screen {
                         None => {
                             if let Some(p) = &pages {
                                 for id in &script_pages {
+                                    if phone_up && is_beside(id) {
+                                        continue;
+                                    }
                                     if let Some(k) = p.present(id, &frame, &ocr) {
                                         found = p.read(id, &frame, &ocr, &k);
                                         if found.is_some() {
