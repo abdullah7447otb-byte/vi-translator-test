@@ -71,6 +71,15 @@ fn main() {
         Err(_) => Pages::for_game("gta6", &std::env::temp_dir()).expect("GTA VI's pages"),
     };
     let ocr = Ocr::with_engine(Box::new(PyOcr::start(server)));
+    // (PHONE=1: where the phone is held, per frame)
+    if std::env::var_os("PHONE").is_some() {
+        for file in &args[2..] {
+            let img = image::open(file).expect("a frame").to_rgba8();
+            let (w, h) = img.dimensions();
+            println!("{file}\t{:?}", vi_translator_core::phone_pose::locate(img.as_raw(), w, h));
+        }
+        return;
+    }
     // (AREA=x,y,w,h: an area's crop read as the engine reads it, its words printed)
     if let Ok(a) = std::env::var("AREA") {
         let v: Vec<f64> = a.split(',').filter_map(|t| t.parse().ok()).collect();

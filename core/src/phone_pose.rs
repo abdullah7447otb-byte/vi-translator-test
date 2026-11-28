@@ -140,6 +140,12 @@ fn limit(n: i32, lo: i32, hi: i32) -> i32 {
 }
 
 fn slots(g: &Grid, r0: i32, r1: i32, lmin: i32, lmax: i32, maximum: usize) -> Vec<Slot> {
+    slots_with(g, r0, r1, lmin, lmax, maximum, (14, 20))
+}
+
+/// `slots`, the least darkness asked of a slot against its surround and its rim given (`floors`): (14, 20)
+/// as CouchSubs has it; lower for a phone's bottom at night, its bezel itself nearly black.
+fn slots_with(g: &Grid, r0: i32, r1: i32, lmin: i32, lmax: i32, maximum: usize, floors: (i32, i32)) -> Vec<Slot> {
     let (left, width) = (95i32, 211i32);
     let rows = r1 - r0;
     let mut band = vec![0u8; ((rows + 8) * width) as usize];
@@ -157,7 +163,7 @@ fn slots(g: &Grid, r0: i32, r1: i32, lmin: i32, lmax: i32, maximum: usize) -> Ve
         for x in (105 - left)..=(294 - left) {
             let p = row + x;
             let surround = b(p - 3 * width).min(b(p + 3 * width));
-            if x < 294 - left && surround - b(p) >= limit(surround / 3, 14, 25) {
+            if x < 294 - left && surround - b(p) >= limit(surround / 3, floors.0, 25) {
                 if start.is_none() {
                     start = Some(x);
                 }
@@ -173,7 +179,7 @@ fn slots(g: &Grid, r0: i32, r1: i32, lmin: i32, lmax: i32, maximum: usize) -> Ve
                     rim.sort_unstable();
                     let tone = (rim[3] + rim[4]) / 2;
                     let contrast = tone - b(center);
-                    if contrast >= limit(tone / 3, 20, 33) && rim[7] - rim[0] <= 24.max(contrast * 3 / 4) {
+                    if contrast >= limit(tone / 3, floors.1, 33) && rim[7] - rim[0] <= 24.max(contrast * 3 / 4) {
                         if found.len() >= maximum {
                             return Vec::new();
                         }
@@ -270,11 +276,22 @@ fn locate_picture(rgba: &[u8], fw: u32, pic: (u32, u32, u32, u32)) -> Option<Pos
         return None;
     }
     let grid = Grid::new(rgba, fw, pic, 40, 360, 225);
-    let lower = slots(&grid, 145, 217, 5, 14, 16);
+    let pose = pair(&grid, &upper, &slots(&grid, 145, 217, 5, 14, 16));
+    if pose.is_some() {
+        return pose;
+    }
+    // (at night, in a car: the bezel under the screen is nearly black, its home bar only a little darker —
+    // "17 around, 0 on it" — the earpiece and camera above already found: the home bar looked for again, fainter)
+    pair(&grid, &upper, &slots_with(&grid, 145, 217, 5, 14, 16, (8, 12)))
+}
+
+/// The best phone from earpieces (with their camera) and home bars: the shape's rules, then its edges.
+fn pair(grid: &Grid, upper: &[Slot], lower: &[Slot]) -> Option<Pose> {
+    let grid = grid;
     let mut best = 0.0;
     let mut pose = None;
-    for top in &upper {
-        for bottom in &lower {
+    for top in upper {
+        for bottom in lower {
             let h = (bottom.y - top.y) as f64;
             let dx = bottom.x - top.x;
             let (tl, bl) = (top.length as f64, bottom.length as f64);
@@ -537,3 +554,4 @@ mod tests {
         assert_eq!(miss_grace_for(1000, std::time::Duration::from_millis(900)), 2);
     }
 }
+
