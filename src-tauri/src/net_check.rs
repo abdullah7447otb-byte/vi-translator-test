@@ -55,9 +55,9 @@ pub fn iface<'a>(ifconfig: &'a str, dev: &str) -> Option<(bool, &'a str)> {
 /// A media line's speed (Mb/s) and duplex: "autoselect (1000baseT <full-duplex,flow-control>)" → (1000, true).
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub fn speed(media: &str) -> Option<(u32, bool)> {
-    let i = media.find("base")?;
-    // ("10Gbase-T": in Gb/s)
-    let (head, giga) = match media[..i].strip_suffix('G') {
+    // ("1000baseT", "2500Base-T", "10Gbase-T": the case varies, and G is in Gb/s)
+    let i = media.to_ascii_lowercase().find("base")?;
+    let (head, giga) = match media[..i].strip_suffix(['G', 'g']) {
         Some(h) => (h, true),
         None => (&media[..i], false),
     };
@@ -105,21 +105,30 @@ static LAST: Mutex<Option<(Instant, Net)>> = Mutex::new(None);
 
 /// The Mac's network now (at most 20 s old). Other systems: nothing found.
 pub fn now() -> Net {
-    let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((at, n)) = last.as_ref()
-        && at.elapsed() < Duration::from_secs(20)
     {
-        return n.clone();
+        let last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((at, n)) = last.as_ref()
+            && at.elapsed() < Duration::from_secs(20)
+        {
+            return n.clone();
+        }
     }
+    // (read with the lock let go: the commands can be slow when the system is busy)
     let n = take();
-    *last = Some((Instant::now(), n.clone()));
+    *LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((Instant::now(), n.clone()));
     n
 }
 
 #[cfg(target_os = "macos")]
 fn take() -> Net {
-    let run = |cmd: &str, args: &[&str]| {
-        std::process::Command::new(cmd).args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+    // (each command 3 s at most: past that it is left running on its own thread and read as nothing)
+    let run = |cmd: &'static str, args: &'static [&'static str]| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let out = std::process::Command::new(cmd).args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+            let _ = tx.send(out.unwrap_or_default());
+        });
+        rx.recv_timeout(Duration::from_secs(3)).unwrap_or_default()
     };
     read(&run("/usr/sbin/networksetup", &["-listallhardwareports"]), &run("/sbin/ifconfig", &["-a"]))
 }
@@ -152,6 +161,8 @@ mod tests {
         let half = IFCONFIG.replace("full-duplex", "half-duplex");
         assert!(advice(&read(PORTS, &half))[0].contains("below 1 Gb/s"));
         assert_eq!(speed("autoselect (10Gbase-T <full-duplex>)"), Some((10000, true)));
+        assert_eq!(speed("autoselect (2500Base-T <full-duplex>)"), Some((2500, true)));
+        assert_eq!(speed("autoselect (5000Base-T <full-duplex,flow-control>)"), Some((5000, true)));
     }
 
     #[test]

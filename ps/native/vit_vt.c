@@ -20,6 +20,7 @@ VitFi *vit_fi_new(void);
 void vit_fi_free(VitFi *fi);
 int vit_fi_supported(void);
 CVPixelBufferRef vit_fi_mid(VitFi *fi, CVPixelBufferRef prev, CVPixelBufferRef next);
+int vit_fi_state(VitFi *fi);
 
 typedef struct VitVt {
 	CMVideoFormatDescriptionRef fmt;
@@ -45,6 +46,7 @@ typedef struct VitVt {
 	int prev_dup;
 	// interpolations made, and their time (µs), for the log and for turning it off when too slow
 	long mids, mid_us, failed;
+	int gave_up; // turned itself off (failing, too slow, not on this Mac): stays off for this stream
 } VitVt;
 
 static void on_picture(void *user, void *frame_user, OSStatus status, VTDecodeInfoFlags flags, CVImageBufferRef image,
@@ -188,10 +190,25 @@ static void put(CVPixelBufferRef *slot, CVPixelBufferRef px) {
 // so a frame that is the one before it again can be replaced by one made between that one and the next:
 // decoded A A' B B' C → shown A, mid(A,B), B, mid(B,C)… On any failure, or slower than 12 ms a frame on
 // average, it turns itself off and the frames are shown as they come.
+static void let_go(VitVt *vt) {
+	put(&vt->prev, NULL);
+	put(&vt->base, NULL);
+	put(&vt->shown, NULL);
+	vt->prev_dup = 0;
+}
+
+// Off by itself: the frames kept and the processor are let go, and the setting can't turn it on again.
+static void give_up(VitVt *vt) {
+	vt->gave_up = 1;
+	vt->smooth = 0;
+	let_go(vt);
+	if (vt->fi) { vit_fi_free(vt->fi); vt->fi = NULL; }
+}
+
 static CVPixelBufferRef smooth_step(VitVt *vt, CVPixelBufferRef cur) {
 	if (!vt->fi) {
 		vt->fi = vit_fi_new();
-		if (!vt->fi) { vt->smooth = 0; return cur; }
+		if (!vt->fi) { give_up(vt); return cur; }
 	}
 	if (!vt->prev) {
 		put(&vt->prev, cur);
@@ -203,7 +220,10 @@ static CVPixelBufferRef smooth_step(VitVt *vt, CVPixelBufferRef cur) {
 	int cur_dup = same_picture(cur, vt->prev);
 	CVPixelBufferRef out = vt->prev;
 	CVPixelBufferRef mid = NULL;
+	int stop = 0;
 	if (vt->prev_dup && !cur_dup && vt->base) {
+		// (timed and counted only once the processor is ready: its model loads on a queue of its own)
+		int was_ready = vit_fi_state(vt->fi) == 1;
 		CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
 		mid = vit_fi_mid(vt->fi, vt->base, cur);
 		long us = (long)((CFAbsoluteTimeGetCurrent() - t0) * 1e6);
@@ -211,29 +231,29 @@ static CVPixelBufferRef smooth_step(VitVt *vt, CVPixelBufferRef cur) {
 			vt->mids++;
 			vt->mid_us += us;
 			out = mid;
-		} else if (++vt->failed > 30) {
-			vt->smooth = 0;
+		} else if (vit_fi_state(vt->fi) < 0 || (was_ready && ++vt->failed > 30)) {
+			stop = 1;
 		}
-		// (too slow for 60 frames a second: off; after the first ones, while its model loads)
-		if (vt->mids >= 60 && vt->mid_us / vt->mids > 12000) vt->smooth = 0;
+		// (too slow for 60 frames a second)
+		if (vt->mids >= 60 && vt->mid_us / vt->mids > 12000) stop = 1;
 	}
 	put(&vt->shown, out);
 	if (mid) CVPixelBufferRelease(mid);
 	if (!cur_dup) put(&vt->base, cur);
 	put(&vt->prev, cur);
 	vt->prev_dup = cur_dup;
+	if (stop) {
+		// (this frame as decoded: the copies kept are let go)
+		give_up(vt);
+		return cur;
+	}
 	return vt->shown;
 }
 
 // Motion smoothing on or off (the setting, read on every frame by the caller); off lets go of the frames kept.
 void vit_vt_set_smooth(VitVt *vt, int on) {
-	if (!on && vt->smooth) {
-		put(&vt->prev, NULL);
-		put(&vt->base, NULL);
-		put(&vt->shown, NULL);
-		vt->prev_dup = 0;
-	}
-	if (on && !vt->smooth && vt->failed > 30) return; // (turned off by failing: stays off for this stream)
+	if (on && vt->gave_up) return; // (turned itself off: stays off for this stream)
+	if (!on && vt->smooth) let_go(vt);
 	vt->smooth = on;
 }
 
@@ -241,7 +261,7 @@ void vit_vt_set_smooth(VitVt *vt, int on) {
 int vit_vt_smooth_state(VitVt *vt, long *avg_us) {
 	*avg_us = vt->mids ? vt->mid_us / vt->mids : 0;
 	if (vt->smooth) return 1;
-	return (vt->failed > 30 || (vt->mids >= 60 && *avg_us > 12000)) ? -1 : 0;
+	return vt->gave_up ? -1 : 0;
 }
 
 int vit_vt_smooth_supported(void) { return vit_fi_supported(); }
