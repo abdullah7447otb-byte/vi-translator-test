@@ -2792,10 +2792,10 @@ const PICTURE_GLSL = `
         // (one hash gives the direction, one of eight, and the distance, 4 to 16 px: no sin or cos a pixel)
         const vec2 DIRS[8] = vec2[8](vec2(1.0, 0.0), vec2(0.924, 0.383), vec2(0.707, 0.707), vec2(0.383, 0.924),
                                      vec2(0.0, 1.0), vec2(-0.383, 0.924), vec2(-0.707, 0.707), vec2(-0.924, 0.383));
-        // (the same points for a whole tile of 8×8 pixels, a new set each frame: reads that land near each other
-        // are what a GPU reads fast — a random point for every pixel was most of the picture's time — and the
-        // frame-to-frame change and the dither below keep the tiles from showing)
-        float h = hash(vec2(p >> 3) + pFrame);
+        // (the same points for a tile of 2×2 pixels, a new set each frame: reads that land near each other are
+        // what a GPU reads fast — a random point for every pixel was most of the picture's time. Tiles of 8×8
+        // were faster still, but their edges showed as steps of 2 levels on a dark ramp: tools/night_bands.py)
+        float h = hash(vec2(p >> 1) + pFrame);
         vec2 dir = DIRS[int(h * 8.0) & 7] * (4.0 + 12.0 * fract(h * 37.0));
         ivec2 o1 = ivec2(dir), o2 = ivec2(-dir.y, dir.x);
         // (on the luma only: one read a point, no colour conversion. Bands at night are steps of brightness,
