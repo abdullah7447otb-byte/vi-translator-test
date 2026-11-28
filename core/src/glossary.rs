@@ -113,6 +113,24 @@ pub fn protect(setting: &str, line: &str, taken: usize) -> (String, Vec<String>)
     (out, arabic)
 }
 
+/// The player's own glossary lines, as last seen by the translator: for the page scripts' `vi.name`, which
+/// have no settings of their own.
+static PLAYER_LINES: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
+
+/// The player's glossary now (called by the translator with every line).
+pub fn set_player(setting: &str) {
+    if *PLAYER_LINES.read().unwrap_or_else(std::sync::PoisonError::into_inner) != setting {
+        *PLAYER_LINES.write().unwrap_or_else(std::sync::PoisonError::into_inner) = setting.to_string();
+    }
+}
+
+/// A name or a line the glossary has, whole ("KELLY COUNTY", "Gulf of Leonida"), in Arabic: the player's
+/// spelling first. For the map's labels, drawn by a page script without waiting for a translator.
+pub fn name_for(line: &str) -> Option<String> {
+    let setting = PLAYER_LINES.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    whole_line(&setting, line)
+}
+
 /// The names (places, people, brands) the glossary has that this line says, each once, longest first, with
 /// their Arabic: for the language models, told to write each exactly so — the same name the same way in the
 /// subtitles, on the map and on the phone. Matched as `protect` matches (whole words; a name written with a

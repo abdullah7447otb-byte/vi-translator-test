@@ -634,3 +634,6 @@ dialog.part .part-msg { font-size: 13px; color: var(--muted); min-height: 18px; 
 .name-row:nth-child(odd) { background: rgba(255, 255, 255, 0.03); }
 .name-row.mine .ar { opacity: 0.5; text-decoration: line-through; }
 .name-row .btn.small { padding: 2px 8px; font-size: 12px; }
+
+/* a slider's two ends, named under it on the sides it runs (right to left in Arabic) */
+.range-ends { display: flex; justify-content: space-between; margin-top: 2px; padding-inline-end: 52px; }

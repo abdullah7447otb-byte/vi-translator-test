@@ -27,6 +27,35 @@ static APPLE_BREAKER: std::sync::Mutex<crate::apple_translate::Breaker> = std::s
 
 pub type Segments = Vec<(String, Option<String>)>;
 
+/// A language model's Arabic with the line's names in the glossary's spelling where it left one in English
+/// ("Port Gellhorn" kept as is → «بورت غيلهورن»). A name it spelled its own way is logged: the prompt names
+/// the spelling, so that is rare, and a second call for it would delay the line.
+fn names_kept(cfg: &Config, line: &str, mut segs: Segments) -> Segments {
+    if cfg.target_lang != "ar" || segs.is_empty() {
+        return segs;
+    }
+    for (en, ar) in crate::glossary::names_in(&cfg.glossary, line) {
+        let mut found = false;
+        for (text, _) in segs.iter_mut() {
+            if text.contains(&ar) {
+                found = true;
+                continue;
+            }
+            let lower = text.to_lowercase();
+            if let Some(i) = lower.find(&en.to_lowercase()) {
+                if text.is_char_boundary(i) && text.is_char_boundary(i + en.len()) {
+                    text.replace_range(i..i + en.len(), &ar);
+                    found = true;
+                }
+            }
+        }
+        if !found {
+            crate::vlog!("[names] \"{en}\" not written «{ar}» in: {}", segs.iter().map(|s| s.0.as_str()).collect::<String>());
+        }
+    }
+    segs
+}
+
 // ------------------------------------------------------------------------------------- local model
 
 #[cfg(feature = "offline")]
@@ -443,6 +472,7 @@ impl Translator {
         // The free offline model into Arabic: the glossary's whole lines as they are, its names as
         // "[n]" (put back in Arabic below), and its Arabic tidied (crate::glossary)
         // (the glossary's whole lines, the names kept, the clean-up: for the offline translator and Apple's alike)
+        crate::glossary::set_player(&cfg.glossary);
         let offline_ar = (cfg.engine == "local" || cfg.engine == "apple") && cfg.target_lang == "ar";
         // (a whole line the glossary has — a map legend's, a phone app's button, the player's own — is the same
         // Arabic whatever the translator: "Request" on BuckMe is «طلب», never a new word each time)
@@ -538,9 +568,9 @@ impl Translator {
             return Ok(segs);
         }
         let segs = if cfg.engine == "claude" {
-            self.claude(cfg, line, phrases, icons)?
+            names_kept(cfg, line, self.claude(cfg, line, phrases, icons)?)
         } else if cfg.engine == "openai" {
-            self.openai(cfg, line, phrases, icons)?
+            names_kept(cfg, line, self.openai(cfg, line, phrases, icons)?)
         } else {
             // Machine translators can't be trusted to keep markers, so translate the line without
             // the icons and put each icon back after the Arabic for the English word before it.
@@ -1692,6 +1722,17 @@ mod openai_tests {
         // a phone app's button: the glossary's line, no translator called (none is set up here)
         let got = tr.translate(&cfg, "Set Destination", &[], &[], &|_| {}).expect("from the glossary");
         assert_eq!(got.iter().map(|s| s.0.as_str()).collect::<String>(), "تحديد الوجهة");
+    }
+
+    #[test]
+    fn a_name_the_model_left_in_english_is_written_the_glossarys_way() {
+        let mut cfg = Config::default();
+        cfg.target_lang = "ar".into();
+        let got = names_kept(&cfg, "Meet me in Port Gellhorn.", vec![("قابلني في Port Gellhorn.".into(), None)]);
+        assert_eq!(got[0].0, "قابلني في بورت غيلهورن.");
+        // (already the glossary's: left as it is)
+        let got = names_kept(&cfg, "Meet me in Port Gellhorn.", vec![("قابلني في بورت غيلهورن.".into(), None)]);
+        assert_eq!(got[0].0, "قابلني في بورت غيلهورن.");
     }
 
     #[test]

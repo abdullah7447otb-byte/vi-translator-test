@@ -777,4 +777,7 @@ I18N.add("ar", {
   "Working: {ms} ms a frame, the picture {late} ms later": "شغّال: {ms} جزء من الثانية لكل فريم، والصورة متأخرة {late} جزء من الثانية",
   "Turned itself off: this Mac couldn't make the frames in time": "انطفى لحاله: الماك ما قدر يصنع الفريمات في وقتها",
   "Motion smoothing off": "إيقاف تنعيم الحركة",
+  "0 = see-through": "0 = شفاف",
+  "1 = solid": "1 = غير شفاف",
+  "Not for an area in the game's own box: its text sits at the top of the area, and read from the bottom line up it would never be read.": "ما ينفع لمنطقة لها مربع في اللعبة: نصها في أعلى المنطقة، ولو انقرأت من السطر السفلي لفوق ما راح تنقرأ أبدًا.",
 });

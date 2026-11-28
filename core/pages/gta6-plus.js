@@ -224,6 +224,9 @@
       }
       const got = base(en, exact);
       if (got || exact) return got;
+      // (a place or a name the names dictionary has: the map's "KELLY COUNTY", "Gulf of Leonida")
+      const named = typeof vi.name === "function" ? vi.name(s) : "";
+      if (named) return named;
       // (a capitals heading, 3–6 letters, one misread: "CAME" for "GAME")
       if (/^\p{Lu}{3,6}$/u.test(s)) {
         const k = wordKey(s);

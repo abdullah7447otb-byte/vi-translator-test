@@ -395,6 +395,9 @@ impl Pages {
             // (text helpers: bounded input, and "nothing" once the call is out of time, like the frame helpers)
             g.set("__letters", Function::new(ctx.clone(), |s: String| text_helper(&s, 4096, String::new(), || crate::screens::letters(&s)))?)?;
             g.set("__lang", Function::new(ctx.clone(), || crate::screens::words_lang())?)?;
+            g.set("__name", Function::new(ctx.clone(), |s: String| {
+                text_helper(&s, 256, String::new(), || if crate::screens::words_lang() == "ar" { crate::glossary::name_for(&s).unwrap_or_default() } else { String::new() })
+            })?)?;
             g.set("__game_icon", Function::new(ctx.clone(), |name: String| crate::game_icons::data_url(&name).unwrap_or("").to_string())?)?;
             g.set("__similar", Function::new(ctx.clone(), |a: String, b: String| {
                 text_helper(&a, 4096, false, || b.len() <= 4096 && ocr::similar(&a, &b))
@@ -717,6 +720,8 @@ globalThis.vi = Object.freeze({
   letters: (s) => __letters(String(s)),
   // the language the player translates into ("ar", "fr" …): for words a script translates itself
   lang: () => __lang(),
+  // a place, person or brand the names dictionary has, whole ("KELLY COUNTY"), in Arabic; "" if none
+  name: (s) => __name(String(s)),
   // the game's controller icon by name ("X", "L2", "DPAD-UP" …), carried by the app: a PNG data URL, or ""
   gameIcon: (name) => __game_icon(String(name)),
   similar: (a, b) => __similar(String(a), String(b)),
@@ -1453,6 +1458,8 @@ mod built_in_tests {
         assert!(is("Game", "اللعبة") && is("GAME", "اللعبة") && is("Save Game", "حفظ اللعبة"), "no stray marks");
         // a heading with one letter misread
         assert!(is("CAME", "اللعبة"), "CAME is GAME");
+        // the map's places, from the names dictionary
+        assert!(is("KELLY COUNTY", "مقاطعة كيلي") && is("Gulf of Leonida", "خليج ليونيدا"), "the map's names");
         // the hub's selected tab, the tab row splitter and the settled bar are in place
         assert!(p.probe("readHub.toString().includes('byNeighbours') && readTabs.toString().includes('place(') && readHome.toString().includes('settle')"));
     }

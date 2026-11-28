@@ -1679,7 +1679,8 @@ function fxFields(a) {
       <label class="check"><input type="checkbox" class="fx-min" data-more="1" ${fx.cover_min ? "checked" : ""} ${dis}/> ${t("Black box at least as big as the game's text")}</label>
       <label class="check"><input type="checkbox" class="fx-early" data-more="1" ${fx.cover_early ? "checked" : ""} ${dis}/> ${t("Black box as soon as the text appears, before its translation")}</label>
       ${cover ? "" : `<p class="muted small">${t("The black box is for the look \"Over the game's text\" (Game profile).")}</p>`}
-      <label class="check"><input type="checkbox" class="fx-stack" data-more="1" ${fx.stack_up ? "checked" : ""}/> ${t("Lines stack up from the bottom line: the lines above are read only when the bottom one is there")}</label>
+      <label class="check"><input type="checkbox" class="fx-stack" data-more="1" ${fx.stack_up && !a.needs_box ? "checked" : ""} ${a.needs_box ? "disabled" : ""}/> ${t("Lines stack up from the bottom line: the lines above are read only when the bottom one is there")}</label>
+      ${a.needs_box ? `<p class="muted small">${t("Not for an area in the game's own box: its text sits at the top of the area, and read from the bottom line up it would never be read.")}</p>` : ""}
       <label class="check"><input type="checkbox" class="fx-ride" data-more="1" ${fx.ride ? "checked" : ""} ${cover ? "disabled" : ""}/> ${t("Right above the stacked lines, moving up with them (with the subtitles and the bottom instructions as one block)")}</label>
       ${cover ? `<p class="muted small">${t("Moving above the lines is for the look \"Above the game's text\" (Game profile).")}</p>` : ""}
       <label class="check"><input type="checkbox" class="fx-accent" data-more="1" ${fx.accent ? "checked" : ""}/> ${t("A border in Vice City colours, to tell it apart")}</label>
@@ -1936,7 +1937,11 @@ function renderStyleForm(form, a) {
       f.querySelector("input").addEventListener("input", (e) => { f.querySelector(".val").textContent = e.target.value; setStyle(key, e.target.value); });
     } else {
       const fmt = (v) => (step < 1 ? Number(v).toFixed(2) : String(v));
-      f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" ${rangeAttrs(s[key], min, max, step)} /><span class="val">${AS.esc(fmt(rangeShown(s[key], min, max, step).value))}</span></div>`;
+      // (the slider's two ends named under it, on the same sides as the slider runs: in Arabic it runs right to
+      // left, its 0 on the right, and "far right" read as the most was the opposite of what it did)
+      const ends = key === "bg_opacity" ? [t("0 = see-through"), t("1 = solid")] : [String(min), String(max)];
+      f.innerHTML = `<label>${t(label)}</label><div class="inline"><input type="range" ${rangeAttrs(s[key], min, max, step)} /><span class="val">${AS.esc(fmt(rangeShown(s[key], min, max, step).value))}</span></div>
+        <div class="range-ends muted small"><span>${AS.esc(ends[0])}</span><span>${AS.esc(ends[1])}</span></div>`;
       f.querySelector("input").addEventListener("input", (e) => { const v = rangeMoved(e.target, min, max, step); f.querySelector(".val").textContent = fmt(v); setStyle(key, v); });
     }
     form.appendChild(f);
@@ -2018,7 +2023,7 @@ async function renderNames() {
   const list = $("names-list");
   if (!list || !$("names-built-in").open) return;
   if (!builtInNames) {
-    try { builtInNames = await invoke("glossary_built_in"); } catch { builtInNames = []; }
+    try { builtInNames = (await invoke("glossary_built_in")) || []; } catch { builtInNames = []; }
   }
   const q = ($("names-search").value || "").trim().toLowerCase();
   const mine = new Set((cfg.glossary || "").split("\n").map((l) => l.split("=")[0].trim().toLowerCase()).filter(Boolean));
